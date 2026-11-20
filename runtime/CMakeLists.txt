@@ -188,9 +188,21 @@ endfunction()
 andropkg_stub_jni(libstats_jni stats_jni_stub.cc)
 andropkg_stub_jni(libframework-connectivity-jni connectivity_jni_stub.cc)
 andropkg_stub_jni(libframework-connectivity-tiramisu-jni connectivity_t_jni_stub.cc)
+# toolbox_input_labels genrule: key/axis label table for libinput, from the kernel uapi headers.
+set(_labels ${CMAKE_CURRENT_BINARY_DIR}/gen/input-labels/input.h-labels.h)
+add_custom_command(OUTPUT ${_labels}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen/input-labels
+  COMMAND python3 ${ANDROPKG_AOSP}/system/core/toolbox/generate-input.h-labels.py
+          ${ANDROPKG_AOSP}/bionic/libc/kernel/uapi/linux/input.h
+          ${ANDROPKG_AOSP}/bionic/libc/kernel/uapi/linux/input-event-codes.h > ${_labels}
+  DEPENDS ${ANDROPKG_AOSP}/system/core/toolbox/generate-input.h-labels.py VERBATIM)
+add_custom_target(input_labels DEPENDS ${_labels})
+add_dependencies(libinput input_labels)
+target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/input-labels)
+
 andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
-    libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat)
+    libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput)
 # Skia's Apple ports (CoreText fonts, CG/ImageIO codecs) are part of the build.
 if(ANDROPKG_PLATFORM STREQUAL "ios")
   set(_uti_fw "-framework MobileCoreServices")

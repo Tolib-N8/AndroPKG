@@ -109,6 +109,45 @@ index 7f3b32e..007ee7a 100644
  #else
      LOG(FATAL) << "fast property access supported only on device";
      __builtin_unreachable();  // Silence warning
+diff --git a/core/jni/android_view_MotionEvent.cpp b/core/jni/android_view_MotionEvent.cpp
+index 2e9f179..f06f245 100644
+--- a/core/jni/android_view_MotionEvent.cpp
++++ b/core/jni/android_view_MotionEvent.cpp
+@@ -28,6 +28,8 @@
+ #include <nativehelper/JNIHelp.h>
+ #include <nativehelper/ScopedUtfChars.h>
+ 
++#include <sstream>
++
+ #include "android_os_Parcel.h"
+ #include "android_util_Binder.h"
+ #include "core_jni_helpers.h"
+@@ -477,6 +479,17 @@ static void android_view_MotionEvent_nativeGetPointerProperties(JNIEnv* env, jcl
+     pointerPropertiesFromNative(env, pointerProperties, outPointerPropertiesObj);
+ }
+ 
++#if defined(ANDROPKG) && !defined(__linux__)
++// andropkg: no libbinder Parcel; MotionEvents stay in process (Java-side parceling of an
++// event would need the andropkg byte Parcel, not used so far).
++static jlong android_view_MotionEvent_nativeReadFromParcel(JNIEnv* env, jclass, jlong, jobject) {
++    jniThrowRuntimeException(env, "MotionEvent parceling is not supported");
++    return 0;
++}
++static void android_view_MotionEvent_nativeWriteToParcel(JNIEnv* env, jclass, jlong, jobject) {
++    jniThrowRuntimeException(env, "MotionEvent parceling is not supported");
++}
++#else
+ static jlong android_view_MotionEvent_nativeReadFromParcel(JNIEnv* env, jclass clazz,
+         jlong nativePtr, jobject parcelObj) {
+     MotionEvent* event = reinterpret_cast<MotionEvent*>(nativePtr);
+@@ -507,6 +520,7 @@ static void android_view_MotionEvent_nativeWriteToParcel(JNIEnv* env, jclass cla
+         jniThrowRuntimeException(env, "Failed to write MotionEvent parcel.");
+     }
+ }
++#endif
+ 
+ static jstring android_view_MotionEvent_nativeAxisToString(JNIEnv* env, jclass clazz,
+         jint axis) {
 diff --git a/core/jni/core_jni_helpers.h b/core/jni/core_jni_helpers.h
 index 210dc89..9555709 100644
 --- a/core/jni/core_jni_helpers.h

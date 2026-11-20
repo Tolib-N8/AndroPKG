@@ -23,6 +23,41 @@ static void Log(NSString* s) {
 // ---- Android window frames -> screen ----------------------------------------------------
 // The Android display is the native screen (same pixel size), so a frame maps 1:1.
 static UIImageView* g_frame_view;
+static void (*g_inject_touch)(int action, float x, float y);
+
+// Touches on the Android window, in window pixels (MotionEvent actions; first finger only
+// until multi-touch lands).
+@interface AndroidWindowView : UIImageView
+@end
+@implementation AndroidWindowView {
+  UITouch* _tracked;
+}
+- (void)send:(int)action touch:(UITouch*)t {
+  if (!g_inject_touch || !self.image) return;
+  CGPoint p = [t locationInView:self];
+  CGFloat sx = self.image.size.width * self.image.scale / self.bounds.size.width;
+  CGFloat sy = self.image.size.height * self.image.scale / self.bounds.size.height;
+  g_inject_touch(action, static_cast<float>(p.x * sx), static_cast<float>(p.y * sy));
+}
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+  if (_tracked) return;
+  _tracked = touches.anyObject;
+  [self send:0 touch:_tracked];
+}
+- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+  if ([touches containsObject:_tracked]) [self send:2 touch:_tracked];
+}
+- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+  if (![touches containsObject:_tracked]) return;
+  [self send:1 touch:_tracked];
+  _tracked = nil;
+}
+- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+  if (![touches containsObject:_tracked]) return;
+  [self send:3 touch:_tracked];
+  _tracked = nil;
+}
+@end
 
 static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
   CFDataRef data = CFDataCreate(nullptr, static_cast<const UInt8*>(rgba), static_cast<CFIndex>(stride) * h);
@@ -37,10 +72,12 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
   CGDataProviderRelease(provider);
   CFRelease(data);
   static int frames = 0;
-  if (frames++ == 0) {  // keep the first frame (scripts/runner-ios.sh pulls it for checking)
+  // Keep the first frame (scripts/runner-ios.sh pulls it for checking); with a test tap,
+  // keep the latest so the result of the tap can be checked too.
+  if (frames++ == 0 || getenv("ANDROPKG_TEST_TAP")) {
     NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     [UIImagePNGRepresentation(image) writeToFile:[docs stringByAppendingPathComponent:@"frame.png"] atomically:YES];
-    Log([NSString stringWithFormat:@"first frame %dx%d", w, h]);
+    if (frames == 1) Log([NSString stringWithFormat:@"first frame %dx%d", w, h]);
   }
   dispatch_async(dispatch_get_main_queue(), ^{
     g_frame_view.image = image;
@@ -99,6 +136,7 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   if (auto set_sink = reinterpret_cast<SetSink>(dlsym(RTLD_DEFAULT, "andropkg_set_frame_sink"))) {
     set_sink(FrameSink, nullptr);
   }
+  g_inject_touch = reinterpret_cast<void (*)(int, float, float)>(dlsym(RTLD_DEFAULT, "andropkg_inject_touch"));
 
   jclass cls = env->FindClass(main_class);
   jmethodID main = cls ? env->GetStaticMethodID(cls, "main", "([Ljava/lang/String;)V") : nullptr;
@@ -159,14 +197,20 @@ static void* VMThread(void*) {
   label.textAlignment = NSTextAlignmentCenter;
   label.text = g_status;
   UIViewController* vc = [UIViewController new];
-  vc.view = label;
-  label.backgroundColor = UIColor.systemBackgroundColor;
+  UIView* root = [UIView new];
+  root.backgroundColor = UIColor.systemBackgroundColor;
+  label.frame = root.bounds;
+  label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  [root addSubview:label];
+  vc.view = root;
   [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) { label.text = g_status; }];
-  g_frame_view = [[UIImageView alloc] initWithFrame:label.bounds];
+  g_frame_view = [[AndroidWindowView alloc] initWithFrame:root.bounds];
+  g_frame_view.userInteractionEnabled = YES;
+  g_frame_view.multipleTouchEnabled = NO;
   g_frame_view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   g_frame_view.contentMode = UIViewContentModeScaleToFill;
   g_frame_view.hidden = YES;
-  [label addSubview:g_frame_view];
+  [root addSubview:g_frame_view];
   self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
   self.window.rootViewController = vc;
   [self.window makeKeyAndVisible];

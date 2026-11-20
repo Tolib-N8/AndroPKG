@@ -1,3 +1,27 @@
+diff --git a/include/input/KeyCharacterMap.h b/include/input/KeyCharacterMap.h
+index b2e8baa..bf7476c 100644
+--- a/include/input/KeyCharacterMap.h
++++ b/include/input/KeyCharacterMap.h
+@@ -28,6 +28,7 @@
+ #include <utils/Errors.h>
+ #include <utils/Tokenizer.h>
+ #include <utils/Unicode.h>
++#include <utils/Vector.h>  // andropkg: not pulled in transitively without libbinder
+ #include <map>
+ 
+ // Maximum number of keys supported by KeyCharacterMaps
+diff --git a/libs/input/VelocityTracker.cpp b/libs/input/VelocityTracker.cpp
+index 078109a..1ca34fd 100644
+--- a/libs/input/VelocityTracker.cpp
++++ b/libs/input/VelocityTracker.cpp
+@@ -20,6 +20,7 @@
+ #include <array>
+ #include <ftl/enum.h>
+ #include <inttypes.h>
++#include <sstream>
+ #include <limits.h>
+ #include <math.h>
+ #include <optional>
 diff --git a/libs/ui/include/ui/FatVector.h b/libs/ui/include/ui/FatVector.h
 index cb61e6a..1cc82c8 100644
 --- a/libs/ui/include/ui/FatVector.h

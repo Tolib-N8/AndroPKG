@@ -18,6 +18,8 @@
 #include <utils/Looper.h>
 
 #include <atomic>
+#include <deque>
+#include <thread>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -50,6 +52,14 @@ static void* gSinkCtx = nullptr;
 extern "C" __attribute__((visibility("default"))) void andropkg_set_frame_sink(FrameSink sink, void* ctx) {
   gSinkCtx = ctx;
   gSink = sink;
+}
+
+namespace { void InjectTouch(int action, float x, float y); }
+
+/// Called by the host: a touch at window pixel (x, y). action is MotionEvent's
+/// (0 down, 1 up, 2 move, 3 cancel). Delivered on the focused window's Looper.
+extern "C" __attribute__((visibility("default"))) void andropkg_inject_touch(int action, float x, float y) {
+  InjectTouch(action, x, y);
 }
 
 namespace {
@@ -95,6 +105,8 @@ template <typename T>
 T* Ptr(jlong p) {
   return reinterpret_cast<T*>(p);
 }
+
+void MaybeTestTap(uint64_t frame);
 
 void NoopFinalizer(void*) {}
 jlong NoopFinalizerPtr(JNIEnv*, jclass) { return reinterpret_cast<jlong>(&NoopFinalizer); }
@@ -190,6 +202,7 @@ void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
   android::graphics::Canvas canvas(env, canvasObj);
   canvas.setBuffer(nullptr, ADATASPACE_UNKNOWN);
   s->frames++;
+  MaybeTestTap(s->frames);
   int stride = s->width * 4;
   if (FrameSink sink = gSink.load()) {
     sink(s->pixels.data(), s->width, s->height, stride, gSinkCtx);
@@ -279,6 +292,113 @@ jlong der_init(JNIEnv* env, jclass, jobject receiverWeak, jobject dataWeak, jobj
   return reinterpret_cast<jlong>(r);
 }
 void der_scheduleVsync(JNIEnv*, jclass, jlong ptr) { reinterpret_cast<VsyncReceiver*>(ptr)->Schedule(); }
+
+// ---- input (M3): host touches -> the focused window's InputEventReceiver ------------------
+
+struct {
+  jclass motionEventClass;
+  jmethodID obtain;        // MotionEvent.obtain(long downTime, long eventTime, int action, float x, float y, int meta)
+  jmethodID setSource;
+  jmethodID recycle;
+  jmethodID dispatchInputEvent;  // InputEventReceiver.dispatchInputEvent(int seq, InputEvent)
+} gInput;
+
+struct TouchEvent {
+  int action;
+  float x, y;
+};
+
+class InputReceiver : public android::MessageHandler {
+ public:
+  InputReceiver(JNIEnv* env, jobject receiverWeak, android::sp<android::MessageQueue> mq)
+      : receiver_(env->NewGlobalRef(receiverWeak)), queue_(mq) {}
+
+  void Post(const TouchEvent& e) {
+    {
+      std::lock_guard<std::mutex> g(lock_);
+      pending_.push_back(e);
+    }
+    queue_->getLooper()->sendMessage(this, android::Message(0));
+  }
+
+  void handleMessage(const android::Message&) override {
+    JNIEnv* env = android::AndroidRuntime::getJNIEnv();
+    for (;;) {
+      TouchEvent e;
+      {
+        std::lock_guard<std::mutex> g(lock_);
+        if (pending_.empty()) break;
+        e = pending_.front();
+        pending_.pop_front();
+      }
+      jlong now = systemTime(SYSTEM_TIME_MONOTONIC) / 1000000;  // SystemClock.uptimeMillis()
+      if (e.action == 0 /* ACTION_DOWN */) down_time_ = now;
+      jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtain, down_time_, now, e.action,
+                                               e.x, e.y, 0);
+      env->CallVoidMethod(ev, gInput.setSource, 0x1002 /* InputDevice.SOURCE_TOUCHSCREEN */);
+      jobject receiver = env->CallObjectMethod(receiver_, gVsync.referenceGet);
+      if (receiver) {
+        env->CallVoidMethod(receiver, gInput.dispatchInputEvent, ++seq_, ev);
+        env->DeleteLocalRef(receiver);
+      }
+      env->DeleteLocalRef(ev);
+      queue_->raiseAndClearException(env, "dispatchInputEvent");
+    }
+  }
+
+ private:
+  jobject receiver_;
+  android::sp<android::MessageQueue> queue_;
+  std::mutex lock_;
+  std::deque<TouchEvent> pending_;
+  jlong down_time_ = 0;
+  jint seq_ = 0;
+};
+
+std::mutex gReceiversLock;
+std::vector<InputReceiver*> gReceivers;  // most recent last: the focused window
+
+jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject /*inputChannel*/, jobject messageQueue) {
+  android::sp<android::MessageQueue> mq = android::android_os_MessageQueue_getMessageQueue(env, messageQueue);
+  if (mq == nullptr) {
+    jniThrowRuntimeException(env, "MessageQueue is not initialized.");
+    return 0;
+  }
+  auto* r = new InputReceiver(env, receiverWeak, mq);
+  r->incStrong(nullptr);
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  gReceivers.push_back(r);
+  return reinterpret_cast<jlong>(r);
+}
+
+void ier_dispose(JNIEnv*, jclass, jlong ptr) {
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  for (auto it = gReceivers.begin(); it != gReceivers.end(); ++it) {
+    if (reinterpret_cast<jlong>(*it) == ptr) {
+      gReceivers.erase(it);
+      break;
+    }
+  }
+}
+
+void InjectTouch(int action, float x, float y) {
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  if (!gReceivers.empty()) gReceivers.back()->Post({action, x, y});
+}
+
+// macOS dev loop: ANDROPKG_TEST_TAP=x,y taps once, shortly after the first frame.
+void MaybeTestTap(uint64_t frame) {
+  static const char* spec = getenv("ANDROPKG_TEST_TAP");
+  if (spec == nullptr || frame != 1) return;
+  float x = 0, y = 0;
+  if (sscanf(spec, "%f,%f", &x, &y) != 2) return;
+  std::thread([x, y] {
+    usleep(300 * 1000);
+    InjectTouch(0, x, y);
+    usleep(80 * 1000);
+    InjectTouch(1, x, y);
+  }).detach();
+}
 
 // ---- registration -----------------------------------------------------------------------
 
@@ -444,6 +564,24 @@ int register_andropkg_window(JNIEnv* env) {
   REGISTER("android/graphics/BLASTBufferQueue", kBlast);
   REGISTER("android/view/Surface", kSurface);
   REGISTER("android/view/DisplayEventReceiver", kDisplayEventReceiver);
+
+  jclass me = env->FindClass("android/view/MotionEvent");
+  gInput.motionEventClass = static_cast<jclass>(env->NewGlobalRef(me));
+  gInput.obtain = env->GetStaticMethodID(me, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
+  gInput.setSource = env->GetMethodID(me, "setSource", "(I)V");
+  gInput.recycle = env->GetMethodID(me, "recycle", "()V");
+  jclass ier = env->FindClass("android/view/InputEventReceiver");
+  gInput.dispatchInputEvent = env->GetMethodID(ier, "dispatchInputEvent", "(ILandroid/view/InputEvent;)V");
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    return -1;
+  }
+  static const JNINativeMethod kInputEventReceiver[] = {
+      M("nativeInit", "(Ljava/lang/ref/WeakReference;Landroid/view/InputChannel;Landroid/os/MessageQueue;)J",
+        ier_init),
+      M("nativeDispose", "(J)V", ier_dispose),
+  };
+  REGISTER("android/view/InputEventReceiver", kInputEventReceiver);
   return 0;
 }
 }  // namespace android

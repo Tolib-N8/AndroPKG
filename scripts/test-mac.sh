@@ -29,6 +29,7 @@ apk() { echo -Xhidden-api-policy:disabled -Dandropkg.test.autofinish=1 -cp build
   dev.andropkg.system.AndroPkgSystem "$root/build/apps/$1.apk" "$root/build/android-root/data/app/$1"; }
 run lifecycle "\[lifecycle\] onDestroy" $(apk lifecycle)
 frame="$log/hello-frame.png"
-ANDROPKG_FRAME_PNG=$frame run hello-apk "HelloTest.*onDraw" $(apk hello)
+# The banner sits at 24..120 dp (63..315 px at 420 dpi): a tap there is a click.
+ANDROPKG_TEST_TAP=540,190 ANDROPKG_FRAME_PNG=$frame run hello-apk "HelloTest.*banner tapped 1" $(apk hello)
 [ -s "$frame" ] || fail "hello-apk frame" hello-apk
 echo "ok   hello-apk frame ($frame)"

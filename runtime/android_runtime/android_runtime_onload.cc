@@ -69,6 +69,9 @@ extern int register_android_content_StringBlock(JNIEnv* env);
 extern int register_android_content_XmlBlock(JNIEnv* env);
 extern int register_android_content_res_ResourceTimer(JNIEnv* env);
 extern int register_com_android_internal_os_ClassLoaderFactory(JNIEnv* env);
+extern int register_android_view_MotionEvent(JNIEnv* env);
+extern int register_android_view_KeyEvent(JNIEnv* env);
+extern int register_android_view_VelocityTracker(JNIEnv* env);
 }  // namespace android
 
 // hwui's android.graphics.* JNI (frameworks/base/libs/hwui/apex/jni_runtime.cpp).
@@ -102,6 +105,9 @@ static const RegJni kRegistrations[] = {
     {"XmlBlock", register_android_content_XmlBlock},
     {"ResourceTimer", register_android_content_res_ResourceTimer},
     {"ClassLoaderFactory", register_com_android_internal_os_ClassLoaderFactory},
+    {"MotionEvent", register_android_view_MotionEvent},
+    {"KeyEvent", register_android_view_KeyEvent},
+    {"VelocityTracker", register_android_view_VelocityTracker},
     {"Parcel (andropkg)", register_andropkg_parcel},
     {"android.graphics (hwui)", register_hwui_graphics},
     {"window system (andropkg)", register_andropkg_window},
