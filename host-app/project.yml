@@ -61,3 +61,7 @@ targets:
         embed: true
         codeSign: true
         link: false
+      - framework: ../build/runtime-ios/libstats_jni.dylib
+        embed: true
+        codeSign: true
+        link: false

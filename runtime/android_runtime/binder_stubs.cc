@@ -6,6 +6,8 @@
 #include <nativehelper/JNIHelp.h>
 #include <unistd.h>
 
+#include "jni_util.h"
+
 namespace android {
 
 static jint Binder_getCallingPid(JNIEnv*, jclass) { return getpid(); }
@@ -50,20 +52,34 @@ static const JNINativeMethod kBinderMethods[] = {
     {"getNativeFinalizer", "()J", reinterpret_cast<void*>(Binder_getNativeFinalizer)},
 };
 
+// com.android.internal.os.BinderInternal
+static void BinderInternal_handleGc(JNIEnv*, jclass) {}
+static void BinderInternal_joinThreadPool(JNIEnv*, jclass) {}
+static void BinderInternal_disableBackgroundScheduling(JNIEnv*, jclass, jboolean) {}
+static void BinderInternal_setMaxThreads(JNIEnv*, jclass, jint) {}
+static void BinderInternal_nSetBinderProxyCountEnabled(JNIEnv*, jclass, jboolean) {}
+
+static const JNINativeMethod kBinderInternalMethods[] = {
+    {"handleGc", "()V", reinterpret_cast<void*>(BinderInternal_handleGc)},
+    {"joinThreadPool", "()V", reinterpret_cast<void*>(BinderInternal_joinThreadPool)},
+    {"disableBackgroundScheduling", "(Z)V", reinterpret_cast<void*>(BinderInternal_disableBackgroundScheduling)},
+    {"setMaxThreads", "(I)V", reinterpret_cast<void*>(BinderInternal_setMaxThreads)},
+    {"nSetBinderProxyCountEnabled", "(Z)V", reinterpret_cast<void*>(BinderInternal_nSetBinderProxyCountEnabled)},
+};
+
+// android.graphics: the few natives an activity touches without a window (hwui proper is M2d).
+static void Canvas_nSetCompatibilityVersion(JNIEnv*, jclass, jint) {}
+static const JNINativeMethod kCanvasMethods[] = {
+    {"nSetCompatibilityVersion", "(I)V", reinterpret_cast<void*>(Canvas_nSetCompatibilityVersion)},
+};
+
 int register_andropkg_binder_stubs(JNIEnv* env) {
-  // Register only methods the framework jar actually declares (signatures differ by release).
-  jclass c = env->FindClass("android/os/Binder");
-  if (c == nullptr) return -1;
-  for (const auto& m : kBinderMethods) {
-    bool exists = env->GetStaticMethodID(c, m.name, m.signature) != nullptr;
-    if (!exists) {
-      env->ExceptionClear();
-      exists = env->GetMethodID(c, m.name, m.signature) != nullptr;
-      if (!exists) env->ExceptionClear();
-    }
-    if (exists && env->RegisterNatives(c, &m, 1) != JNI_OK) env->ExceptionClear();
-  }
-  return 0;
+  andropkg::RegisterIfDeclared(env, "com/android/internal/os/BinderInternal", kBinderInternalMethods,
+                               sizeof kBinderInternalMethods / sizeof kBinderInternalMethods[0]);
+  andropkg::RegisterIfDeclared(env, "android/graphics/Canvas", kCanvasMethods,
+                               sizeof kCanvasMethods / sizeof kCanvasMethods[0]);
+  return andropkg::RegisterIfDeclared(env, "android/os/Binder", kBinderMethods,
+                                      sizeof kBinderMethods / sizeof kBinderMethods[0]);
 }
 
 }  // namespace android

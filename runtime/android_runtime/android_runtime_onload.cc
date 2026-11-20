@@ -59,6 +59,7 @@ extern int register_android_os_MessageQueue(JNIEnv* env);
 extern int register_android_os_Trace(JNIEnv* env);
 extern int register_android_os_SystemProperties(JNIEnv* env);
 extern int register_andropkg_binder_stubs(JNIEnv* env);
+extern int register_andropkg_process_stubs(JNIEnv* env);
 extern int register_android_content_res_ApkAssets(JNIEnv* env);
 extern int register_android_content_AssetManager(JNIEnv* env);
 extern int register_android_content_StringBlock(JNIEnv* env);
@@ -78,6 +79,7 @@ static const RegJni kRegistrations[] = {
     {"Trace", register_android_os_Trace},
     {"SystemProperties", register_android_os_SystemProperties},
     {"Binder (andropkg stubs)", register_andropkg_binder_stubs},
+    {"Process (andropkg)", register_andropkg_process_stubs},
     {"ApkAssets", register_android_content_res_ApkAssets},
     {"AssetManager", register_android_content_AssetManager},
     {"StringBlock", register_android_content_StringBlock},

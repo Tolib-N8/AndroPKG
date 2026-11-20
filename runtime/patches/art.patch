@@ -528,6 +528,95 @@ index 7b3d849..fa865cf 100644
    switch (entry_points_allocator) {
      case gc::kAllocatorTypeDlMalloc: {
        SetQuickAllocEntryPoints_dlmalloc(qpoints, entry_points_instrumented);
+diff --git a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+index 7e96f29..d9531a7 100644
+--- a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
++++ b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
+@@ -60,6 +60,22 @@
+ 
+ namespace art {
+ 
++#if defined(__APPLE__)
++// andropkg: managed code passes references in registers as 32-bit *compressed* values (w1...).
++// With base-relative references (andropkg/ref_arena.h) those are not pointers, so C++
++// entrypoints reached directly from assembly with a reference argument must decode it.
++template <typename T>
++static ALWAYS_INLINE T* AndropkgDecodeQuickRef(T* raw) {
++  uintptr_t v = reinterpret_cast<uintptr_t>(raw);
++  if (v > 0xffffffffu) return raw;  // already a pointer
++  return reinterpret_cast<T*>(
++      mirror::PtrCompression<false, mirror::Object>::Decompress(static_cast<uint32_t>(v)));
++}
++#define ANDROPKG_DECODE_QUICK_REF(x) (x) = AndropkgDecodeQuickRef(x)
++#else
++#define ANDROPKG_DECODE_QUICK_REF(x) do {} while (false)
++#endif
++
+ extern "C" NO_RETURN void artDeoptimizeFromCompiledCode(DeoptimizationKind kind, Thread* self);
+ extern "C" NO_RETURN void artDeoptimize(Thread* self, bool skip_method_exit_callbacks);
+ 
+@@ -809,6 +825,7 @@ void BuildQuickArgumentVisitor::Visit() {
+ extern "C" uint64_t artQuickProxyInvokeHandler(
+     ArtMethod* proxy_method, mirror::Object* receiver, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(receiver);
+   DCHECK(proxy_method->IsProxyMethod()) << proxy_method->PrettyMethod();
+   DCHECK(receiver->GetClass()->IsProxyClass()) << proxy_method->PrettyMethod();
+   // Ensure we don't get thread suspension until the object arguments are safely in jobjects.
+@@ -1118,6 +1135,7 @@ static void DumpB74410240DebugData(ArtMethod** sp) REQUIRES_SHARED(Locks::mutato
+ extern "C" const void* artQuickResolutionTrampoline(
+     ArtMethod* called, mirror::Object* receiver, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(receiver);
+   // The resolution trampoline stashes the resolved method into the callee-save frame to transport
+   // it. Thus, when exiting, the stack cannot be verified (as the resolved method most likely
+   // does not have the same stack layout as the callee-save method).
+@@ -2164,12 +2182,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
+ extern "C" TwoWordReturn artInvokeInterfaceTrampolineWithAccessCheck(
+     uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(this_object);
+   return artInvokeCommon<kInterface>(method_idx, this_object, self, sp);
+ }
+ 
+ extern "C" TwoWordReturn artInvokeDirectTrampolineWithAccessCheck(
+     uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(this_object);
+   return artInvokeCommon<kDirect>(method_idx, this_object, self, sp);
+ }
+ 
+@@ -2178,6 +2198,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+     mirror::Object* this_object ATTRIBUTE_UNUSED,
+     Thread* self,
+     ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(this_object);
+   // For static, this_object is not required and may be random garbage. Don't pass it down so that
+   // it doesn't cause ObjPtr alignment failure check.
+   return artInvokeCommon<kStatic>(method_idx, nullptr, self, sp);
+@@ -2186,12 +2207,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+ extern "C" TwoWordReturn artInvokeSuperTrampolineWithAccessCheck(
+     uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(this_object);
+   return artInvokeCommon<kSuper>(method_idx, this_object, self, sp);
+ }
+ 
+ extern "C" TwoWordReturn artInvokeVirtualTrampolineWithAccessCheck(
+     uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(this_object);
+   return artInvokeCommon<kVirtual>(method_idx, this_object, self, sp);
+ }
+ 
+@@ -2202,6 +2225,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
+                                                       Thread* self,
+                                                       ArtMethod** sp)
+     REQUIRES_SHARED(Locks::mutator_lock_) {
++  ANDROPKG_DECODE_QUICK_REF(raw_this_object);
+   ScopedQuickEntrypointChecks sqec(self);
+ 
+   Runtime* runtime = Runtime::Current();
 diff --git a/runtime/gc/heap.cc b/runtime/gc/heap.cc
 index f27bddb..bb8f6c3 100644
 --- a/runtime/gc/heap.cc

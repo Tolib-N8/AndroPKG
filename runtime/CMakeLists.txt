@@ -177,6 +177,11 @@ andropkg_jni_dylib(libjavacore libjavacore libexpat)
 andropkg_jni_dylib(libopenjdk libopenjdk libfdlibm)
 andropkg_jni_dylib(libicu_jni libicu_jni)
 andropkg_jni_dylib(libjavacrypto libjavacrypto)
+# andropkg-owned stand-ins for platform JNI libraries that talk to absent system daemons.
+add_library(andropkg_stats_jni OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/android_runtime/stats_jni_stub.cc)
+target_compile_options(andropkg_stats_jni PRIVATE -std=gnu++17)
+target_include_directories(andropkg_stats_jni PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+andropkg_jni_dylib(libstats_jni andropkg_stats_jni)
 andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils)
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
