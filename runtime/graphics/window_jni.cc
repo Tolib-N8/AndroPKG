@@ -17,14 +17,20 @@
 #include <time.h>
 #include <utils/Looper.h>
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
+#include <map>
 #include <thread>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "android_os_MessageQueue.h"
+#include "include/core/SkBitmap.h"
+#include "include/core/SkCanvas.h"
+#include "include/core/SkColor.h"
+#include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkStream.h"
@@ -93,21 +99,51 @@ extern "C" __attribute__((visibility("default"))) void andropkg_inject_touch(int
 
 namespace {
 
-void WritePng(const void* rgba, int w, int h, int stride) {
-  const char* path = getenv("ANDROPKG_FRAME_PNG");
-  if (path == nullptr) return;
+bool WritePngTo(const char* path, const void* rgba, int w, int h, int stride) {
   SkPixmap pm(SkImageInfo::Make(w, h, kRGBA_8888_SkColorType, kPremul_SkAlphaType), rgba,
               static_cast<size_t>(stride));
   SkFILEWStream out(path);
-  if (out.isValid() && SkPngEncoder::Encode(&out, pm, {})) ALOGI("andropkg: frame %dx%d -> %s", w, h, path);
+  return out.isValid() && SkPngEncoder::Encode(&out, pm, {});
+}
+
+// The last frame shown (tests: "shot" in ANDROPKG_TEST_SCRIPT).
+std::mutex gLastFrameLock;
+std::vector<uint32_t> gLastFrame;
+int gLastW = 0, gLastH = 0;
+bool TestsEnabled() {
+  static const bool on = getenv("ANDROPKG_TEST_SCRIPT") != nullptr;
+  return on;
+}
+
+void MaybeStartTests();
+
+// A finished display image (RGBA8888, premultiplied) to the host.
+void Present(const void* rgba, int w, int h, int stride) {
+  if (TestsEnabled()) {
+    std::lock_guard<std::mutex> g(gLastFrameLock);
+    gLastFrame.resize(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; y++) {
+      memcpy(&gLastFrame[static_cast<size_t>(y) * w], static_cast<const uint8_t*>(rgba) + static_cast<size_t>(y) * stride,
+             static_cast<size_t>(w) * 4);
+    }
+    gLastW = w;
+    gLastH = h;
+  }
+  if (FrameSink sink = gSink.load()) {
+    sink(rgba, w, h, stride, gSinkCtx);
+  } else if (const char* path = getenv("ANDROPKG_FRAME_PNG")) {
+    if (WritePngTo(path, rgba, w, h, stride)) ALOGI("andropkg: frame %dx%d -> %s", w, h, path);
+  }
+  MaybeStartTests();
 }
 
 // ---- windows ---------------------------------------------------------------------------
 
 struct WindowSurface {
   std::mutex lock;
-  int width = 0, height = 0;
+  int width = 0, height = 0;   // the size the next frame is drawn at
   std::vector<uint32_t> pixels;
+  int drawnW = 0, drawnH = 0;  // the size of `pixels`' last frame
   uint64_t frames = 0;
 };
 
@@ -135,7 +171,7 @@ T* Ptr(jlong p) {
   return reinterpret_cast<T*>(p);
 }
 
-void MaybeTestTap(uint64_t frame);
+void PostFrame(WindowSurface* s);
 
 void NoopFinalizer(void*) {}
 jlong NoopFinalizerPtr(JNIEnv*, jclass) { return reinterpret_cast<jlong>(&NoopFinalizer); }
@@ -147,8 +183,11 @@ struct {
 } gJni;
 
 // SurfaceControl
+void EnsureWmNatives(JNIEnv* env);
+
 jlong sc_create(JNIEnv* env, jclass, jobject /*session*/, jstring name, jint w, jint h, jint /*format*/,
                 jint /*flags*/, jlong /*parent*/, jobject /*metadata*/) {
+  EnsureWmNatives(env);
   auto* layer = new Layer;
   if (name) {
     const char* s = env->GetStringUTFChars(name, nullptr);
@@ -177,8 +216,9 @@ jlong bbq_create(JNIEnv* env, jclass, jstring name, jboolean) {
 jobject bbq_getSurface(JNIEnv* env, jclass, jlong ptr, jboolean) {
   return env->NewObject(gJni.surfaceClass, gJni.surfaceCtor, reinterpret_cast<jlong>(Ptr<Bbq>(ptr)->surface));
 }
-void bbq_update(JNIEnv*, jclass, jlong ptr, jlong /*sc*/, jlong w, jlong h, jint /*format*/) {
+void bbq_update(JNIEnv*, jclass, jlong ptr, jlong sc, jlong w, jlong h, jint /*format*/) {
   WindowSurface* s = Ptr<Bbq>(ptr)->surface;
+  if (sc != 0) Ptr<Layer>(sc)->surface = s;  // the window's frames come from this queue
   std::lock_guard<std::mutex> g(s->lock);
   s->width = static_cast<int>(w);
   s->height = static_cast<int>(h);
@@ -209,6 +249,8 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
   s->lock.lock();
   size_t n = static_cast<size_t>(s->width) * s->height;
   if (s->pixels.size() != n) s->pixels.assign(n, 0);
+  s->drawnW = s->width;
+  s->drawnH = s->height;
   ANativeWindow_Buffer buffer = {};
   buffer.width = s->width;
   buffer.height = s->height;
@@ -231,14 +273,8 @@ void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
   android::graphics::Canvas canvas(env, canvasObj);
   canvas.setBuffer(nullptr, ADATASPACE_UNKNOWN);
   s->frames++;
-  MaybeTestTap(s->frames);
-  int stride = s->width * 4;
-  if (FrameSink sink = gSink.load()) {
-    sink(s->pixels.data(), s->width, s->height, stride, gSinkCtx);
-  } else {
-    WritePng(s->pixels.data(), s->width, s->height, stride);
-  }
   s->lock.unlock();
+  PostFrame(s);
 }
 
 // ---- vsync (Choreographer) ---------------------------------------------------------------
@@ -354,6 +390,8 @@ struct {
   jmethodID keyEventCtor;  // KeyEvent(long downTime, long eventTime, int action, int code, int repeat)
   jmethodID keySetSource;
   jmethodID onFocusEvent;  // InputEventReceiver.onFocusEvent(boolean)
+  jmethodID offsetLocation;
+  jfieldID channelPtr;     // InputChannel.mPtr: the window id WindowManagerImpl assigned
 } gInput;
 
 // Host input for the focused window, delivered on its Looper: a touch, or keyboard text.
@@ -361,7 +399,8 @@ struct TouchEvent {
   enum Kind { kTouch, kText, kDeleteBackward, kEnter, kKey, kFocus, kVisibility } kind = kTouch;
   int keycode = 0;
   int action = 0;
-  float x = 0, y = 0;
+  float x = 0, y = 0;    // display coordinates
+  float ox = 0, oy = 0;  // the target window's origin on the display
   std::string text;
 };
 
@@ -501,6 +540,8 @@ class InputReceiver : public android::MessageHandler {
       jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtain, down_time_, now, e.action,
                                                e.x, e.y, 0);
       env->CallVoidMethod(ev, gInput.setSource, 0x1002 /* InputDevice.SOURCE_TOUCHSCREEN */);
+      // Window coordinates; getRawX/Y stay display coordinates, as on a device.
+      if (e.ox != 0 || e.oy != 0) env->CallVoidMethod(ev, gInput.offsetLocation, -e.ox, -e.oy);
       jobject receiver = env->CallObjectMethod(receiver_, gVsync.referenceGet);
       if (receiver) {
         env->CallVoidMethod(receiver, gInput.dispatchInputEvent, ++seq_, ev);
@@ -526,10 +567,177 @@ class InputReceiver : public android::MessageHandler {
   jint seq_ = 0;
 };
 
-std::mutex gReceiversLock;
-std::vector<InputReceiver*> gReceivers;  // most recent last: the focused window
+// ---- windows: frames, z-order, focus, touch routing, composition --------------------------
+//
+// WindowManagerImpl (services) computes each window's frame and z-order as WMS does and reports
+// them here (nativeSetWindow). The visible windows' frames are composed in z-order, with
+// FLAG_DIM_BEHIND dimming, into one display-size image for the host. Touches go to the window
+// under the finger (or to a touch-modal window), keys and text to the focused window.
 
-jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject /*inputChannel*/, jobject messageQueue) {
+constexpr int kFlagDimBehind = 0x2, kFlagNotFocusable = 0x8, kFlagNotTouchable = 0x10,
+              kFlagNotTouchModal = 0x20, kFlagWatchOutsideTouch = 0x40000;
+
+struct HostWindow {
+  int id = 0;
+  Layer* layer = nullptr;
+  InputReceiver* receiver = nullptr;
+  int fx = 0, fy = 0, fw = 0, fh = 0;  // frame (input, window coordinates' origin)
+  int sx = 0, sy = 0;                  // surface origin (frame minus surface insets)
+  int z = 0, flags = 0;
+  float dim = 0;
+  bool visible = false;
+  bool placed = false;  // nativeSetWindow called at least once
+};
+
+std::mutex gWmLock;                            // before any WindowSurface::lock
+std::map<int, HostWindow> gWindows;            // by window id (InputChannel.mPtr)
+std::vector<InputReceiver*> gOrphanReceivers;  // windows not added through WindowManagerImpl
+InputReceiver* gFocused = nullptr;
+int gTouchTarget = -1;  // the window that owns the current gesture
+int gDisplayW = 0, gDisplayH = 0;
+std::vector<uint32_t> gScreen;
+
+std::vector<HostWindow*> VisibleTopDownLocked() {
+  std::vector<HostWindow*> v;
+  for (auto& [id, w] : gWindows) {
+    if (w.placed && w.visible) v.push_back(&w);
+  }
+  std::sort(v.begin(), v.end(), [](HostWindow* a, HostWindow* b) { return a->z > b->z; });
+  return v;
+}
+
+// The top visible focusable window gets focus, as InputDispatcher would give it.
+void UpdateFocusLocked() {
+  InputReceiver* f = nullptr;
+  for (HostWindow* w : VisibleTopDownLocked()) {
+    if (w->receiver && !(w->flags & kFlagNotFocusable)) {
+      f = w->receiver;
+      break;
+    }
+  }
+  if (f == nullptr && !gOrphanReceivers.empty()) f = gOrphanReceivers.back();
+  if (f == gFocused) return;
+  TouchEvent e;
+  e.kind = TouchEvent::kFocus;
+  if (gFocused) {
+    e.action = 0;
+    gFocused->Post(e);
+  }
+  gFocused = f;
+  if (f) {
+    e.action = 1;
+    f->Post(e);
+  }
+}
+
+void ComposeLocked() {
+  std::vector<HostWindow*> drawn;
+  for (HostWindow* w : VisibleTopDownLocked()) {
+    if (w->layer && w->layer->surface && w->layer->surface->frames > 0) drawn.push_back(w);
+  }
+  if (drawn.empty() || gDisplayW <= 0 || gDisplayH <= 0) return;
+  std::reverse(drawn.begin(), drawn.end());  // bottom first
+  if (drawn.size() == 1 && drawn[0]->dim == 0 && drawn[0]->sx == 0 && drawn[0]->sy == 0) {
+    WindowSurface* s = drawn[0]->layer->surface;
+    std::lock_guard<std::mutex> g(s->lock);
+    if (s->drawnW == gDisplayW && s->drawnH == gDisplayH) {  // one full-screen window: as is
+      Present(s->pixels.data(), s->drawnW, s->drawnH, s->drawnW * 4);
+      return;
+    }
+  }
+  gScreen.assign(static_cast<size_t>(gDisplayW) * gDisplayH, 0xff000000u);  // opaque black
+  SkImageInfo info = SkImageInfo::Make(gDisplayW, gDisplayH, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+  std::unique_ptr<SkCanvas> canvas = SkCanvas::MakeRasterDirect(info, gScreen.data(), gDisplayW * 4);
+  for (HostWindow* w : drawn) {
+    if (w->dim > 0) canvas->drawColor(SkColorSetARGB(static_cast<U8CPU>(w->dim * 255), 0, 0, 0));
+    WindowSurface* s = w->layer->surface;
+    std::lock_guard<std::mutex> g(s->lock);
+    if (s->drawnW <= 0 || s->pixels.size() < static_cast<size_t>(s->drawnW) * s->drawnH) continue;
+    SkBitmap bm;
+    bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
+                     s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
+    bm.setImmutable();
+    canvas->drawImage(bm.asImage(), w->sx, w->sy);
+  }
+  Present(gScreen.data(), gDisplayW, gDisplayH, gDisplayW * 4);
+}
+
+void PostFrame(WindowSurface* s) {
+  std::lock_guard<std::mutex> g(gWmLock);
+  bool anyPlaced = false;
+  for (auto& [id, w] : gWindows) {
+    if (!w.placed) continue;
+    anyPlaced = true;
+    if (w.layer && w.layer->surface == s) {
+      if (w.visible) ComposeLocked();
+      return;
+    }
+  }
+  if (!anyPlaced) {  // no window manager: show the surface as it is
+    std::lock_guard<std::mutex> sg(s->lock);
+    Present(s->pixels.data(), s->drawnW, s->drawnH, s->drawnW * 4);
+  }
+}
+
+// WindowManagerImpl.nativeSetWindow(...): a window's frame, surface, z-order and flags.
+void wm_setWindow(JNIEnv*, jclass, jint id, jlong sc, jint fx, jint fy, jint fw, jint fh, jint sx, jint sy,
+                  jint sw, jint sh, jint z, jint flags, jfloat dim, jboolean visible, jint dw, jint dh) {
+  std::lock_guard<std::mutex> g(gWmLock);
+  HostWindow& w = gWindows[id];
+  w.id = id;
+  bool wasShown = w.placed && w.visible;
+  if (sc != 0) {
+    w.layer = Ptr<Layer>(sc);
+    w.layer->width = sw;
+    w.layer->height = sh;
+    WindowSurface* s = w.layer->Surface();
+    std::lock_guard<std::mutex> sg(s->lock);
+    s->width = sw;  // the window's next frame is drawn at its new size
+    s->height = sh;
+  }
+  w.fx = fx, w.fy = fy, w.fw = fw, w.fh = fh, w.sx = sx, w.sy = sy;
+  w.z = z;
+  w.flags = flags;
+  w.dim = (flags & kFlagDimBehind) ? dim : 0;
+  w.visible = visible;
+  w.placed = true;
+  gDisplayW = dw;
+  gDisplayH = dh;
+  UpdateFocusLocked();
+  if (wasShown || visible) ComposeLocked();
+}
+
+void wm_removeWindow(JNIEnv*, jclass, jint id) {
+  std::lock_guard<std::mutex> g(gWmLock);
+  auto it = gWindows.find(id);
+  if (it == gWindows.end()) return;
+  bool wasShown = it->second.placed && it->second.visible;
+  if (it->second.receiver) gOrphanReceivers.erase(
+      std::remove(gOrphanReceivers.begin(), gOrphanReceivers.end(), it->second.receiver), gOrphanReceivers.end());
+  gWindows.erase(it);
+  if (gTouchTarget == id) gTouchTarget = -1;
+  UpdateFocusLocked();
+  if (wasShown) ComposeLocked();
+}
+
+std::atomic<bool> gWmNativesRegistered{false};
+void EnsureWmNatives(JNIEnv* env) {
+  if (gWmNativesRegistered.load()) return;
+  jclass c = LoadServicesClass(env, "dev.andropkg.system.WindowManagerImpl");
+  if (c == nullptr) return;  // not running under andropkg's services
+  static const JNINativeMethod kMethods[] = {
+      {"nativeSetWindow", "(IJIIIIIIIIIIFZII)V", reinterpret_cast<void*>(wm_setWindow)},
+      {"nativeRemoveWindow", "(I)V", reinterpret_cast<void*>(wm_removeWindow)},
+  };
+  if (env->RegisterNatives(c, kMethods, 2) == JNI_OK) {
+    gWmNativesRegistered = true;
+  } else {
+    env->ExceptionClear();
+  }
+  env->DeleteLocalRef(c);
+}
+
+jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject inputChannel, jobject messageQueue) {
   android::sp<android::MessageQueue> mq = android::android_os_MessageQueue_getMessageQueue(env, messageQueue);
   if (mq == nullptr) {
     jniThrowRuntimeException(env, "MessageQueue is not initialized.");
@@ -537,35 +745,27 @@ jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject /*inputChannel
   }
   auto* r = new InputReceiver(env, receiverWeak, mq);
   r->incStrong(nullptr);
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  // The newest window takes focus (one task, top window first), as InputDispatcher would.
-  TouchEvent lose;
-  lose.kind = TouchEvent::kFocus;
-  lose.action = 0;
-  if (!gReceivers.empty()) gReceivers.back()->Post(lose);
-  gReceivers.push_back(r);
-  TouchEvent gain;
-  gain.kind = TouchEvent::kFocus;
-  gain.action = 1;
-  r->Post(gain);
+  int id = inputChannel ? static_cast<int>(env->GetLongField(inputChannel, gInput.channelPtr)) : 0;
+  std::lock_guard<std::mutex> g(gWmLock);
+  if (id > 0) {
+    gWindows[id].id = id;
+    gWindows[id].receiver = r;
+  } else {
+    gOrphanReceivers.push_back(r);
+  }
+  UpdateFocusLocked();
   return reinterpret_cast<jlong>(r);
 }
 
 void ier_dispose(JNIEnv*, jclass, jlong ptr) {
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  bool wasTop = !gReceivers.empty() && reinterpret_cast<jlong>(gReceivers.back()) == ptr;
-  for (auto it = gReceivers.begin(); it != gReceivers.end(); ++it) {
-    if (reinterpret_cast<jlong>(*it) == ptr) {
-      gReceivers.erase(it);
-      break;
-    }
+  auto* r = reinterpret_cast<InputReceiver*>(ptr);
+  std::lock_guard<std::mutex> g(gWmLock);
+  for (auto& [id, w] : gWindows) {
+    if (w.receiver == r) w.receiver = nullptr;
   }
-  if (wasTop && !gReceivers.empty()) {  // focus returns to the window below
-    TouchEvent gain;
-    gain.kind = TouchEvent::kFocus;
-    gain.action = 1;
-    gReceivers.back()->Post(gain);
-  }
+  gOrphanReceivers.erase(std::remove(gOrphanReceivers.begin(), gOrphanReceivers.end(), r), gOrphanReceivers.end());
+  if (gFocused == r) gFocused = nullptr;
+  UpdateFocusLocked();
 }
 
 void InjectTouch(int action, float x, float y) {
@@ -573,16 +773,50 @@ void InjectTouch(int action, float x, float y) {
   e.action = action;
   e.x = x;
   e.y = y;
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  if (!gReceivers.empty()) gReceivers.back()->Post(e);
+  std::lock_guard<std::mutex> g(gWmLock);
+  if (action == 0 /* DOWN */) {
+    gTouchTarget = -1;
+    for (HostWindow* w : VisibleTopDownLocked()) {
+      if (!w->receiver || (w->flags & kFlagNotTouchable)) continue;
+      bool inside = x >= w->fx && x < w->fx + w->fw && y >= w->fy && y < w->fy + w->fh;
+      // A focusable window without FLAG_NOT_TOUCH_MODAL takes touches outside it too.
+      bool modal = !(w->flags & (kFlagNotTouchModal | kFlagNotFocusable));
+      if (inside || modal) {
+        gTouchTarget = w->id;
+        break;
+      }
+      if (w->flags & kFlagWatchOutsideTouch) {  // e.g. a PopupWindow: dismiss on outside taps
+        TouchEvent o = e;
+        o.action = 4;  // ACTION_OUTSIDE
+        o.ox = static_cast<float>(w->fx);
+        o.oy = static_cast<float>(w->fy);
+        w->receiver->Post(o);
+      }
+    }
+  }
+  InputReceiver* r = nullptr;
+  auto it = gWindows.find(gTouchTarget);
+  if (it != gWindows.end() && it->second.receiver) {
+    r = it->second.receiver;
+    e.ox = static_cast<float>(it->second.fx);
+    e.oy = static_cast<float>(it->second.fy);
+  } else if (gWindows.empty() && !gOrphanReceivers.empty()) {
+    r = gOrphanReceivers.back();
+  }
+  if (r) r->Post(e);
+  if (action == 1 || action == 3) gTouchTarget = -1;
+}
+
+void PostToFocused(const TouchEvent& e) {
+  std::lock_guard<std::mutex> g(gWmLock);
+  if (gFocused) gFocused->Post(e);
 }
 
 void InjectKeyboard(TouchEvent::Kind kind, const char* text) {
   TouchEvent e;
   e.kind = kind;
   if (text) e.text = text;
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  if (!gReceivers.empty()) gReceivers.back()->Post(e);
+  PostToFocused(e);
 }
 
 void InjectKey(int action, int keycode) {
@@ -590,16 +824,19 @@ void InjectKey(int action, int keycode) {
   e.kind = TouchEvent::kKey;
   e.action = action;
   e.keycode = keycode;
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  if (!gReceivers.empty()) gReceivers.back()->Post(e);
+  PostToFocused(e);
 }
 
 void SetHostVisible(bool visible) {
   TouchEvent e;
   e.kind = TouchEvent::kVisibility;
   e.action = visible ? 1 : 0;
-  std::lock_guard<std::mutex> g(gReceiversLock);
-  if (!gReceivers.empty()) gReceivers.back()->Post(e);  // any window: all share the main Looper
+  std::lock_guard<std::mutex> g(gWmLock);
+  InputReceiver* r = gFocused;  // any window: all share the main Looper
+  for (auto& [id, w] : gWindows) {
+    if (!r && w.receiver) r = w.receiver;
+  }
+  if (r) r->Post(e);
 }
 
 void InjectText(const char* utf8) { InjectKeyboard(TouchEvent::kText, utf8); }
@@ -607,17 +844,94 @@ void InjectDeleteBackward() { InjectKeyboard(TouchEvent::kDeleteBackward, nullpt
 void InjectEnter() { InjectKeyboard(TouchEvent::kEnter, nullptr); }
 void SetImeListener(void (*listener)(int visible)) { gImeListener = listener; }
 
-// Tests: ANDROPKG_TEST_TAP=x,y taps once, ANDROPKG_TEST_SWIPE=x1,y1,x2,y2 drags (300 ms),
-// shortly after the first frame.
-void MaybeTestTap(uint64_t frame) {
-  if (frame != 1) return;
+// ---- tests ------------------------------------------------------------------------------
+//
+// Started by the first frame shown:
+//   ANDROPKG_TEST_TAP=x,y [+ ANDROPKG_TEST_TYPE=text], ANDROPKG_TEST_SWIPE=x1,y1,x2,y2,
+//   ANDROPKG_TEST_BACK=1, ANDROPKG_TEST_BACKGROUND=1 — one action each;
+//   ANDROPKG_TEST_SCRIPT="cmd; cmd; ..." — a scenario, with commands
+//     wait MS | tap X,Y | swipe X1,Y1,X2,Y2 | type TEXT | del | enter | key CODE | back |
+//     bg | fg | shot PATH (the screen as shown now, as PNG) | log TEXT
+
+void Tap(float x, float y) {
+  InjectTouch(0, x, y);
+  usleep(80 * 1000);
+  InjectTouch(1, x, y);
+}
+
+void Swipe(float x, float y, float x2, float y2) {
+  InjectTouch(0, x, y);
+  constexpr int kSteps = 20;
+  for (int i = 1; i <= kSteps; i++) {
+    usleep(15 * 1000);
+    InjectTouch(2, x + (x2 - x) * i / kSteps, y + (y2 - y) * i / kSteps);
+  }
+  InjectTouch(1, x2, y2);
+}
+
+void RunTestScript(std::string script) {
+  usleep(300 * 1000);
+  size_t pos = 0;
+  while (pos <= script.size()) {
+    size_t end = script.find(';', pos);
+    if (end == std::string::npos) end = script.size();
+    std::string cmd = script.substr(pos, end - pos);
+    pos = end + 1;
+    size_t b = cmd.find_first_not_of(" \t\n");
+    if (b == std::string::npos) continue;
+    cmd = cmd.substr(b);
+    size_t sp = cmd.find(' ');
+    std::string op = cmd.substr(0, sp), arg = sp == std::string::npos ? "" : cmd.substr(sp + 1);
+    float x = 0, y = 0, x2 = 0, y2 = 0;
+    ALOGI("test: %s", cmd.c_str());
+    if (op == "wait") {
+      usleep(static_cast<useconds_t>(atoi(arg.c_str())) * 1000);
+    } else if (op == "tap" && sscanf(arg.c_str(), "%f,%f", &x, &y) == 2) {
+      Tap(x, y);
+    } else if (op == "swipe" && sscanf(arg.c_str(), "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
+      Swipe(x, y, x2, y2);
+    } else if (op == "type") {
+      InjectKeyboard(TouchEvent::kText, arg.c_str());
+    } else if (op == "del") {
+      InjectKeyboard(TouchEvent::kDeleteBackward, nullptr);
+    } else if (op == "enter") {
+      InjectKeyboard(TouchEvent::kEnter, nullptr);
+    } else if (op == "key" || op == "back") {
+      int code = op == "back" ? 4 : atoi(arg.c_str());
+      InjectKey(0, code);
+      usleep(50 * 1000);
+      InjectKey(1, code);
+    } else if (op == "bg" || op == "fg") {
+      SetHostVisible(op == "fg");
+    } else if (op == "shot") {
+      // A relative path is under $TMPDIR (on iOS: the app container's tmp/).
+      std::string path = arg;
+      const char* tmp = getenv("TMPDIR");
+      if (!path.empty() && path[0] != '/' && tmp) path = std::string(tmp) + "/" + path;
+      std::lock_guard<std::mutex> g(gLastFrameLock);
+      if (gLastW > 0 && WritePngTo(path.c_str(), gLastFrame.data(), gLastW, gLastH, gLastW * 4)) {
+        ALOGI("test: shot %dx%d -> %s", gLastW, gLastH, path.c_str());
+      }
+    } else if (op == "log") {
+      // logged above
+    } else {
+      ALOGW("test: unknown command '%s'", cmd.c_str());
+    }
+  }
+  ALOGI("test: script done");
+}
+
+void MaybeStartTests() {
+  static std::atomic<bool> started{false};
+  if (started.exchange(true)) return;
   float x = 0, y = 0, x2 = 0, y2 = 0;
+  if (const char* script = getenv("ANDROPKG_TEST_SCRIPT")) {
+    std::thread(RunTestScript, std::string(script)).detach();
+  }
   if (const char* tap = getenv("ANDROPKG_TEST_TAP"); tap && sscanf(tap, "%f,%f", &x, &y) == 2) {
     std::thread([x, y] {
       usleep(300 * 1000);
-      InjectTouch(0, x, y);
-      usleep(80 * 1000);
-      InjectTouch(1, x, y);
+      Tap(x, y);
       if (const char* type = getenv("ANDROPKG_TEST_TYPE")) {  // then type into what got focus
         usleep(300 * 1000);
         InjectKeyboard(TouchEvent::kText, type);
@@ -643,13 +957,7 @@ void MaybeTestTap(uint64_t frame) {
   if (const char* sw = getenv("ANDROPKG_TEST_SWIPE"); sw && sscanf(sw, "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
     std::thread([x, y, x2, y2] {
       usleep(300 * 1000);
-      InjectTouch(0, x, y);
-      constexpr int kSteps = 20;
-      for (int i = 1; i <= kSteps; i++) {
-        usleep(15 * 1000);
-        InjectTouch(2, x + (x2 - x) * i / kSteps, y + (y2 - y) * i / kSteps);
-      }
-      InjectTouch(1, x2, y2);
+      Swipe(x, y, x2, y2);
     }).detach();
   }
 }
@@ -745,8 +1053,39 @@ void Register(JNIEnv* env, const char* className, const JNINativeMethod* methods
 
 }  // namespace
 
+namespace {
+// An inert HardwareRenderer: views that insist on one (the text Magnifier, SurfaceView's
+// renderers) get a real root RenderNode and a proxy that draws nothing, instead of an
+// UnsatisfiedLinkError. Windows themselves draw through the software path.
+jclass gRenderNodeClass;
+jmethodID gRenderNodeCreate;  // RenderNode.nCreate(String)
+jlong hr_createRootRenderNode(JNIEnv* env, jclass) {
+  jstring name = env->NewStringUTF("RootRenderNode");
+  jlong node = env->CallStaticLongMethod(gRenderNodeClass, gRenderNodeCreate, name);
+  env->DeleteLocalRef(name);
+  return node;
+}
+jlong hr_createProxy(JNIEnv*, jclass, jboolean, jlong) {
+  static char proxy;  // never dereferenced: every per-renderer native is inert
+  return reinterpret_cast<jlong>(&proxy);
+}
+}  // namespace
+
 namespace android {
+int register_android_view_ThreadedRenderer(JNIEnv* env);
+
 int register_andropkg_window(JNIEnv* env) {
+  ZeroFillNatives(env, "android/graphics/HardwareRenderer");
+  register_android_view_ThreadedRenderer(env);  // the process-wide config natives, as before
+  jclass rn = env->FindClass("android/graphics/RenderNode");
+  gRenderNodeClass = static_cast<jclass>(env->NewGlobalRef(rn));
+  gRenderNodeCreate = env->GetStaticMethodID(rn, "nCreate", "(Ljava/lang/String;)J");
+  static const JNINativeMethod kHardwareRenderer[] = {
+      M("nCreateRootRenderNode", "()J", hr_createRootRenderNode),
+      M("nCreateProxy", "(ZJ)J", hr_createProxy),
+  };
+  REGISTER("android/graphics/HardwareRenderer", kHardwareRenderer);
+
   for (const char* inert : {"android/view/SurfaceControl", "android/view/SurfaceSession",
                             "android/graphics/BLASTBufferQueue", "android/view/Surface",
                             "android/view/InputChannel", "android/view/InputEventReceiver",
@@ -842,6 +1181,8 @@ int register_andropkg_window(JNIEnv* env) {
   jclass ier = env->FindClass("android/view/InputEventReceiver");
   gInput.dispatchInputEvent = env->GetMethodID(ier, "dispatchInputEvent", "(ILandroid/view/InputEvent;)V");
   gInput.onFocusEvent = env->GetMethodID(ier, "onFocusEvent", "(Z)V");
+  gInput.offsetLocation = env->GetMethodID(me, "offsetLocation", "(FF)V");
+  gInput.channelPtr = env->GetFieldID(env->FindClass("android/view/InputChannel"), "mPtr", "J");
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
     return -1;

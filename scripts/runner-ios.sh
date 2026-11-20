@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds the iOS runtime + runner app, installs it on a connected iPhone and runs Hello.dex.
 #   scripts/runner-ios.sh [MainClass [dex-under-android-root]]   (default: Hello test/hello.dex)
-#   scripts/runner-ios.sh --apk <name>        runs build/apps/<name>.apk as an Android app
+#   scripts/runner-ios.sh --apk <name>        runs build/apps/<name>.apk (or build/apps-ext/<name>.apk,
+#                                             third-party APKs) as an Android app
 #   ANDROPKG_DEVICE=<udid> to pick a device
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -46,6 +47,6 @@ xcrun devicectl device process launch --device "$dev" --console --terminate-exis
 if [ "${1:-}" = --apk ]; then  # first window frame, for checking: build/ios-frame.png
   xcrun devicectl device copy from --device "$dev" --domain-type appDataContainer \
     --domain-identifier "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" \
-    --source Documents/frame.png --destination "$root/build/ios-frame.png" >/dev/null 2>&1 \
+    --source Library/Caches/frame.png --destination "$root/build/ios-frame.png" >/dev/null 2>&1 \
     && echo "first frame: build/ios-frame.png"
 fi

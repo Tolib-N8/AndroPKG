@@ -91,6 +91,7 @@ public final class AndroPkgSystem {
         appInfo.nativeLibraryDir = dataDir + "/lib";
         appInfo.uid = Process.myUid();
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
+        if (appInfo.metaData == null) appInfo.metaData = (android.os.Bundle) Hidden.getField(parsedPackage, "mAppMetaData");
         new File(dataDir).mkdirs();
 
         packageInfo = new PackageInfo();
@@ -121,6 +122,8 @@ public final class AndroPkgSystem {
         for (Object c : components(field)) {
             T info = (T) Hidden.getField(c, "info");
             info.applicationInfo = appInfo;
+            // As with PackageManager.GET_META_DATA (always on: the app's own components).
+            if (info.metaData == null) info.metaData = (android.os.Bundle) Hidden.getField(c, "metaData");
             out.add(info);
         }
         return out;
@@ -165,6 +168,7 @@ public final class AndroPkgSystem {
         services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
         services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
+        services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
         activityClientController =

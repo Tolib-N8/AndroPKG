@@ -26,7 +26,7 @@ cp "$root/third_party/aosp/frameworks/base/data/keyboards/Virtual.kcm" "$out/sys
 cp "$pb/apex-etc/com.android.i18n/icu/"*.dat "$out/apex/com.android.i18n/etc/icu/"
 cp -R "$pb/apex-etc/com.android.tzdata/." "$out/apex/com.android.tzdata/etc/"
 cp "$root/build/services/services.dex" "$out/system/framework/andropkg-services.dex"
-for a in "$root"/build/apps/*.apk; do
+for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
   [ -f "$a" ] && cp "$a" "$out/test/"
 done
 for t in "$root"/build/tests/*/classes.dex; do

@@ -19,6 +19,9 @@ fail() { echo "FAIL: $1 (log: $log/$2.log)"; exit 1; }
 run() {  # run <name> <expected-regex> <dalvikvm args...>
   name=$1; want=$2; shift 2
   ANDROPKG_BCP=full timeout 300 scripts/run-dalvikvm-mac.sh "$@" >"$log/$name.log" 2>&1 || true
+  # POSIX sh: "VAR=x run ..." assignments outlive the function call; reset them per test.
+  unset ANDROPKG_TEST_TAP ANDROPKG_TEST_TYPE ANDROPKG_TEST_SWIPE ANDROPKG_TEST_BACK ANDROPKG_TEST_BACKGROUND \
+        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME
   grep -qE "$want" "$log/$name.log" || fail "$name" "$name"
   echo "ok   $name"
 }
@@ -53,5 +56,10 @@ done
 echo "ok   storage checks"
 # BACK (the iOS edge swipe) finishes the root activity when asked to (pre-Android-12 rule).
 ANDROPKG_TEST_BACK=1 run back "last activity gone" -Dandropkg.back.finishesRoot=1 $(apk widgets)
+# Windows: a centered dialog takes the tap on its button; a tap outside cancels the next one.
+ANDROPKG_TEST_SCRIPT="wait 800; tap 540,1200; wait 1200; tap 30,2300" \
+  run windows "\[windows\] second dialog cancelled by outside touch" $(apk windows)
+grep -q "\[windows\] dialog button clicked" "$log/windows.log" || fail "windows dialog tap" windows
+echo "ok   windows dialog tap"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

@@ -110,8 +110,8 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
   // Keep the first frame (scripts/runner-ios.sh pulls it for checking); with a test tap,
   // keep the latest so the result of the tap can be checked too.
   if (frames++ == 0 || getenv("ANDROPKG_TEST_TAP")) {
-    NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    [UIImagePNGRepresentation(image) writeToFile:[docs stringByAppendingPathComponent:@"frame.png"] atomically:YES];
+    NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    [UIImagePNGRepresentation(image) writeToFile:[caches stringByAppendingPathComponent:@"frame.png"] atomically:YES];
     if (frames == 1) Log([NSString stringWithFormat:@"first frame %dx%d", w, h]);
   }
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -134,6 +134,9 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   setenv("ANDROID_TZDATA_ROOT", path(@"apex/com.android.tzdata").c_str(), 1);
   setenv("ANDROID_DATA", data.fileSystemRepresentation, 1);
   setenv("ANDROPKG_ANDROID_ROOT", root.fileSystemRepresentation, 1);  // /system/... -> bundle
+  // Shared storage (/storage/emulated/0, /sdcard): the app's Documents, shown in the Files app.
+  NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+  setenv("ANDROPKG_STORAGE_DIR", docs.fileSystemRepresentation, 1);
 
   // Full Android 14 BOOTCLASSPATH (device paths, staged into the bundle).
   std::string bcp;
@@ -225,8 +228,11 @@ static void* VMThread(void*) {
     dex_rel = "system/framework/andropkg-services.dex";
     main_class = "dev/andropkg/system/AndroPkgSystem";
     NSString* name = [@(apk).lastPathComponent stringByDeletingPathExtension];
-    NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString* data = [[docs stringByAppendingPathComponent:@"data/app"] stringByAppendingPathComponent:name];
+    // App-private data (/data/user/0/<pkg>): Library/Application Support, not user-visible.
+    NSString* support =
+        NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    NSString* data = [[support stringByAppendingPathComponent:@"andropkg/data/app"] stringByAppendingPathComponent:name];
+    [NSFileManager.defaultManager createDirectoryAtPath:data withIntermediateDirectories:YES attributes:nil error:nil];
     main_args = {[root stringByAppendingPathComponent:@(apk)].fileSystemRepresentation, data.fileSystemRepresentation};
   } else {
     // ANDROPKG_DEX / ANDROPKG_MAIN select a plain-Java test (default: test/hello.dex, Hello).
