@@ -37,3 +37,8 @@ echo "ok   hello-apk frame ($frame)"
 ANDROPKG_TEST_SWIPE=540,2000,540,600 run widgets "WidgetsTest.*onCreate done" $(apk widgets)
 grep -q "Fatal signal" "$log/widgets.log" && fail "widgets crashed" widgets
 echo "ok   widgets swipe"
+# Own Application + ContentProvider, startActivityForResult, back stack order.
+run multi "\[multi\] Main.onDestroy" $(apk multi)
+grep -q "picked=second note" "$log/multi.log" || fail "multi result" multi
+grep -q "provider rows: first note;second note;" "$log/multi.log" || fail "multi provider" multi
+echo "ok   multi result+provider"

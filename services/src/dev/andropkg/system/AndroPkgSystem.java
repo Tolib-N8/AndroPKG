@@ -39,7 +39,7 @@ public final class AndroPkgSystem {
     static PackageInfo packageInfo;
     static Object appThread;         // android.app.IApplicationThread
     static IInterface activityClientController;
-    static final Map<IBinder, ActivityInfo> activities = new HashMap<>();
+    static final ActivityStack stack = new ActivityStack();
 
     public static void main(String[] args) throws Exception {
         apkPath = args[0];
@@ -98,20 +98,36 @@ public final class AndroPkgSystem {
         packageInfo.applicationInfo = appInfo;
         packageInfo.versionName = (String) Hidden.getField(parsedPackage, "mVersionName");
         packageInfo.activities = activityInfos().toArray(new ActivityInfo[0]);
+        packageInfo.receivers = AndroPkgSystem.<ActivityInfo>infos("receivers").toArray(new ActivityInfo[0]);
+        packageInfo.providers = AndroPkgSystem.<android.content.pm.ProviderInfo>infos("providers")
+                .toArray(new android.content.pm.ProviderInfo[0]);
+        packageInfo.services = AndroPkgSystem.<android.content.pm.ServiceInfo>infos("services")
+                .toArray(new android.content.pm.ServiceInfo[0]);
+        packageInfo.versionCode = (int) Hidden.getField(parsedPackage, "mVersionCode");
 
         if (launchActivity == null) launchActivity = findLauncherActivity();
     }
 
+    /** PackageParser.Package components: "activities", "receivers", "providers", "services". */
     @SuppressWarnings("unchecked")
-    static List<ActivityInfo> activityInfos() {
-        List<Object> acts = (List<Object>) Hidden.getField(parsedPackage, "activities");
-        List<ActivityInfo> out = new java.util.ArrayList<>();
-        for (Object a : acts) {
-            ActivityInfo info = (ActivityInfo) Hidden.getField(a, "info");
+    static List<Object> components(String field) {
+        return (List<Object>) Hidden.getField(parsedPackage, field);
+    }
+
+    /** The ComponentInfos of one kind, bound to the app's ApplicationInfo. */
+    @SuppressWarnings("unchecked")
+    static <T extends android.content.pm.ComponentInfo> List<T> infos(String field) {
+        List<T> out = new java.util.ArrayList<>();
+        for (Object c : components(field)) {
+            T info = (T) Hidden.getField(c, "info");
             info.applicationInfo = appInfo;
             out.add(info);
         }
         return out;
+    }
+
+    static List<ActivityInfo> activityInfos() {
+        return infos("activities");
     }
 
     @SuppressWarnings("unchecked")
@@ -203,37 +219,23 @@ public final class AndroPkgSystem {
                     "DEFAULT_COMPATIBILITY_INFO");
             Hidden.call(thread, "bindApplication",
                     appInfo.processName, appInfo, null, null,
+                    // The app's own content providers are installed in-process by bindApplication.
                     Hidden.callStatic(Hidden.cls("android.content.pm.ProviderInfoList"), "fromList",
-                            new java.util.ArrayList<>()) /* providers */, null /* testName */, null /* profiler */, null, null, null,
+                            infos("providers")) /* providers */, null /* testName */, null /* profiler */, null, null, null,
                     0 /* debugMode */, false, false, false, false /* persistent */,
                     config, compat, null /* services */, new Bundle() /* coreSettings */,
                     "unknown" /* buildSerial */, null, null, new long[0], null,
                     0L, 0L);
-            startActivity(launchActivity);
+            ActivityInfo info = activityInfo(launchActivity);
+            Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setComponent(new ComponentName(appInfo.packageName, info.name))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            stack.start(info, intent, null, null, -1);
         }
 
         public void finishAttachApplication(long startSeq) {}
 
         public int getCurrentUser$() { return 0; }
-    }
-
-    static void startActivity(String className) {
-        ActivityInfo info = activityInfo(className);
-        Intent intent = new Intent(Intent.ACTION_MAIN)
-                .addCategory(Intent.CATEGORY_LAUNCHER)
-                .setComponent(new ComponentName(appInfo.packageName, className));
-        IBinder token = new Binder();
-        activities.put(token, info);
-        Configuration config = WindowManagerImpl.displayConfiguration(Resources.getSystem().getConfiguration());
-
-        Object launch = Hidden.callStatic(Hidden.cls("android.app.servertransaction.LaunchActivityItem"),
-                "obtain", intent, 0, info, config, new Configuration(), 0 /* deviceId */,
-                null /* referrer */, null, 2 /* ActivityManager.PROCESS_STATE_TOP (hidden) */, null, null, null,
-                null, null, true /* isForward */, null, new Binder() /* assistToken */,
-                activityClientController, new Binder(), false, null);
-        Object resume = Hidden.callStatic(Hidden.cls("android.app.servertransaction.ResumeActivityItem"),
-                "obtain", true /* isForward */, false);
-        schedule(token, launch, resume);
     }
 
     static void schedule(IBinder token, Object callback, Object lifecycle) {
@@ -247,22 +249,31 @@ public final class AndroPkgSystem {
     /** IActivityTaskManager. */
     static final class ActivityTaskManagerImpl {
         public Object getActivityClientController() { return activityClientController; }
+
+        // startActivity(IApplicationThread caller, String callingPackage, String callingFeatureId,
+        //     Intent intent, String resolvedType, IBinder resultTo, String resultWho, int requestCode,
+        //     int flags, ProfilerInfo profilerInfo, Bundle options)
+        public int startActivity(Object caller, String callingPackage, String callingFeatureId, Intent intent,
+                String resolvedType, IBinder resultTo, String resultWho, int requestCode, int flags,
+                Object profilerInfo, Bundle options) {
+            ActivityInfo info = ActivityStack.resolve(intent);
+            if (info == null) {
+                Log.w(TAG, "no activity for " + intent);
+                return -92;  // ActivityManager.START_CLASS_NOT_FOUND -> ActivityNotFoundException
+            }
+            return stack.start(info, intent, resultTo, resultWho, requestCode);
+        }
     }
 
     /** IActivityClientController: callbacks from the app's activities. */
     static final class ActivityClientControllerImpl {
         public boolean finishActivity(IBinder token, int resultCode, Intent data, int finishTask) {
-            Log.i(TAG, "finishActivity " + activities.get(token).name);
-            Object destroy = Hidden.callStatic(
-                    Hidden.cls("android.app.servertransaction.DestroyActivityItem"), "obtain", true, 0);
-            schedule(token, null, destroy);
-            return true;
+            return stack.finish(token, resultCode, data);
         }
 
         public void activityDestroyed(IBinder token) {
-            ActivityInfo info = activities.remove(token);
-            Log.i(TAG, "activityDestroyed " + (info != null ? info.name : token));
-            if (activities.isEmpty()) {
+            stack.destroyed(token);
+            if (stack.isEmpty()) {
                 Log.i(TAG, "last activity gone; app finished");
                 System.exit(0);
             }
@@ -281,6 +292,56 @@ public final class AndroPkgSystem {
 
         public ActivityInfo getActivityInfo(ComponentName c, long flags, int userId) {
             return appInfo.packageName.equals(c.getPackageName()) ? activityInfo(c.getClassName()) : null;
+        }
+
+        public android.content.pm.ProviderInfo getProviderInfo(ComponentName c, long flags, int userId) {
+            return find(AndroPkgSystem.<android.content.pm.ProviderInfo>infos("providers"), c);
+        }
+
+        public android.content.pm.ServiceInfo getServiceInfo(ComponentName c, long flags, int userId) {
+            return find(AndroPkgSystem.<android.content.pm.ServiceInfo>infos("services"), c);
+        }
+
+        public ActivityInfo getReceiverInfo(ComponentName c, long flags, int userId) {
+            return find(AndroPkgSystem.<ActivityInfo>infos("receivers"), c);
+        }
+
+        public android.content.pm.ProviderInfo resolveContentProvider(String authority, long flags, int userId) {
+            for (android.content.pm.ProviderInfo p : AndroPkgSystem.<android.content.pm.ProviderInfo>infos("providers")) {
+                if (p.authority != null && java.util.Arrays.asList(p.authority.split(";")).contains(authority)) return p;
+            }
+            return null;
+        }
+
+        public android.content.pm.ResolveInfo resolveIntent(Intent intent, String type, long flags, int userId) {
+            ActivityInfo ai = ActivityStack.resolve(intent);
+            if (ai == null) return null;
+            android.content.pm.ResolveInfo ri = new android.content.pm.ResolveInfo();
+            ri.activityInfo = ai;
+            return ri;
+        }
+
+        public Object queryIntentActivities(Intent intent, String type, long flags, int userId) {
+            List<android.content.pm.ResolveInfo> list = new java.util.ArrayList<>();
+            android.content.pm.ResolveInfo ri = resolveIntent(intent, type, flags, userId);
+            if (ri != null) list.add(ri);
+            return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), list);
+        }
+
+        public int getComponentEnabledSetting(ComponentName c, int userId) { return 0; }
+        public int getApplicationEnabledSetting(String pkg, int userId) { return 0; }
+        public String getInstallerPackageName(String pkg) { return null; }
+        public int getPackageUid(String pkg, long flags, int userId) {
+            return appInfo.packageName.equals(pkg) ? appInfo.uid : -1;
+        }
+        public String[] getPackagesForUid(int uid) { return new String[] {appInfo.packageName}; }
+
+        private static <T extends android.content.pm.ComponentInfo> T find(List<T> list, ComponentName c) {
+            if (!appInfo.packageName.equals(c.getPackageName())) return null;
+            for (T i : list) {
+                if (i.name.equals(c.getClassName())) return i;
+            }
+            return null;
         }
 
         public boolean hasSystemFeature(String name, int version) { return false; }
