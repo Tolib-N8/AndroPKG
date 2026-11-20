@@ -25,10 +25,13 @@ static void Log(NSString* s) {
 // The Android display is the native screen (same pixel size), so a frame maps 1:1.
 static UIImageView* g_frame_view;
 static void (*g_inject_touch)(int action, float x, float y);
+static void (*g_ime_insert_text)(const char* utf8);
+static void (*g_ime_delete_backward)();
+static void (*g_ime_enter)();
 
 // Touches on the Android window, in window pixels (MotionEvent actions; first finger only
 // until multi-touch lands).
-@interface AndroidWindowView : UIImageView
+@interface AndroidWindowView : UIImageView <UIKeyInput>
 @end
 @implementation AndroidWindowView {
   UITouch* _tracked;
@@ -39,6 +42,26 @@ static void (*g_inject_touch)(int action, float x, float y);
   CGFloat sx = self.image.size.width * self.image.scale / self.bounds.size.width;
   CGFloat sy = self.image.size.height * self.image.scale / self.bounds.size.height;
   g_inject_touch(action, static_cast<float>(p.x * sx), static_cast<float>(p.y * sy));
+}
+// The iOS keyboard types into the focused Android text editor (andropkg's host IME).
+- (BOOL)canBecomeFirstResponder {
+  return YES;
+}
+- (BOOL)hasText {
+  return YES;
+}
+- (void)insertText:(NSString*)text {
+  if ([text isEqualToString:@"\n"]) {
+    if (g_ime_enter) g_ime_enter();
+  } else if (g_ime_insert_text) {
+    g_ime_insert_text(text.UTF8String);
+  }
+}
+- (void)deleteBackward {
+  if (g_ime_delete_backward) g_ime_delete_backward();
+}
+- (UITextAutocorrectionType)autocorrectionType {
+  return UITextAutocorrectionTypeNo;  // no marked/replaced text yet: plain key input
 }
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
   if (_tracked) return;
@@ -144,6 +167,21 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
     set_sink(FrameSink, nullptr);
   }
   g_inject_touch = reinterpret_cast<void (*)(int, float, float)>(dlsym(RTLD_DEFAULT, "andropkg_inject_touch"));
+  g_ime_insert_text = reinterpret_cast<void (*)(const char*)>(dlsym(RTLD_DEFAULT, "andropkg_ime_insert_text"));
+  g_ime_delete_backward = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_delete_backward"));
+  g_ime_enter = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_enter"));
+  if (auto set_ime = reinterpret_cast<void (*)(void (*)(int))>(dlsym(RTLD_DEFAULT, "andropkg_set_ime_listener"))) {
+    set_ime([](int visible) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (visible) {
+          [g_frame_view becomeFirstResponder];
+        } else {
+          [g_frame_view resignFirstResponder];
+        }
+        Log(visible ? @"keyboard shown" : @"keyboard hidden");
+      });
+    });
+  }
 
   jclass cls = env->FindClass(main_class);
   jmethodID main = cls ? env->GetStaticMethodID(cls, "main", "([Ljava/lang/String;)V") : nullptr;

@@ -54,7 +54,24 @@ extern "C" __attribute__((visibility("default"))) void andropkg_set_frame_sink(F
   gSink = sink;
 }
 
-namespace { void InjectTouch(int action, float x, float y); }
+namespace {
+void InjectTouch(int action, float x, float y);
+void InjectText(const char* utf8);
+void InjectDeleteBackward();
+void InjectEnter();
+void SetImeListener(void (*listener)(int visible));
+}  // namespace
+
+/// Host keyboard -> the focused text editor of the focused window.
+extern "C" __attribute__((visibility("default"))) void andropkg_ime_insert_text(const char* utf8) {
+  InjectText(utf8);
+}
+extern "C" __attribute__((visibility("default"))) void andropkg_ime_delete_backward() { InjectDeleteBackward(); }
+extern "C" __attribute__((visibility("default"))) void andropkg_ime_enter() { InjectEnter(); }
+/// `listener(1)` when a text editor gains focus (show the keyboard), `listener(0)` to hide it.
+extern "C" __attribute__((visibility("default"))) void andropkg_set_ime_listener(void (*listener)(int visible)) {
+  SetImeListener(listener);
+}
 
 /// Called by the host: a touch at window pixel (x, y). action is MotionEvent's
 /// (0 down, 1 up, 2 move, 3 cancel). Delivered on the focused window's Looper.
@@ -303,10 +320,48 @@ struct {
   jmethodID dispatchInputEvent;  // InputEventReceiver.dispatchInputEvent(int seq, InputEvent)
 } gInput;
 
+// Host input for the focused window, delivered on its Looper: a touch, or keyboard text.
 struct TouchEvent {
-  int action;
-  float x, y;
+  enum Kind { kTouch, kText, kDeleteBackward, kEnter } kind = kTouch;
+  int action = 0;
+  float x = 0, y = 0;
+  std::string text;
 };
+
+// dev.andropkg.system.HostIme (services; system class loader): the host keyboard as IME.
+struct {
+  jclass clazz;
+  jmethodID onTouchUp, commitText, deleteBackward, enter;
+} gIme;
+using ImeListener = void (*)(int visible);
+std::atomic<ImeListener> gImeListener{nullptr};
+
+void ime_setKeyboardVisible(JNIEnv*, jclass, jboolean visible) {
+  if (ImeListener l = gImeListener.load()) l(visible ? 1 : 0);
+  if (getenv("ANDROPKG_DEBUG_IME")) ALOGI("ime: keyboard %s", visible ? "shown" : "hidden");
+}
+
+bool InitIme(JNIEnv* env) {
+  if (gIme.clazz) return true;
+  jclass loaderClass = env->FindClass("java/lang/ClassLoader");
+  jmethodID getSystem = env->GetStaticMethodID(loaderClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+  jmethodID loadClass = env->GetMethodID(loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+  jobject loader = env->CallStaticObjectMethod(loaderClass, getSystem);
+  jstring name = env->NewStringUTF("dev.andropkg.system.HostIme");
+  jclass c = static_cast<jclass>(env->CallObjectMethod(loader, loadClass, name));
+  if (env->ExceptionCheck() || c == nullptr) {
+    env->ExceptionClear();
+    return false;  // not running under andropkg's services
+  }
+  JNINativeMethod m = {"nativeSetKeyboardVisible", "(Z)V", reinterpret_cast<void*>(ime_setKeyboardVisible)};
+  env->RegisterNatives(c, &m, 1);
+  gIme.onTouchUp = env->GetStaticMethodID(c, "onTouchUp", "()V");
+  gIme.commitText = env->GetStaticMethodID(c, "commitText", "(Ljava/lang/String;)V");
+  gIme.deleteBackward = env->GetStaticMethodID(c, "deleteBackward", "()V");
+  gIme.enter = env->GetStaticMethodID(c, "enter", "()V");
+  gIme.clazz = static_cast<jclass>(env->NewGlobalRef(c));
+  return true;
+}
 
 class InputReceiver : public android::MessageHandler {
  public:
@@ -331,6 +386,19 @@ class InputReceiver : public android::MessageHandler {
         e = pending_.front();
         pending_.pop_front();
       }
+      if (e.kind != TouchEvent::kTouch) {
+        if (InitIme(env)) {
+          if (e.kind == TouchEvent::kText) {
+            jstring s = env->NewStringUTF(e.text.c_str());
+            env->CallStaticVoidMethod(gIme.clazz, gIme.commitText, s);
+            env->DeleteLocalRef(s);
+          } else {
+            env->CallStaticVoidMethod(gIme.clazz, e.kind == TouchEvent::kEnter ? gIme.enter : gIme.deleteBackward);
+          }
+        }
+        queue_->raiseAndClearException(env, "host keyboard");
+        continue;
+      }
       jlong now = systemTime(SYSTEM_TIME_MONOTONIC) / 1000000;  // SystemClock.uptimeMillis()
       if (e.action == 0 /* ACTION_DOWN */) down_time_ = now;
       jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtain, down_time_, now, e.action,
@@ -343,6 +411,11 @@ class InputReceiver : public android::MessageHandler {
       }
       env->DeleteLocalRef(ev);
       queue_->raiseAndClearException(env, "dispatchInputEvent");
+      if (e.action == 1 /* ACTION_UP */ && InitIme(env)) {
+        // After the view tree handled the tap (focus may have moved to a text editor).
+        env->CallStaticVoidMethod(gIme.clazz, gIme.onTouchUp);
+        queue_->raiseAndClearException(env, "HostIme.onTouchUp");
+      }
     }
   }
 
@@ -382,9 +455,26 @@ void ier_dispose(JNIEnv*, jclass, jlong ptr) {
 }
 
 void InjectTouch(int action, float x, float y) {
+  TouchEvent e;
+  e.action = action;
+  e.x = x;
+  e.y = y;
   std::lock_guard<std::mutex> g(gReceiversLock);
-  if (!gReceivers.empty()) gReceivers.back()->Post({action, x, y});
+  if (!gReceivers.empty()) gReceivers.back()->Post(e);
 }
+
+void InjectKeyboard(TouchEvent::Kind kind, const char* text) {
+  TouchEvent e;
+  e.kind = kind;
+  if (text) e.text = text;
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  if (!gReceivers.empty()) gReceivers.back()->Post(e);
+}
+
+void InjectText(const char* utf8) { InjectKeyboard(TouchEvent::kText, utf8); }
+void InjectDeleteBackward() { InjectKeyboard(TouchEvent::kDeleteBackward, nullptr); }
+void InjectEnter() { InjectKeyboard(TouchEvent::kEnter, nullptr); }
+void SetImeListener(void (*listener)(int visible)) { gImeListener = listener; }
 
 // Tests: ANDROPKG_TEST_TAP=x,y taps once, ANDROPKG_TEST_SWIPE=x1,y1,x2,y2 drags (300 ms),
 // shortly after the first frame.
@@ -397,6 +487,10 @@ void MaybeTestTap(uint64_t frame) {
       InjectTouch(0, x, y);
       usleep(80 * 1000);
       InjectTouch(1, x, y);
+      if (const char* type = getenv("ANDROPKG_TEST_TYPE")) {  // then type into what got focus
+        usleep(300 * 1000);
+        InjectKeyboard(TouchEvent::kText, type);
+      }
     }).detach();
   }
   if (const char* sw = getenv("ANDROPKG_TEST_SWIPE"); sw && sscanf(sw, "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {

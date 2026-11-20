@@ -42,3 +42,7 @@ run multi "\[multi\] Main.onDestroy" $(apk multi)
 grep -q "picked=second note" "$log/multi.log" || fail "multi result" multi
 grep -q "provider rows: first note;second note;" "$log/multi.log" || fail "multi provider" multi
 echo "ok   multi result+provider"
+# Host keyboard: a tap focuses the EditText (keyboard shown), typed text reaches it.
+ANDROPKG_DEBUG_IME=1 ANDROPKG_TEST_TAP=400,680 ANDROPKG_TEST_TYPE="typed" \
+  run ime "ime: keyboard shown" $(apk widgets)
+echo "ok   ime"

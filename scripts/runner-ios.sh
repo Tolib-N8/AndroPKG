@@ -27,6 +27,7 @@ if [ "${1:-}" = --apk ]; then
   [ -n "${ANDROPKG_INTERACTIVE:-}" ] || envs="$envs, \"ANDROPKG_AUTOFINISH\": \"1\""
   # ANDROPKG_TEST_TAP=x,y (window pixels): one tap after the first frame.
   [ -z "${ANDROPKG_TEST_TAP:-}" ] || envs="$envs, \"ANDROPKG_TEST_TAP\": \"$ANDROPKG_TEST_TAP\""
+  [ -z "${ANDROPKG_TEST_TYPE:-}" ] || envs="$envs, \"ANDROPKG_TEST_TYPE\": \"$ANDROPKG_TEST_TYPE\""
 else
   main=${1:-Hello}
   dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
