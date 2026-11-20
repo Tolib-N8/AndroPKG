@@ -1,0 +1,4 @@
+// Copy to Config/Local.xcconfig (gitignored) and fill in.
+DEVELOPMENT_TEAM = XXXXXXXXXX
+// Must be unique for free (Personal Team) accounts.
+ANDROPKG_BUNDLE_PREFIX = dev.andropkg.yourname

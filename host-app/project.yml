@@ -1,0 +1,55 @@
+name: AndroPkgRunner
+options:
+  deploymentTarget:
+    iOS: "17.4"   # os_sync_wait_on_address (futex emulation)
+configFiles:
+  Debug: ../Config/Local.xcconfig
+  Release: ../Config/Local.xcconfig
+targets:
+  AndroPkgRunner:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../build/ios-stage/android-root
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        # Free (Personal Team) profiles allow only 3 sideloaded apps per device, so all andropkg
+        # dev apps share one bundle id / slot (installing one replaces the other).
+        PRODUCT_BUNDLE_IDENTIFIER: $(ANDROPKG_BUNDLE_PREFIX).spikes
+        PRODUCT_NAME: AndroPkgRunner
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: AndroPkg
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown"
+        CODE_SIGN_STYLE: Automatic
+        ARCHS: arm64
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CLANG_ENABLE_OBJC_ARC: YES
+        CLANG_CXX_LANGUAGE_STANDARD: gnu++17
+        ENABLE_DEBUG_DYLIB: NO
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../third_party/aosp/libnativehelper/include_jni"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
+        OTHER_LDFLAGS: "$(SRCROOT)/../build/runtime-ios/libart.dylib -framework UIKit -framework Foundation"
+    dependencies:
+      # The andropkg runtime (ART + libcore natives), signed on embed. libart is linked; the
+      # JNI libraries are dlopen()ed by ART ("libjavacore.so" -> @rpath/libjavacore.dylib).
+      - framework: ../build/runtime-ios/libart.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: ../build/runtime-ios/libjavacore.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: ../build/runtime-ios/libopenjdk.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: ../build/runtime-ios/libicu_jni.dylib
+        embed: true
+        codeSign: true
+        link: false

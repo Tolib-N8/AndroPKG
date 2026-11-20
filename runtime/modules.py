@@ -1,0 +1,100 @@
+# andropkg runtime: which AOSP modules we build and how they deviate from Android.bp.
+# Consumed by tools/gen_cmake.py. AOSP (abs path) and PLATFORM ("macos"|"ios") are injected.
+import os
+ANDROPKG = os.path.normpath(os.path.join(AOSP, "..", ".."))
+
+VARIANT = dict(arch="arm64", targets=("host", "darwin", "not_windows"), codegen=())
+
+# Soong's global defaults that matter for this code base.
+GLOBAL_CFLAGS = [
+    "-D__STDC_FORMAT_MACROS", "-D__STDC_CONSTANT_MACROS", "-D_FILE_OFFSET_BITS=64",
+    "-fno-exceptions", "-Wno-unused-parameter", "-Wno-missing-field-initializers",
+    "-Wno-unknown-warning-option", "-Wno-deprecated-declarations", "-Wno-unused-command-line-argument",
+    "-Wno-thread-safety-negative", "-Wno-c99-designator", "-Wno-gnu-designator",
+    "-DANDROPKG=1",
+    "-DANDROID",  # Soong defines it for every module, host builds included (≠ __ANDROID__)
+    # Soong builds everything with zero-initialized stack/alloca memory, and some AOSP code
+    # silently depends on it (e.g. ART's vtable linking BitVector over alloca()).
+    "-ftrivial-auto-var-init=zero",
+]
+GLOBAL_CPPFLAGS = ["-std=gnu++17", "-Wno-c++11-narrowing", "-Wno-strict-primary-template-shadow", "-fno-rtti", "-Wno-c++20-designator", "-Wno-deprecated-copy"]
+GLOBAL_CONLYFLAGS = ["-std=gnu17"]
+
+# art/build/art.go globalFlags() + hostFlags() for our configuration (interpreter only).
+# Stack-overflow gaps must be multiples of the 16 KB Darwin page (static_asserts check all ISAs).
+ART_CFLAGS = [
+    "-DART_DEFAULT_GC_TYPE_IS_CMC", "-DART_USE_READ_BARRIER=1", "-DART_READ_BARRIER_TYPE_IS_BAKER=1",
+    "-DART_USE_GENERATIONAL_CC=1", "-DART_USE_TLAB=1", "-DART_DEFAULT_COMPACT_DEX_LEVEL=fast",
+    "-DART_STACK_OVERFLOW_GAP_arm=16384", "-DART_STACK_OVERFLOW_GAP_arm64=16384",
+    "-DART_STACK_OVERFLOW_GAP_riscv64=16384", "-DART_STACK_OVERFLOW_GAP_x86=16384",
+    "-DART_STACK_OVERFLOW_GAP_x86_64=16384", "-DUSE_D8_DESUGAR=1",
+    "-DART_FRAME_SIZE_LIMIT=1736", "-DART_BASE_ADDRESS=0x60000000",
+    "-DART_BASE_ADDRESS_MIN_DELTA=(-0x1000000)", "-DART_BASE_ADDRESS_MAX_DELTA=0x1000000",
+    "-Wno-shadow", "-Wno-used-but-marked-unused", "-Wno-deprecated", "-Wno-unreachable-code",
+    "-Wno-unreachable-code-break", "-Wno-unreachable-code-return", "-Wno-float-equal",
+]
+ART_ASFLAGS = ["-DART_USE_READ_BARRIER=1", "-DART_READ_BARRIER_TYPE_IS_BAKER=1"]
+
+# Headers for dependencies that aren't (yet) built from AOSP modules.
+EXTERNAL_INCLUDES = {
+    # NDK stub library; the real headers are ICU4C's.
+    "libicu": [f"{AOSP}/external/icu/icu4c/source/common", f"{AOSP}/external/icu/icu4c/source/i18n",
+               f"{AOSP}/external/icu/android_icu4c/include"],  # uconfig_local.h (with -DANDROID)
+    "libcrypto": [f"{AOSP}/external/boringssl/src/include"],
+    "libnativehelper_compat_libc++": [f"{AOSP}/libnativehelper/header_only_include"],
+}
+
+TARGETS = [
+    dict(name="fmtlib", bp="fmtlib"),
+    dict(name="liblog", bp="liblog", extra_includes=["system/core/libutils/include", "system/core/libsystem/include"]),
+    dict(name="libbase", bp="libbase"),
+    dict(name="liblz4", bp="liblz4"),
+    dict(name="libziparchive", bp="libziparchive"),
+    dict(name="libartpalette", bp="libartpalette", art=True),
+    dict(name="tinyxml2", bp="libtinyxml2"),
+    # libartbase is linked into libart.dylib, not a separate libartbase.dylib.
+    dict(name="libartbase", bp="libartbase", art=True, cflags=["-DART_STATIC_LIBARTBASE"]),
+    dict(name="libdexfile", bp="libdexfile", art=True),
+    dict(name="libprofile", bp="libprofile", art=True),
+    dict(name="libelffile", bp="libelffile", art=True,
+         exclude_srcs=["art/libelffile/elf/xz_utils.cc"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/art/xz_utils_disabled.cc"]),
+    # Android.bp picks sigchain_fake.cc for darwin; ART's fault handler needs the real chain.
+    dict(name="libsigchain", bp="libsigchain", art=True,
+         exclude_srcs=["art/sigchainlib/sigchain_fake.cc"], extra_srcs=["art/sigchainlib/sigchain.cc"]),
+    dict(name="libnativebridge", bp="libnativebridge", art=True),
+    dict(name="libnativeloader", bp="libnativeloader", art=True),
+    # JniInvocation.c is the dlopen("libart.so") proxy; we link ART into the same image.
+    dict(name="libnativehelper", bp="libnativehelper",
+         exclude_srcs=["libnativehelper/JniInvocation.c", "libnativehelper/DlHelp.c"]),
+    dict(name="libodrstatslog", bp="libodrstatslog", art=True),
+    dict(name="libart", bp="libart", art=True,
+         exclude_srcs=["art/runtime/interpreter/mterp/nterp_impl.cc",
+                       "art/runtime/backtrace_helper.cc",
+                       "art/runtime/native_stack_dump.cc"],
+         skip_generated=["libart_mterp.arm64ng"],
+         # ELF/GNU-as sources ported to Mach-O at build time (tools/elf2macho_asm.py).
+         asm_port=["art/runtime/arch/arm64", "art/runtime/arch/quick_alloc_entrypoints.S",
+                   "art/runtime/interpreter/cfi_asm_support.h"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/art/nterp_disabled.cc",
+                        f"{ANDROPKG}/runtime/art/native_stack_darwin.cc",
+                        f"{ANDROPKG}/runtime/art/jni_invocation_inproc.cc"]),
+    dict(name="libopenjdkjvm", bp="libopenjdkjvm", art=True),
+
+    # ---- ICU4C (one shared copy, inside libart.dylib) --------------------------------
+    dict(name="libicuuc", bp="libicuuc"),
+    dict(name="libicui18n", bp="libicui18n"),
+    dict(name="libicuuc_stubdata", bp="libicuuc_stubdata"),  # real data: icudt72l.dat via libandroidicuinit
+    dict(name="libandroidicuinit", bp="libandroidicuinit"),
+
+    # ---- libcore JNI libraries (separate dylibs loaded by Runtime::InitNativeMethods) -
+    dict(name="libandroidio", bp="libandroidio"),
+    dict(name="libexpat", bp="libexpat"),
+    dict(name="libfdlibm", bp="libfdlibm"),
+    dict(name="libicu_jni", bp="libicu_jni"),
+    # TODO(M3): build BoringSSL and drop the NativeBN stub (BigInteger fast paths).
+    dict(name="libjavacore", bp="libjavacore",
+         exclude_srcs=["libcore/luni/src/main/native/libcore_math_NativeBN.cpp"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/libcore/NativeBN_disabled.cpp"]),
+    dict(name="libopenjdk", bp="libopenjdk"),
+]

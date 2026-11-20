@@ -1,0 +1,13 @@
+diff --git a/icu4c/source/common/udata.cpp b/icu4c/source/common/udata.cpp
+index f2381e2..33336d0 100644
+--- a/icu4c/source/common/udata.cpp
++++ b/icu4c/source/common/udata.cpp
+@@ -125,7 +125,7 @@ static UDataFileAccess  gDataFileAccess = UDATA_NO_FILES;
+ 
+ // BEGIN Android-added: Include android/host-linux-specific headers and variables.
+ #ifdef ANDROID // if using the AOSP build system, e.g. Soong, but not the normal GNU make used by ./updateicudata.py
+-  #if U_PLATFORM == U_PF_ANDROID ||  U_PLATFORM == U_PF_LINUX // if targeting Android or host linux
++  #if U_PLATFORM == U_PF_ANDROID ||  U_PLATFORM == U_PF_LINUX || U_PLATFORM == U_PF_DARWIN || U_PLATFORM == U_PF_IPHONE // andropkg: +Darwin/iOS
+     #define AOSP_ICU_INIT 1
+   #endif
+ #endif

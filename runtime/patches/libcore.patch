@@ -1,0 +1,107 @@
+diff --git a/luni/src/main/native/AsynchronousCloseMonitor.cpp b/luni/src/main/native/AsynchronousCloseMonitor.cpp
+index 1a13029..e75d25d 100644
+--- a/luni/src/main/native/AsynchronousCloseMonitor.cpp
++++ b/luni/src/main/native/AsynchronousCloseMonitor.cpp
+@@ -67,7 +67,11 @@ static AsynchronousCloseMonitorImpl* blockedThreadList = NULL;
+ #if defined(__Fuchsia__)
+ static const int BLOCKED_THREAD_SIGNAL = SIGRTMIN + 2;
+ #elif !defined (__BIONIC__)
++#if defined(__APPLE__)
++static const int BLOCKED_THREAD_SIGNAL = ANDROPKG_BLOCKED_IO_SIGNAL;  // andropkg
++#else
+ static const int BLOCKED_THREAD_SIGNAL = SIGRTMAX - 2;
++#endif
+ #else
+ static const int BLOCKED_THREAD_SIGNAL = __SIGRTMIN + 2;
+ #endif
+diff --git a/luni/src/main/native/libcore_io_Linux.cpp b/luni/src/main/native/libcore_io_Linux.cpp
+index 43a6b1a..5a0946f 100644
+--- a/luni/src/main/native/libcore_io_Linux.cpp
++++ b/luni/src/main/native/libcore_io_Linux.cpp
+@@ -1595,9 +1595,13 @@ static jobject Linux_getsockoptUcred(JNIEnv* env, jobject, jobject javaFd, jint
+ static jint Linux_gettid(JNIEnv* env __unused, jobject) {
+ #if defined(__BIONIC__)
+   return TEMP_FAILURE_RETRY(gettid());
++#else
++#if defined(__APPLE__)
++  return andropkg_gettid();  // andropkg
+ #else
+   return syscall(__NR_gettid);
+ #endif
++#endif
+ }
+ 
+ static jint Linux_getuid(JNIEnv*, jobject) {
+@@ -2665,8 +2669,12 @@ static jstring Linux_strerror(JNIEnv* env, jobject, jint errnum) {
+       return env->NewStringUTF(android::base::StringPrintf("Unknown error %d", errnum).c_str());
+     }
+     return env->NewStringUTF(buffer);
++#else
++#if defined(__APPLE__)  // andropkg: XSI strerror_r (returns int) on Darwin
++    const char* message = strerror_r(errnum, buffer, sizeof(buffer)) == 0 ? buffer : "Unknown error";
+ #else
+     const char* message = strerror_r(errnum, buffer, sizeof(buffer));
++#endif
+     return env->NewStringUTF(message);
+ #endif
+ }
+diff --git a/ojluni/src/main/native/FileDescriptor_md.c b/ojluni/src/main/native/FileDescriptor_md.c
+index 880f5ea..66d6de8 100644
+--- a/ojluni/src/main/native/FileDescriptor_md.c
++++ b/ojluni/src/main/native/FileDescriptor_md.c
+@@ -66,7 +66,11 @@ JNIEXPORT jboolean JNICALL FileDescriptor_isSocket(JNIEnv *env, jclass ignored,
+     // BEGIN Android-changed: isSocket - do not clear socket error code
+     int domain;
+     socklen_t domain_length = sizeof(domain);
++#if defined(__APPLE__)  // andropkg: no SO_DOMAIN; SO_TYPE also succeeds only on sockets.
++    return TEMP_FAILURE_RETRY(getsockopt(fd, SOL_SOCKET, SO_TYPE, &domain, &domain_length)) == 0;
++#else
+     return TEMP_FAILURE_RETRY(getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &domain_length)) == 0;
++#endif
+     // END Android-changed: isSocket - do not clear socket error code
+ }
+ 
+diff --git a/ojluni/src/main/native/NativeThread.c b/ojluni/src/main/native/NativeThread.c
+index 83aa0ae..d182a8c 100644
+--- a/ojluni/src/main/native/NativeThread.c
++++ b/ojluni/src/main/native/NativeThread.c
+@@ -46,6 +46,10 @@
+   #else
+     #define INTERRUPT_SIGNAL (__SIGRTMIN + 2)
+   #endif
++#elif defined(__APPLE__)  // andropkg: as in OpenJDK's BSD/macOS port
++  #include <pthread.h>
++  #include <signal.h>
++  #define INTERRUPT_SIGNAL SIGIO
+ #elif __solaris__
+   #include <thread.h>
+   #include <signal.h>
+diff --git a/ojluni/src/main/native/linux_close.cpp b/ojluni/src/main/native/linux_close.cpp
+index f588d63..bd58dec 100644
+--- a/ojluni/src/main/native/linux_close.cpp
++++ b/ojluni/src/main/native/linux_close.cpp
+@@ -50,7 +50,11 @@ extern "C" {
+ // __SIGRTMIN + 2, not __SIGRTMAX - 2
+ // Also use SIGRTMAX instead of __SIGRTMAX, which is not defined by musl.
+ #if !defined (__BIONIC__)
++#if defined(__APPLE__)
++static int sigWakeup = ANDROPKG_BLOCKED_IO_SIGNAL;  // andropkg: no RT signals on Darwin
++#else
+ static int sigWakeup = (SIGRTMAX - 2);
++#endif
+ #else
+ static int sigWakeup = (__SIGRTMIN + 2);
+ #endif
+diff --git a/ojluni/src/main/native/net_util_md.h b/ojluni/src/main/native/net_util_md.h
+index 67a6c97..d8bb44b 100644
+--- a/ojluni/src/main/native/net_util_md.h
++++ b/ojluni/src/main/native/net_util_md.h
+@@ -40,7 +40,7 @@
+ 
+ // Android-changed: Fuchsia: Use the non-JVM NET_* on Fuchsia also.
+ // #if defined(__linux__) || defined(MACOSX)
+-#if defined(__linux__) || defined(MACOSX) || defined(__Fuchsia__)
++#if defined(__linux__) || defined(MACOSX) || defined(__Fuchsia__) || defined(__APPLE__)  // andropkg
+ extern int NET_Timeout(int s, long timeout);
+ extern int NET_Read(int s, void* buf, size_t len);
+ extern int NET_RecvFrom(int s, void *buf, int len, unsigned int flags,

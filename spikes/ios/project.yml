@@ -1,0 +1,42 @@
+name: AndroPkgSpikes
+options:
+  deploymentTarget:
+    iOS: "17.0"
+configFiles:
+  Debug: ../../Config/Local.xcconfig
+  Release: ../../Config/Local.xcconfig
+targets:
+  AndroPkgSpikes:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../common
+      - path: ../../loader/src
+      - path: ../../shim/src
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(ANDROPKG_BUNDLE_PREFIX).spikes
+        PRODUCT_NAME: AndroPkgSpikes
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: AndroPkg Spikes
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown"
+        CODE_SIGN_STYLE: Automatic
+        ARCHS: arm64
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CLANG_ENABLE_OBJC_ARC: YES
+        GCC_C_LANGUAGE_STANDARD: gnu11
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../../loader/include $(SRCROOT)/../../shim/include $(SRCROOT)/../common"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
+    dependencies:
+      # Android ELFs wrapped by the converter; Xcode signs them on copy.
+      - framework: Generated/libspike.elf.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: Generated/libspike_relr.elf.dylib
+        embed: true
+        codeSign: true
+        link: false

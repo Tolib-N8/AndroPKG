@@ -1,0 +1,952 @@
+diff --git a/libartbase/base/globals.h b/libartbase/base/globals.h
+index 4103154..fccc469 100644
+--- a/libartbase/base/globals.h
++++ b/libartbase/base/globals.h
+@@ -36,7 +36,12 @@ static constexpr size_t kStackAlignment = 16;
+ 
+ // System page size. We check this against sysconf(_SC_PAGE_SIZE) at runtime, but use a simple
+ // compile-time constant so the compiler can generate better code.
++#if defined(__APPLE__)
++// andropkg: Darwin arm64 (iOS and Apple-silicon macOS) uses 16 KB pages.
++static constexpr size_t kPageSize = 16384;
++#else
+ static constexpr size_t kPageSize = 4096;
++#endif
+ 
+ // TODO: Kernels for arm and x86 in both, 32-bit and 64-bit modes use 512 entries per page-table
+ // page. Find a way to confirm that in userspace.
+diff --git a/libartbase/base/mem_map.cc b/libartbase/base/mem_map.cc
+index 04c11ed..a66be30 100644
+--- a/libartbase/base/mem_map.cc
++++ b/libartbase/base/mem_map.cc
+@@ -15,6 +15,9 @@
+  */
+ 
+ #include "mem_map.h"
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
+ 
+ #include <inttypes.h>
+ #include <stdlib.h>
+@@ -146,6 +149,16 @@ static uintptr_t GenerateNextMemPos() {
+ 
+ // Initialize linear scan to random position.
+ uintptr_t MemMap::next_mem_pos_ = GenerateNextMemPos();
++
++#if defined(__APPLE__)
++// andropkg: Darwin maps nothing below 4 GB, so ART's "low 4 GB" is the reference arena
++// [base, base + 4 GB) and compressed references are base-relative (andropkg/ref_arena.h).
++static uintptr_t Low4GBStart() { return gAndropkgRefBase + kAndropkgRefArenaGuard; }
++static uintptr_t Low4GBEnd() { return gAndropkgRefEnd; }
++#else
++static constexpr uintptr_t Low4GBStart() { return LOW_MEM_START; }
++static constexpr uintptr_t Low4GBEnd() { return 4 * GB; }
++#endif
+ #endif
+ 
+ // Return true if the address range is contained in a single memory map by either reading
+@@ -261,11 +274,17 @@ void* MemMap::TryMemMapLow4GB(void* ptr,
+                                     int flags,
+                                     int fd,
+                                     off_t offset) {
++#if defined(__APPLE__)
++  // andropkg: the arena is our own PROT_NONE reservation and the caller checked gMaps, so the
++  // range is ours to replace.
++  flags |= MAP_FIXED;
++#endif
+   void* actual = TargetMMap(ptr, page_aligned_byte_count, prot, flags, fd, offset);
+   if (actual != MAP_FAILED) {
+     // Since we didn't use MAP_FIXED the kernel may have mapped it somewhere not in the low
+     // 4GB. If this is the case, unmap and retry.
+-    if (reinterpret_cast<uintptr_t>(actual) + page_aligned_byte_count >= 4 * GB) {
++    if (reinterpret_cast<uintptr_t>(actual) + page_aligned_byte_count > Low4GBEnd() ||
++        reinterpret_cast<uintptr_t>(actual) < Low4GBStart()) {
+       TargetMUnmap(actual, page_aligned_byte_count);
+       actual = MAP_FAILED;
+     }
+@@ -364,6 +383,16 @@ MemMap MemMap::MapAnonymous(const char* name,
+     }
+     return Invalid();
+   }
++#if defined(__APPLE__)
++  CHECK(!low_4gb || actual == MAP_FAILED ||
++        AndropkgInRefArena(reinterpret_cast<uintptr_t>(actual), page_aligned_byte_count))
++      << "andropkg: low_4gb MapAnonymous(" << name << ") -> " << actual << " outside the arena";
++  if (low_4gb && getenv("ANDROPKG_VERBOSE") != nullptr) {
++    fprintf(stderr, "andropkg: map %-40s req=%p -> %p .. %p%s\n", name, addr, actual,
++            reinterpret_cast<uint8_t*>(actual) + page_aligned_byte_count,
++            reservation != nullptr ? " (from reservation)" : "");
++  }
++#endif
+   if (!CheckMapRequest(addr, actual, page_aligned_byte_count, error_msg)) {
+     return Invalid();
+   }
+@@ -1019,6 +1048,9 @@ void MemMap::Init() {
+   gMaps = new Maps;
+ 
+   TargetMMapInit();
++#if defined(__APPLE__)
++  AndropkgReserveRefArena();
++#endif
+ }
+ 
+ bool MemMap::IsInitialized() { return mem_maps_lock_ != nullptr; }
+@@ -1071,7 +1103,10 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
+   bool first_run = true;
+ 
+   std::lock_guard<std::mutex> mu(*mem_maps_lock_);
+-  for (uintptr_t ptr = next_mem_pos_; ptr < 4 * GB; ptr += kPageSize) {
++  if (next_mem_pos_ < Low4GBStart() || next_mem_pos_ >= Low4GBEnd()) {
++    next_mem_pos_ = Low4GBStart();
++  }
++  for (uintptr_t ptr = next_mem_pos_; ptr < Low4GBEnd(); ptr += kPageSize) {
+     // Use gMaps as an optimization to skip over large maps.
+     // Find the first map which is address > ptr.
+     auto it = gMaps->upper_bound(reinterpret_cast<void*>(ptr));
+@@ -1102,11 +1137,11 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
+       return actual;
+     }
+ 
+-    if (4U * GB - ptr < length) {
++    if (Low4GBEnd() - ptr < length) {
+       // Not enough memory until 4GB.
+       if (first_run) {
+         // Try another time from the bottom;
+-        ptr = LOW_MEM_START - kPageSize;
++        ptr = Low4GBStart() - kPageSize;
+         first_run = false;
+         continue;
+       } else {
+@@ -1119,6 +1154,11 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
+ 
+     // Check pages are free.
+     bool safe = true;
++#if defined(__APPLE__)
++    // andropkg: inside the arena every page is "mapped" (PROT_NONE reservation), so msync
++    // can't tell free from used; gMaps (checked above) is authoritative.
++    tail_ptr = ptr + length;
++#else
+     for (tail_ptr = ptr; tail_ptr < ptr + length; tail_ptr += kPageSize) {
+       if (msync(reinterpret_cast<void*>(tail_ptr), kPageSize, 0) == 0) {
+         safe = false;
+@@ -1127,6 +1167,7 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
+         DCHECK_EQ(errno, ENOMEM);
+       }
+     }
++#endif
+ 
+     next_mem_pos_ = tail_ptr;  // update early, as we break out when we found and mapped a region
+ 
+@@ -1163,11 +1204,21 @@ void* MemMap::MapInternal(void* addr,
+ #ifdef __LP64__
+   // When requesting low_4g memory and having an expectation, the requested range should fit into
+   // 4GB.
++#if defined(__APPLE__)
++  // andropkg: callers pass "low 4GB" address hints (e.g. the heap's preferred 300MB); rebase
++  // them into the reference arena so the intended layout is kept.
++  if (low_4gb && addr != nullptr &&
++      reinterpret_cast<uintptr_t>(addr) + length <= 4 * GB && gAndropkgRefBase != 0) {
++    addr = reinterpret_cast<void*>(gAndropkgRefBase + reinterpret_cast<uintptr_t>(addr));
++  }
++  if (low_4gb && addr != nullptr && !AndropkgInRefArena(reinterpret_cast<uintptr_t>(addr), length)) {
++#else
+   if (low_4gb && (
+       // Start out of bounds.
+       (reinterpret_cast<uintptr_t>(addr) >> 32) != 0 ||
+       // End out of bounds. For simplicity, this will fail for the last page of memory.
+       ((reinterpret_cast<uintptr_t>(addr) + length) >> 32) != 0)) {
++#endif
+     LOG(ERROR) << "The requested address space (" << addr << ", "
+                << reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(addr) + length)
+                << ") cannot fit in low_4gb";
+@@ -1182,6 +1233,30 @@ void* MemMap::MapInternal(void* addr,
+   // 1) It is doubtful that MAP_32BIT on x86_64 is doing the right job for us
+   void* actual = MAP_FAILED;
+ #if USE_ART_LOW_4G_ALLOCATOR
++#if defined(__APPLE__)
++  // andropkg: every low_4gb mapping must land inside the reference arena. A plain mmap() hint
++  // there is useless (the arena is our own PROT_NONE reservation, so the kernel would place
++  // the mapping elsewhere and compressed references would silently wrap).
++  if (low_4gb && addr != nullptr) {
++    uintptr_t a = reinterpret_cast<uintptr_t>(addr);
++    bool use_hint = (flags & MAP_FIXED) != 0;  // caller owns the range (e.g. a reservation)
++    if (!use_hint) {
++      std::lock_guard<std::mutex> mu(*mem_maps_lock_);
++      use_hint = true;
++      for (const auto& entry : *gMaps) {
++        uintptr_t b = reinterpret_cast<uintptr_t>(entry.second->BaseBegin());
++        uintptr_t e = reinterpret_cast<uintptr_t>(entry.second->BaseEnd());
++        if (a < e && b < a + length) { use_hint = false; break; }
++      }
++    }
++    if (use_hint) {
++      void* actual = TargetMMap(addr, length, prot, flags | MAP_FIXED, fd, offset);
++      CHECK(actual == MAP_FAILED || actual == addr);
++      return actual;
++    }
++    addr = nullptr;  // hint taken: let the arena allocator pick
++  }
++#endif
+   // MAP_32BIT only available on x86_64.
+   if (low_4gb && addr == nullptr) {
+     // The linear-scan allocator has an issue when executable pages are denied (e.g., by selinux
+@@ -1196,6 +1271,10 @@ void* MemMap::MapInternal(void* addr,
+     if (actual == MAP_FAILED) {
+       return MAP_FAILED;
+     }
++#if defined(__APPLE__)
++    CHECK(AndropkgInRefArena(reinterpret_cast<uintptr_t>(actual), length))
++        << "andropkg: low_4gb mapping " << actual << " outside the reference arena";
++#endif
+ 
+     // See if we need to remap with the executable bit now.
+     if (orig_prot != prot_non_exec) {
+diff --git a/libartbase/base/mem_map_unix.cc b/libartbase/base/mem_map_unix.cc
+index ac854df..d38da76 100644
+--- a/libartbase/base/mem_map_unix.cc
++++ b/libartbase/base/mem_map_unix.cc
+@@ -16,6 +16,10 @@
+ 
+ #include "mem_map.h"
+ 
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
++
+ #include "mman.h"
+ 
+ namespace art {
+@@ -29,6 +33,13 @@ void* MemMap::TargetMMap(void* start, size_t len, int prot, int flags, int fd, o
+ }
+ 
+ int MemMap::TargetMUnmap(void* start, size_t len) {
++#if defined(__APPLE__)
++  // andropkg: never punch holes into the reference arena; re-reserve instead.
++  if (AndropkgInRefArena(reinterpret_cast<uintptr_t>(start), len)) {
++    void* r = mmap(start, len, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
++    return r == MAP_FAILED ? -1 : 0;
++  }
++#endif
+   return munmap(start, len);
+ }
+ 
+diff --git a/libartbase/base/utils.cc b/libartbase/base/utils.cc
+index e114e4d..505738e 100644
+--- a/libartbase/base/utils.cc
++++ b/libartbase/base/utils.cc
+@@ -160,6 +160,11 @@ bool FlushCpuCaches(void* begin, void* end) {
+ 
+ #endif
+ 
++#if defined(__APPLE__)
++// andropkg: not a Linux kernel; Linux-version-gated features (uffd, MREMAP_DONTUNMAP) are off.
++bool IsKernelVersionAtLeast(int, int) { return false; }
++#endif
++
+ #if defined(__linux__)
+ bool IsKernelVersionAtLeast(int reqd_major, int reqd_minor) {
+   struct utsname uts;
+diff --git a/libartbase/base/utils.h b/libartbase/base/utils.h
+index f311f09..63524fc 100644
+--- a/libartbase/base/utils.h
++++ b/libartbase/base/utils.h
+@@ -129,7 +129,7 @@ NO_RETURN void SleepForever();
+ // Flush CPU caches. Returns true on success, false if flush failed.
+ WARN_UNUSED bool FlushCpuCaches(void* begin, void* end);
+ 
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__APPLE__)  // andropkg: always false on Darwin
+ bool IsKernelVersionAtLeast(int reqd_major, int reqd_minor);
+ #endif
+ 
+diff --git a/libnativeloader/native_loader.cpp b/libnativeloader/native_loader.cpp
+index 2deb5ef..98ac736 100644
+--- a/libnativeloader/native_loader.cpp
++++ b/libnativeloader/native_loader.cpp
+@@ -311,6 +311,21 @@ void* OpenNativeLibrary(JNIEnv* env, int32_t target_sdk_version, const char* pat
+     if (handle != nullptr) {
+       return handle;
+     }
++#if defined(__APPLE__)
++    // andropkg: the runtime's own JNI libraries ship as signed dylibs next to libart
++    // ("libjavacore.so" -> "@rpath/libjavacore.dylib"). App libraries (ELF .so) are handled
++    // by the native bridge (andropkg ELF loader).
++    if (path_arg != nullptr && strchr(path_arg, '/') == nullptr) {
++      std::string name(path_arg);
++      if (name.size() > 3 && name.compare(name.size() - 3, 3, ".so") == 0) {
++        std::string dylib = "@rpath/" + name.substr(0, name.size() - 3) + ".dylib";
++        handle = dlopen(dylib.c_str(), RTLD_NOW);
++        if (handle != nullptr) {
++          return handle;
++        }
++      }
++    }
++#endif
+     if (NativeBridgeIsSupported(path_arg)) {
+       *needs_native_bridge = true;
+       handle = NativeBridgeLoadLibrary(path_arg, RTLD_NOW);
+diff --git a/runtime/arch/arm64/context_arm64.cc b/runtime/arch/arm64/context_arm64.cc
+index eca9ed7..31103fd 100644
+--- a/runtime/arch/arm64/context_arm64.cc
++++ b/runtime/arch/arm64/context_arm64.cc
+@@ -59,7 +59,9 @@ void Arm64Context::FillCalleeSaves(uint8_t* frame, const QuickMethodFrameInfo& f
+ 
+   // FP registers come second, from the highest down to the lowest.
+   for (uint32_t fp_reg : HighToLowBits(frame_info.FpSpillMask())) {
+-    fprs_[fp_reg] = CalleeSaveAddress(frame, spill_pos, frame_info.FrameSizeInBytes());
++    // andropkg: uint64_t and uintptr_t are distinct types on Darwin.
++    fprs_[fp_reg] = reinterpret_cast<uint64_t*>(
++        CalleeSaveAddress(frame, spill_pos, frame_info.FrameSizeInBytes()));
+     ++spill_pos;
+   }
+   DCHECK_EQ(spill_pos, POPCOUNT(frame_info.CoreSpillMask()) + POPCOUNT(frame_info.FpSpillMask()));
+@@ -69,7 +71,8 @@ void Arm64Context::SetGPR(uint32_t reg, uintptr_t value) {
+   DCHECK_LT(reg, arraysize(gprs_));
+   // Note: we use kPC == XZR, so do not ensure that reg != XZR.
+   DCHECK(IsAccessibleGPR(reg));
+-  DCHECK_NE(gprs_[reg], &gZero);  // Can't overwrite this static value since they are never reset.
++  // Can't overwrite this static value since they are never reset.
++  DCHECK_NE(reinterpret_cast<const void*>(gprs_[reg]), reinterpret_cast<const void*>(&gZero));
+   *gprs_[reg] = value;
+ }
+ 
+@@ -82,7 +85,7 @@ void Arm64Context::SetFPR(uint32_t reg, uintptr_t value) {
+ 
+ void Arm64Context::SmashCallerSaves() {
+   // This needs to be 0 because we want a null/zero return value.
+-  gprs_[X0] = const_cast<uint64_t*>(&gZero);
++  gprs_[X0] = reinterpret_cast<uintptr_t*>(const_cast<uint64_t*>(&gZero));  // andropkg: distinct types on Darwin
+   gprs_[X1] = nullptr;
+   gprs_[X2] = nullptr;
+   gprs_[X3] = nullptr;
+diff --git a/runtime/arch/arm64/fault_handler_arm64.cc b/runtime/arch/arm64/fault_handler_arm64.cc
+index 3878b57..03bb183 100644
+--- a/runtime/arch/arm64/fault_handler_arm64.cc
++++ b/runtime/arch/arm64/fault_handler_arm64.cc
+@@ -36,6 +36,27 @@ extern "C" void art_quick_implicit_suspend();
+ // ARM64 specific fault handler functions.
+ //
+ 
++
++// andropkg: Darwin's ucontext_t holds a pointer to __darwin_mcontext64 with differently named
++// fields. This view exposes the Linux-style names the code below uses. x0..x28, fp (x29)
++// and lr (x30) are contiguous in __ss, so regs[30] is lr exactly as on Linux.
++#if defined(__APPLE__)
++namespace {
++struct ArtMcontextView {
++  uint64_t& pc;
++  uint64_t& sp;
++  uint64_t* regs;
++  uint64_t fault_address;
++  ArtMcontextView* operator->() { return this; }
++};
++}  // namespace
++#define ANDROPKG_MC_DECL(mc, uc)                                              \
++  ArtMcontextView mc{(uc)->uc_mcontext->__ss.__pc, (uc)->uc_mcontext->__ss.__sp, \
++                     &(uc)->uc_mcontext->__ss.__x[0], (uc)->uc_mcontext->__es.__far}
++#else
++#define ANDROPKG_MC_DECL(mc, uc) mcontext_t* mc = reinterpret_cast<mcontext_t*>(&(uc)->uc_mcontext)
++#endif
++
+ namespace art {
+ 
+ uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo, void* context) {
+@@ -48,7 +69,7 @@ uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo, void* context) {
+   }
+ 
+   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
+-  mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
++  ANDROPKG_MC_DECL(mc, uc);
+   if (mc->sp == 0) {
+     VLOG(signals) << "Missing SP";
+     return 0u;
+@@ -58,7 +79,7 @@ uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo, void* context) {
+ 
+ uintptr_t FaultManager::GetFaultSp(void* context) {
+   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
+-  mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
++  ANDROPKG_MC_DECL(mc, uc);
+   return mc->sp;
+ }
+ 
+@@ -75,7 +96,7 @@ bool NullPointerHandler::Action(int sig ATTRIBUTE_UNUSED, siginfo_t* info, void*
+   // that the handler can get the needed data from the Nterp frame.
+ 
+   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
+-  mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
++  ANDROPKG_MC_DECL(mc, uc);
+   ArtMethod** sp = reinterpret_cast<ArtMethod**>(mc->sp);
+   uintptr_t return_pc = mc->pc + 4u;
+   if (!IsValidMethod(*sp) || !IsValidReturnPc(sp, return_pc)) {
+@@ -103,7 +124,7 @@ bool SuspensionHandler::Action(int sig ATTRIBUTE_UNUSED, siginfo_t* info ATTRIBU
+       0xf9400000 | (kSuspendCheckRegister << 5) | (kSuspendCheckRegister << 0);
+ 
+   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
+-  mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
++  ANDROPKG_MC_DECL(mc, uc);
+ 
+   uint32_t inst = *reinterpret_cast<uint32_t*>(mc->pc);
+   VLOG(signals) << "checking suspend; inst: " << std::hex << inst << " checkinst: " << checkinst;
+@@ -131,9 +152,9 @@ bool SuspensionHandler::Action(int sig ATTRIBUTE_UNUSED, siginfo_t* info ATTRIBU
+ bool StackOverflowHandler::Action(int sig ATTRIBUTE_UNUSED, siginfo_t* info ATTRIBUTE_UNUSED,
+                                   void* context) {
+   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
+-  mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
++  ANDROPKG_MC_DECL(mc, uc);
+   VLOG(signals) << "stack overflow handler with sp at " << std::hex << &uc;
+-  VLOG(signals) << "sigcontext: " << std::hex << mc;
++  VLOG(signals) << "sigcontext: " << std::hex << static_cast<const void*>(uc);
+ 
+   uintptr_t sp = mc->sp;
+   VLOG(signals) << "sp: " << std::hex << sp;
+diff --git a/runtime/art_method-inl.h b/runtime/art_method-inl.h
+index 3ea5130..a392e5f 100644
+--- a/runtime/art_method-inl.h
++++ b/runtime/art_method-inl.h
+@@ -151,9 +151,10 @@ constexpr size_t NumberOfVRegs() {
+   return sum;
+ }
+ 
+-template <char... ArgType>
+-inline ALWAYS_INLINE void FillVRegs(uint32_t* vregs ATTRIBUTE_UNUSED,
+-                                    typename ShortyTraits<ArgType>::Type... args ATTRIBUTE_UNUSED)
++// andropkg: restrict the base case to an empty pack; newer clang treats the variadic
++// base case and the recursive overload as ambiguous.
++template <char... ArgType, typename = std::enable_if_t<sizeof...(ArgType) == 0u>>
++inline ALWAYS_INLINE void FillVRegs(uint32_t* vregs ATTRIBUTE_UNUSED)
+     REQUIRES_SHARED(Locks::mutator_lock_) {}
+ 
+ template <char FirstArgType, char... ArgType>
+@@ -184,7 +185,9 @@ ArtMethod::InvokeStatic(Thread* self, typename detail::ShortyTraits<ArgType>::Ty
+   JValue result;
+   constexpr auto shorty = detail::MaterializeShorty<ReturnType, ArgType...>();
+   auto vregs = detail::MaterializeVRegs<ArgType...>(args...);
+-  Invoke(self, vregs.data(), sizeof(vregs), &result, shorty.data());
++  // andropkg: sizeof(std::array<T, 0>) is sizeof(T) in libc++, but data() is nullptr in
++  // newer libc++; pass the real byte count.
++  Invoke(self, vregs.data(), vregs.size() * sizeof(uint32_t), &result, shorty.data());
+   return detail::ShortyTraits<ReturnType>::Get(result);
+ }
+ 
+@@ -198,7 +201,9 @@ ArtMethod::InvokeInstance(Thread* self,
+   JValue result;
+   constexpr auto shorty = detail::MaterializeShorty<ReturnType, ArgType...>();
+   auto vregs = detail::MaterializeVRegs<'L', ArgType...>(receiver, args...);
+-  Invoke(self, vregs.data(), sizeof(vregs), &result, shorty.data());
++  // andropkg: sizeof(std::array<T, 0>) is sizeof(T) in libc++, but data() is nullptr in
++  // newer libc++; pass the real byte count.
++  Invoke(self, vregs.data(), vregs.size() * sizeof(uint32_t), &result, shorty.data());
+   return detail::ShortyTraits<ReturnType>::Get(result);
+ }
+ 
+diff --git a/runtime/base/mutex-inl.h b/runtime/base/mutex-inl.h
+index dba1e12..755e34b 100644
+--- a/runtime/base/mutex-inl.h
++++ b/runtime/base/mutex-inl.h
+@@ -28,7 +28,7 @@
+ #if ART_USE_FUTEXES
+ #include "linux/futex.h"
+ #include "sys/syscall.h"
+-#ifndef SYS_futex
++#if !defined(SYS_futex) && !defined(__APPLE__)
+ #define SYS_futex __NR_futex
+ #endif
+ #endif  // ART_USE_FUTEXES
+@@ -40,7 +40,11 @@ namespace art {
+ #if ART_USE_FUTEXES
+ static inline int futex(volatile int *uaddr, int op, int val, const struct timespec *timeout,
+                         volatile int *uaddr2, int val3) {
++#if defined(__APPLE__)
++  return andropkg_futex(uaddr, op, val, timeout, uaddr2, val3);
++#else
+   return syscall(SYS_futex, uaddr, op, val, timeout, uaddr2, val3);
++#endif
+ }
+ #endif  // ART_USE_FUTEXES
+ 
+diff --git a/runtime/base/mutex.h b/runtime/base/mutex.h
+index 87e9525..9fa967c 100644
+--- a/runtime/base/mutex.h
++++ b/runtime/base/mutex.h
+@@ -33,7 +33,7 @@
+ #include "base/macros.h"
+ #include "locks.h"
+ 
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__APPLE__)  // andropkg: futexes emulated via os_sync on Darwin
+ #define ART_USE_FUTEXES 1
+ #else
+ #define ART_USE_FUTEXES 0
+diff --git a/runtime/class_linker.cc b/runtime/class_linker.cc
+index c4a3165..28c2338 100644
+--- a/runtime/class_linker.cc
++++ b/runtime/class_linker.cc
+@@ -39,6 +39,7 @@
+ #include "barrier.h"
+ #include "base/arena_allocator.h"
+ #include "base/arena_bit_vector.h"
++#include "base/bit_vector-inl.h"  // andropkg: BitVector::ClearAllBits
+ #include "base/casts.h"
+ #include "base/file_utils.h"
+ #include "base/hash_map.h"
+@@ -8282,6 +8283,9 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
+                                 Allocator::GetNoopAllocator(),
+                                 bit_vector_size,
+                                 bit_vector_buffer_ptr);
++  // andropkg: the buffer may come from alloca(); this constructor does not clear external
++  // storage (AOSP hides that with -ftrivial-auto-var-init=zero).
++  initialized_methods.ClearAllBits();
+ 
+   // Note: our sets hash on the method name, and therefore we pay a high
+   // performance price when a class has many overloads.
+diff --git a/runtime/entrypoints/quick/quick_alloc_entrypoints.cc b/runtime/entrypoints/quick/quick_alloc_entrypoints.cc
+index 7b3d849..fa865cf 100644
+--- a/runtime/entrypoints/quick/quick_alloc_entrypoints.cc
++++ b/runtime/entrypoints/quick/quick_alloc_entrypoints.cc
+@@ -194,7 +194,7 @@ void SetQuickAllocEntryPoints##suffix(QuickEntryPoints* qpoints, bool instrument
+ }
+ 
+ // Generate the entrypoint functions.
+-#if !defined(__APPLE__) || !defined(__LP64__)
++#if !defined(__APPLE__) || !defined(__LP64__) || defined(__aarch64__)  // andropkg: arm64 asm has them
+ GENERATE_ENTRYPOINTS(_dlmalloc)
+ GENERATE_ENTRYPOINTS(_rosalloc)
+ GENERATE_ENTRYPOINTS(_bump_pointer)
+@@ -215,7 +215,7 @@ void SetQuickAllocEntryPointsInstrumented(bool instrumented) {
+ }
+ 
+ void ResetQuickAllocEntryPoints(QuickEntryPoints* qpoints) {
+-#if !defined(__APPLE__) || !defined(__LP64__)
++#if !defined(__APPLE__) || !defined(__LP64__) || defined(__aarch64__)  // andropkg: arm64 asm has them
+   switch (entry_points_allocator) {
+     case gc::kAllocatorTypeDlMalloc: {
+       SetQuickAllocEntryPoints_dlmalloc(qpoints, entry_points_instrumented);
+diff --git a/runtime/gc/heap.cc b/runtime/gc/heap.cc
+index f27bddb..bb8f6c3 100644
+--- a/runtime/gc/heap.cc
++++ b/runtime/gc/heap.cc
+@@ -15,6 +15,9 @@
+  */
+ 
+ #include "heap.h"
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
+ 
+ #include <limits>
+ #include "android-base/thread_annotations.h"
+@@ -707,8 +710,13 @@ Heap::Heap(size_t initial_size,
+   // Start at 4 KB, we can be sure there are no spaces mapped this low since the address range is
+   // reserved by the kernel.
+   static constexpr size_t kMinHeapAddress = 4 * KB;
++#if defined(__APPLE__)  // andropkg: "low 4GB" is the reference arena.
++  card_table_.reset(accounting::CardTable::Create(
++      reinterpret_cast<uint8_t*>(gAndropkgRefBase + kMinHeapAddress), 4 * GB - kMinHeapAddress));
++#else
+   card_table_.reset(accounting::CardTable::Create(reinterpret_cast<uint8_t*>(kMinHeapAddress),
+                                                   4 * GB - kMinHeapAddress));
++#endif
+   CHECK(card_table_.get() != nullptr) << "Failed to create card table";
+   if (foreground_collector_type_ == kCollectorTypeCC && kUseTableLookupReadBarrier) {
+     rb_table_.reset(new accounting::ReadBarrierTable());
+diff --git a/runtime/interpreter/interpreter_common.cc b/runtime/interpreter/interpreter_common.cc
+index ac9980f..b087282 100644
+--- a/runtime/interpreter/interpreter_common.cc
++++ b/runtime/interpreter/interpreter_common.cc
+@@ -296,10 +296,10 @@ void SetStringInitValueToAllAliases(ShadowFrame* shadow_frame,
+   for (uint32_t i = 0, e = shadow_frame->NumberOfVRegs(); i < e; ++i) {
+     if (shadow_frame->GetVRegReference(i) == existing) {
+       DCHECK_EQ(shadow_frame->GetVRegReference(i),
+-                reinterpret_cast32<mirror::Object*>(shadow_frame->GetVReg(i)));
++                (mirror::PtrCompression<false, mirror::Object>::Decompress(shadow_frame->GetVReg(i))));
+       shadow_frame->SetVRegReference(i, result.GetL());
+       DCHECK_EQ(shadow_frame->GetVRegReference(i),
+-                reinterpret_cast32<mirror::Object*>(shadow_frame->GetVReg(i)));
++                (mirror::PtrCompression<false, mirror::Object>::Decompress(shadow_frame->GetVReg(i))));
+     }
+   }
+ }
+@@ -1153,7 +1153,7 @@ static inline void AssignRegister(ShadowFrame* new_shadow_frame, const ShadowFra
+   // If both register locations contains the same value, the register probably holds a reference.
+   // Note: As an optimization, non-moving collectors leave a stale reference value
+   // in the references array even after the original vreg was overwritten to a non-reference.
+-  if (src_value == reinterpret_cast32<uint32_t>(o.Ptr())) {
++  if (src_value == StackReference<mirror::Object>::FromMirrorPtr(o.Ptr()).AsVRegValue()) {
+     new_shadow_frame->SetVRegReference(dest_reg, o);
+   } else {
+     new_shadow_frame->SetVReg(dest_reg, src_value);
+diff --git a/runtime/interpreter/unstarted_runtime.cc b/runtime/interpreter/unstarted_runtime.cc
+index 32ed430..7e3621e 100644
+--- a/runtime/interpreter/unstarted_runtime.cc
++++ b/runtime/interpreter/unstarted_runtime.cc
+@@ -642,7 +642,7 @@ static void GetResourceAsStream(Thread* self,
+   }
+ 
+   uint32_t args[1];
+-  args[0] = reinterpret_cast32<uint32_t>(h_array.Get());
++  args[0] = StackReference<mirror::Object>::FromMirrorPtr(h_array.Get()).AsVRegValue();
+   EnterInterpreterFromInvoke(self, constructor, h_obj.Get(), args, nullptr);
+ 
+   if (self->IsExceptionPending()) {
+@@ -1826,7 +1826,7 @@ void UnstartedRuntime::UnstartedJNIVMRuntimeNewUnpaddedArray(
+     JValue* result) {
+   int32_t length = args[1];
+   DCHECK_GE(length, 0);
+-  ObjPtr<mirror::Object> element_class = reinterpret_cast32<mirror::Object*>(args[0])->AsClass();
++  ObjPtr<mirror::Object> element_class = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]))->AsClass();
+   if (element_class == nullptr) {
+     AbortTransactionOrFail(self, "VMRuntime.newUnpaddedArray with null element_class.");
+     return;
+@@ -1928,7 +1928,7 @@ void UnstartedRuntime::UnstartedJNIStringCompareTo(Thread* self,
+                                                    mirror::Object* receiver,
+                                                    uint32_t* args,
+                                                    JValue* result) {
+-  ObjPtr<mirror::Object> rhs = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> rhs = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (rhs == nullptr) {
+     AbortTransactionOrFail(self, "String.compareTo with null object.");
+     return;
+@@ -2063,7 +2063,7 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeCompareAndSwapInt(
+     mirror::Object* receiver ATTRIBUTE_UNUSED,
+     uint32_t* args,
+     JValue* result) {
+-  ObjPtr<mirror::Object> obj = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> obj = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (obj == nullptr) {
+     AbortTransactionOrFail(self, "Cannot access null object, retry at runtime.");
+     return;
+@@ -2106,7 +2106,7 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeGetIntVolatile(Thread* self,
+                                                         mirror::Object* receiver ATTRIBUTE_UNUSED,
+                                                         uint32_t* args,
+                                                         JValue* result) {
+-  ObjPtr<mirror::Object> obj = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> obj = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (obj == nullptr) {
+     AbortTransactionOrFail(self, "Unsafe.compareAndSwapIntVolatile with null object.");
+     return;
+@@ -2121,13 +2121,13 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafePutObject(Thread* self,
+                                                    mirror::Object* receiver ATTRIBUTE_UNUSED,
+                                                    uint32_t* args,
+                                                    JValue* result ATTRIBUTE_UNUSED) {
+-  ObjPtr<mirror::Object> obj = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> obj = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (obj == nullptr) {
+     AbortTransactionOrFail(self, "Unsafe.putObject with null object.");
+     return;
+   }
+   jlong offset = (static_cast<uint64_t>(args[2]) << 32) | args[1];
+-  ObjPtr<mirror::Object> new_value = reinterpret_cast32<mirror::Object*>(args[3]);
++  ObjPtr<mirror::Object> new_value = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[3]));
+   if (Runtime::Current()->IsActiveTransaction()) {
+     if (!CheckWriteConstraint(self, obj) || !CheckWriteValueConstraint(self, new_value)) {
+       DCHECK(self->IsExceptionPending());
+@@ -2145,7 +2145,7 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeGetArrayBaseOffsetForComponentType(
+     mirror::Object* receiver ATTRIBUTE_UNUSED,
+     uint32_t* args,
+     JValue* result) {
+-  ObjPtr<mirror::Object> component = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> component = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (component == nullptr) {
+     AbortTransactionOrFail(self, "Unsafe.getArrayBaseOffsetForComponentType with null component.");
+     return;
+@@ -2160,7 +2160,7 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeGetArrayIndexScaleForComponentType(
+     mirror::Object* receiver ATTRIBUTE_UNUSED,
+     uint32_t* args,
+     JValue* result) {
+-  ObjPtr<mirror::Object> component = reinterpret_cast32<mirror::Object*>(args[0]);
++  ObjPtr<mirror::Object> component = (mirror::PtrCompression<false, mirror::Object>::Decompress(args[0]));
+   if (component == nullptr) {
+     AbortTransactionOrFail(self, "Unsafe.getArrayIndexScaleForComponentType with null component.");
+     return;
+diff --git a/runtime/jni/jni_env_ext.cc b/runtime/jni/jni_env_ext.cc
+index bef0fd3..3377c35 100644
+--- a/runtime/jni/jni_env_ext.cc
++++ b/runtime/jni/jni_env_ext.cc
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "jni_env_ext.h"
++#include "jni/local_reference_table-inl.h"  // andropkg: needed without LTO/inlining
+ 
+ #include <algorithm>
+ #include <vector>
+diff --git a/runtime/lock_word-inl.h b/runtime/lock_word-inl.h
+index 4a2a293..dbda0bd 100644
+--- a/runtime/lock_word-inl.h
++++ b/runtime/lock_word-inl.h
+@@ -43,7 +43,11 @@ inline Monitor* LockWord::FatLockMonitor() const {
+ 
+ inline size_t LockWord::ForwardingAddress() const {
+   DCHECK_EQ(GetState(), kForwardingAddress);
++#if defined(__APPLE__)
++  return gAndropkgRefBase + (static_cast<size_t>(value_) << kForwardingAddressShift);
++#else
+   return value_ << kForwardingAddressShift;
++#endif
+ }
+ 
+ inline LockWord::LockWord() : value_(0) {
+diff --git a/runtime/lock_word.h b/runtime/lock_word.h
+index 21b40b7..884afab 100644
+--- a/runtime/lock_word.h
++++ b/runtime/lock_word.h
+@@ -21,6 +21,9 @@
+ #include <iosfwd>
+ 
+ #include <android-base/logging.h>
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
+ 
+ #include "base/bit_utils.h"
+ #include "read_barrier.h"
+@@ -150,6 +153,9 @@ class LockWord {
+ 
+   static LockWord FromForwardingAddress(size_t target) {
+     DCHECK_ALIGNED(target, (1 << kStateSize));
++#if defined(__APPLE__)  // andropkg: forwarding addresses are arena-relative (30 bits << 3).
++    target -= gAndropkgRefBase;
++#endif
+     return LockWord((target >> kForwardingAddressShift) | kStateForwardingAddressShifted);
+   }
+ 
+diff --git a/runtime/mirror/object_reference.h b/runtime/mirror/object_reference.h
+index 251bcfd..3f1fd9b 100644
+--- a/runtime/mirror/object_reference.h
++++ b/runtime/mirror/object_reference.h
+@@ -22,6 +22,9 @@
+ 
+ #include "base/atomic.h"
+ #include "base/casts.h"
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
+ #include "base/locks.h"  // For Locks::mutator_lock_.
+ #include "heap_poisoning.h"
+ #include "obj_ptr.h"
+@@ -96,14 +99,22 @@ class PtrCompression {
+  public:
+   // Compress reference to its bit representation.
+   static uint32_t Compress(MirrorType* mirror_ptr) {
++#if defined(__APPLE__)  // andropkg: base-relative references (see andropkg/ref_arena.h)
++    uint32_t as_bits = AndropkgCompressRef(reinterpret_cast<uintptr_t>(mirror_ptr));
++#else
+     uint32_t as_bits = reinterpret_cast32<uint32_t>(mirror_ptr);
++#endif
+     return kPoisonReferences ? -as_bits : as_bits;
+   }
+ 
+   // Uncompress an encoded reference from its bit representation.
+   static MirrorType* Decompress(uint32_t ref) {
+     uint32_t as_bits = kPoisonReferences ? -ref : ref;
++#if defined(__APPLE__)
++    return reinterpret_cast<MirrorType*>(AndropkgDecompressRef(as_bits));
++#else
+     return reinterpret_cast32<MirrorType*>(as_bits);
++#endif
+   }
+ 
+   // Convert an ObjPtr to a compressed reference.
+diff --git a/runtime/native/java_lang_Class.cc b/runtime/native/java_lang_Class.cc
+index 5e54f85..d8f0c69 100644
+--- a/runtime/native/java_lang_Class.cc
++++ b/runtime/native/java_lang_Class.cc
+@@ -938,7 +938,7 @@ static jobject Class_newInstance(JNIEnv* env, jobject javaThis) {
+   }
+   // Invoke the constructor.
+   JValue result;
+-  uint32_t args[1] = { static_cast<uint32_t>(reinterpret_cast<uintptr_t>(receiver.Get())) };
++  uint32_t args[1] = { StackReference<mirror::Object>::FromMirrorPtr(receiver.Get()).AsVRegValue() };
+   constructor->Invoke(soa.Self(), args, sizeof(args), &result, "V");
+   if (UNLIKELY(soa.Self()->IsExceptionPending())) {
+     return nullptr;
+diff --git a/runtime/non_debuggable_classes.cc b/runtime/non_debuggable_classes.cc
+index a35152f..807dc75 100644
+--- a/runtime/non_debuggable_classes.cc
++++ b/runtime/non_debuggable_classes.cc
+@@ -15,6 +15,7 @@
+  */
+ 
+ #include "non_debuggable_classes.h"
++#include "jni/local_reference_table-inl.h"  // andropkg: needed without LTO/inlining
+ 
+ #include "jni/jni_env_ext.h"
+ #include "jni/jni_internal.h"
+diff --git a/runtime/obj_ptr.h b/runtime/obj_ptr.h
+index 7e52a50..d82845f 100644
+--- a/runtime/obj_ptr.h
++++ b/runtime/obj_ptr.h
+@@ -29,7 +29,11 @@
+ 
+ namespace art {
+ 
++#if defined(__APPLE__)  // andropkg: pointers are above 4 GB on Darwin.
++constexpr bool kObjPtrPoisoning = false;
++#else
+ constexpr bool kObjPtrPoisoning = kIsDebugBuild;
++#endif
+ 
+ // It turns out that most of the performance overhead comes from copying. Don't validate for now.
+ // This defers finding stale ObjPtr objects until they are used.
+diff --git a/runtime/runtime.cc b/runtime/runtime.cc
+index 36d7d7e..a63d3b1 100644
+--- a/runtime/runtime.cc
++++ b/runtime/runtime.cc
+@@ -2202,9 +2202,13 @@ void Runtime::InitNativeMethods() {
+     }
+   }
+   {
++#if defined(ANDROPKG)  // andropkg builds a single libopenjdk regardless of ART's debug flavour
++    constexpr const char* kOpenJdkLibrary = "libopenjdk.so";
++#else
+     constexpr const char* kOpenJdkLibrary = kIsDebugBuild
+                                                 ? "libopenjdkd.so"
+                                                 : "libopenjdk.so";
++#endif
+     std::string error_msg;
+     if (!java_vm_->LoadNativeLibrary(
+           env, kOpenJdkLibrary, nullptr, java_lang_Object, &error_msg)) {
+diff --git a/runtime/runtime_common.cc b/runtime/runtime_common.cc
+index c4a695f..a3a76e3 100644
+--- a/runtime/runtime_common.cc
++++ b/runtime/runtime_common.cc
+@@ -280,6 +280,25 @@ void UContext::Dump(std::ostream& os) const {
+   DumpRegister64(os, "pstate", context.pstate);
+   DumpArmStatusRegister(os, context.pstate);
+   os << '\n';
++#elif defined(__APPLE__) && defined(__aarch64__)  // andropkg: Darwin mcontext_t is a pointer
++  const auto& ss = context->__ss;
++  for (size_t i = 0; i <= 28; ++i) {
++    std::string reg_name = "x" + std::to_string(i);
++    DumpRegister64(os, reg_name.c_str(), ss.__x[i]);
++    if (i % 4 == 3) {
++      os << '\n';
++    }
++  }
++  DumpRegister64(os, "fp", ss.__fp);
++  DumpRegister64(os, "lr", ss.__lr);
++  os << '\n';
++  DumpRegister64(os, "sp", ss.__sp);
++  DumpRegister64(os, "pc", ss.__pc);
++  DumpRegister64(os, "far", context->__es.__far);
++  os << '\n';
++  DumpRegister32(os, "cpsr", ss.__cpsr);
++  DumpArmStatusRegister(os, ss.__cpsr);
++  os << '\n';
+ #else
+   os << "Unknown architecture/word size/OS in ucontext dump";
+ #endif
+diff --git a/runtime/stack.cc b/runtime/stack.cc
+index d7d5851..34ee5fe 100644
+--- a/runtime/stack.cc
++++ b/runtime/stack.cc
+@@ -220,8 +220,7 @@ bool StackVisitor::GetVRegFromDebuggerShadowFrame(uint16_t vreg,
+     if (updated_vreg_flags[vreg]) {
+       // Value is set by the debugger.
+       if (kind == kReferenceVReg) {
+-        *val = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
+-            shadow_frame->GetVRegReference(vreg)));
++        *val = StackReference<mirror::Object>::FromMirrorPtr(shadow_frame->GetVRegReference(vreg)).AsVRegValue();
+       } else {
+         *val = shadow_frame->GetVReg(vreg);
+       }
+@@ -276,8 +275,7 @@ bool StackVisitor::GetVReg(ArtMethod* m,
+   } else {
+     DCHECK(cur_shadow_frame_ != nullptr);
+     if (kind == kReferenceVReg) {
+-      *val = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
+-          cur_shadow_frame_->GetVRegReference(vreg)));
++      *val = StackReference<mirror::Object>::FromMirrorPtr(cur_shadow_frame_->GetVRegReference(vreg)).AsVRegValue();
+     } else {
+       *val = cur_shadow_frame_->GetVReg(vreg);
+     }
+diff --git a/runtime/string_builder_append.cc b/runtime/string_builder_append.cc
+index 0083b91..621a967 100644
+--- a/runtime/string_builder_append.cc
++++ b/runtime/string_builder_append.cc
+@@ -345,7 +345,7 @@ inline int32_t StringBuilderAppend::Builder::CalculateLengthWithFlag() {
+     switch (static_cast<Argument>(f & kArgMask)) {
+       case Argument::kString: {
+         Handle<mirror::String> str =
+-            hs_.NewHandle(reinterpret_cast32<mirror::String*>(*current_arg));
++            hs_.NewHandle(mirror::PtrCompression<false, mirror::String>::Decompress(*current_arg));
+         if (str != nullptr) {
+           length += str->GetLength();
+           compressible = compressible && str->IsCompressed();
+diff --git a/runtime/thread.cc b/runtime/thread.cc
+index 6b1934c..a8929b3 100644
+--- a/runtime/thread.cc
++++ b/runtime/thread.cc
+@@ -16,6 +16,10 @@
+ 
+ #include "thread.h"
+ 
++#if defined(__APPLE__)
++#include <mach/mach.h>
++#endif
++
+ #include <limits.h>  // for INT_MAX
+ #include <pthread.h>
+ #include <signal.h>
+@@ -1445,9 +1449,17 @@ uint64_t Thread::GetCpuMicroTime() const {
+   clock_gettime(cpu_clock_id, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000) +
+          static_cast<uint64_t>(now.tv_nsec) / UINT64_C(1000);
+-#else  // __APPLE__
+-  UNIMPLEMENTED(WARNING);
+-  return -1;
++#else  // __APPLE__ — andropkg: per-thread CPU time from Mach thread_info.
++  mach_port_t port = pthread_mach_thread_np(tlsPtr_.pthread_self);
++  thread_basic_info_data_t info;
++  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
++  if (thread_info(port, THREAD_BASIC_INFO, reinterpret_cast<thread_info_t>(&info), &count) !=
++      KERN_SUCCESS) {
++    return 0;
++  }
++  auto u = [](integer_t v) { return static_cast<uint64_t>(v); };
++  return (u(info.user_time.seconds) + u(info.system_time.seconds)) * UINT64_C(1000000) +
++         u(info.user_time.microseconds) + u(info.system_time.microseconds);
+ #endif
+ }
+ 
+diff --git a/sigchainlib/sigchain.cc b/sigchainlib/sigchain.cc
+index a7f73f7..93f5767 100644
+--- a/sigchainlib/sigchain.cc
++++ b/sigchainlib/sigchain.cc
+@@ -117,6 +117,8 @@ static void lookup_libc_symbol(T* output, T wrapper, const char* name) {
+   constexpr const char* libc_name = "libc.so.6";
+ #elif defined(ANDROID_HOST_MUSL)
+   constexpr const char* libc_name = "libc_musl.so";
++#elif defined(__APPLE__)
++  constexpr const char* libc_name = "/usr/lib/libSystem.B.dylib";  // andropkg
+ #else
+ #error unsupported libc: not bionic or glibc?
+ #endif
+@@ -300,7 +302,7 @@ class SignalChain {
+ #endif
+     kernel_supported_flags_ = SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_ONSTACK | SA_RESTART |
+                               SA_NODEFER | SA_RESETHAND;
+-#if defined(SA_RESTORER)
++#if defined(SA_RESTORER) && !defined(__APPLE__)  // andropkg: UAPI headers leak SA_RESTORER
+     kernel_supported_flags_ |= SA_RESTORER;
+ #endif
+ 
+@@ -324,7 +326,7 @@ class SignalChain {
+       SigactionType result;
+       result.sa_flags = action_.sa_flags;
+       result.sa_handler = action_.sa_handler;
+-#if defined(SA_RESTORER)
++#if defined(SA_RESTORER) && !defined(__APPLE__)  // andropkg: UAPI headers leak SA_RESTORER
+       result.sa_restorer = action_.sa_restorer;
+ #endif
+       memcpy(&result.sa_mask, &action_.sa_mask,
+@@ -340,7 +342,7 @@ class SignalChain {
+     } else {
+       action_.sa_flags = new_action->sa_flags;
+       action_.sa_handler = new_action->sa_handler;
+-#if defined(SA_RESTORER)
++#if defined(SA_RESTORER) && !defined(__APPLE__)  // andropkg: UAPI headers leak SA_RESTORER
+       action_.sa_restorer = new_action->sa_restorer;
+ #endif
+       sigemptyset(&action_.sa_mask);
