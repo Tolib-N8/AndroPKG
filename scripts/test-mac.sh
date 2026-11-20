@@ -61,5 +61,13 @@ ANDROPKG_TEST_SCRIPT="wait 800; tap 540,1200; wait 1200; tap 30,2300" \
   run windows "\[windows\] second dialog cancelled by outside touch" $(apk windows)
 grep -q "\[windows\] dialog button clicked" "$log/windows.log" || fail "windows dialog tap" windows
 echo "ok   windows dialog tap"
+# App components: services, broadcasts, pending intents, toasts, WebView.
+run components "\[components\] bound service destroyed" $(apk components)
+for want in "service started n=7 id=1" "service destroyed" "bound: pong" "dynamic receiver got dev.andropkg.test.PING" \
+    "manifest receiver got dev.andropkg.test.PING" "manifest receiver got PI" "webview page finished"; do
+  grep -q "\[components\] $want" "$log/components.log" || fail "components: $want" components
+done
+grep -q "toast: hello from components" "$log/components.log" || fail "components: toast" components
+echo "ok   components checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

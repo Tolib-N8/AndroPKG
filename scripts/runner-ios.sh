@@ -36,7 +36,7 @@ else
   dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
   envs="\"ANDROPKG_MAIN\": \"$main\", \"ANDROPKG_DEX\": \"$dex\""
 fi
-dev=${ANDROPKG_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | awk '/physical/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}
+dev=${ANDROPKG_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | LC_ALL=C awk '/physical/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}
 [ -n "$dev" ] || { echo "no connected device"; exit 1; }
 xcodebuild -project "$root/host-app/AndroPkgRunner.xcodeproj" -scheme AndroPkgRunner -configuration Debug \
   -destination "id=$dev" -derivedDataPath "$root/build/ios-dd" -allowProvisioningUpdates -quiet build

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 final class HostIme {
     private static View connectedView;
     private static InputConnection connection;
+    private static EditorInfo editorInfo;
     private static boolean keyboardShown;
 
     private HostIme() {}
@@ -44,11 +45,22 @@ final class HostIme {
         }
     }
 
+    /** Return key, as an Android keyboard does it: a newline in multi-line text, else the editor action. */
     static void enter() {
         InputConnection ic = connection();
         if (ic == null) return;
-        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
-        ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        EditorInfo ei = editorInfo;
+        int action = ei.imeOptions & EditorInfo.IME_MASK_ACTION;
+        boolean multiLine = (ei.inputType & EditorInfo.TYPE_MASK_CLASS) == EditorInfo.TYPE_CLASS_TEXT
+                && (ei.inputType & EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE) != 0;
+        if (multiLine || (ei.imeOptions & EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0) {
+            ic.commitText("\n", 1);
+        } else if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+            ic.performEditorAction(action);
+        } else {
+            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+            ic.sendKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+        }
     }
 
     private static InputConnection connection() {
@@ -56,7 +68,9 @@ final class HostIme {
         if (focused == null || !focused.onCheckIsTextEditor()) return null;
         if (focused != connectedView) {
             connectedView = focused;
-            connection = focused.onCreateInputConnection(new EditorInfo());
+            editorInfo = new EditorInfo();
+            editorInfo.packageName = focused.getContext().getPackageName();
+            connection = focused.onCreateInputConnection(editorInfo);
         }
         return connection;
     }

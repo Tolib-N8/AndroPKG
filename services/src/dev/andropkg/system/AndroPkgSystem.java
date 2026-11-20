@@ -50,6 +50,8 @@ public final class AndroPkgSystem {
         // Software rendering: windows draw through Surface.lockCanvas() into CPU buffers until
         // hwui's GPU pipeline (RenderThread over Metal) is ported.
         Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
+        // WebView without a WebView package: local content as styled text (WKWebView bridge later).
+        dev.andropkg.system.webview.TextWebView.install();
         parsePackage();
         Log.i(TAG, "starting " + appInfo.packageName + " (" + apkPath + ")");
         // Never returns: the app's main looper takes over this thread.
@@ -168,6 +170,7 @@ public final class AndroPkgSystem {
         services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
         services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
+        services.put("notification", LocalService.create("android.app.INotificationManager", new NotificationManagerImpl()));
         services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
@@ -241,6 +244,81 @@ public final class AndroPkgSystem {
         }
 
         public void finishAttachApplication(long startSeq) {}
+
+        // ---- services (ActiveServices) ----
+        private final ActiveServices serviceManager = new ActiveServices();
+
+        public ComponentName startService(Object caller, Intent service, String resolvedType, boolean requireForeground,
+                String callingPackage, String callingFeatureId, int userId) {
+            return serviceManager.start(service);
+        }
+
+        public int stopService(Object caller, Intent service, String resolvedType, int userId) {
+            return serviceManager.stop(service);
+        }
+
+        public boolean stopServiceToken(ComponentName className, IBinder token, int startId) {
+            return serviceManager.stopSelf(className, token, startId);
+        }
+
+        public int bindServiceInstance(Object caller, IBinder token, Intent service, String resolvedType,
+                Object connection, long flags, String instanceName, String callingPackage, int userId) {
+            return serviceManager.bind(service, connection, flags);
+        }
+
+        public boolean unbindService(Object connection) {
+            return serviceManager.unbind(connection);
+        }
+
+        public void publishService(IBinder token, Intent intent, IBinder service) {
+            serviceManager.publish(token, intent, service);
+        }
+
+        public IBinder peekService(Intent service, String resolvedType, String callingPackage) {
+            return serviceManager.peek(service);
+        }
+
+        // ---- broadcasts and pending intents ----
+        private final Broadcasts broadcasts = new Broadcasts();
+        private final PendingIntents pendingIntents = new PendingIntents(broadcasts, serviceManager);
+
+        public Intent registerReceiverWithFeature(Object caller, String callerPackage, String featureId,
+                String receiverId, Object receiver, android.content.IntentFilter filter, String permission, int userId,
+                int flags) {
+            return broadcasts.register(receiver, filter);
+        }
+
+        public void unregisterReceiver(Object receiver) {
+            broadcasts.unregister(receiver);
+        }
+
+        public int broadcastIntentWithFeature(Object caller, String featureId, Intent intent, String resolvedType,
+                Object resultTo, int resultCode, String resultData, Bundle map, String[] requiredPermissions,
+                String[] excludedPermissions, String[] excludePackages, int appOp, Bundle options, boolean serialized,
+                boolean sticky, int userId) {
+            return broadcasts.send(intent, sticky, resultTo);
+        }
+
+        public Object getIntentSenderWithFeature(int type, String packageName, String featureId, IBinder token,
+                String resultWho, int requestCode, Intent[] intents, String[] resolvedTypes, int flags, Bundle options,
+                int userId) {
+            return pendingIntents.get(type, intents, requestCode, flags);
+        }
+
+        public int sendIntentSender(Object caller, Object target, IBinder whitelistToken, int code, Intent intent,
+                String resolvedType, Object finishedReceiver, String requiredPermission, Bundle options) {
+            return pendingIntents.send(target, code, intent, finishedReceiver);
+        }
+
+        public void cancelIntentSender(Object sender) { pendingIntents.cancel(sender); }
+        public Intent getIntentForIntentSender(Object sender) { return pendingIntents.intentOf(sender); }
+        public Object getInfoForIntentSender(Object sender) { return pendingIntents.infoOf(sender); }
+        public boolean registerIntentSenderCancelListenerEx(Object sender, Object receiver) { return true; }
+
+        public void setServiceForeground(ComponentName className, IBinder token, int id,
+                android.app.Notification notification, int flags, int foregroundServiceType) {
+            Log.i(TAG, "service " + className.getShortClassName() + (id != 0 ? " in foreground" : " left foreground"));
+        }
 
         public int getCurrentUser$() { return 0; }
     }
