@@ -22,11 +22,17 @@ if [ ! -d "$fs" ]; then
   ln -sfn "$pb/fonts" "$fs/system/fonts"
 fi
 
-# Boot classpath for plain Java programs: the ART module + ICU (framework comes in M2).
+# Boot classpath: ANDROPKG_BCP=full -> the whole Android 14 BOOTCLASSPATH (framework etc.);
+# default -> the ART module + ICU only (plain Java programs).
 bcp=""
-for j in /apex/com.android.art/javalib/core-oj.jar /apex/com.android.art/javalib/core-libart.jar \
-         /apex/com.android.art/javalib/okhttp.jar /apex/com.android.art/javalib/bouncycastle.jar \
-         /apex/com.android.art/javalib/apache-xml.jar /apex/com.android.i18n/javalib/core-icu4j.jar; do
+if [ "${ANDROPKG_BCP:-}" = full ]; then
+  jars=$(cat "$pb/bootclasspath.txt")
+else
+  jars="/apex/com.android.art/javalib/core-oj.jar /apex/com.android.art/javalib/core-libart.jar
+        /apex/com.android.art/javalib/okhttp.jar /apex/com.android.art/javalib/bouncycastle.jar
+        /apex/com.android.art/javalib/apache-xml.jar /apex/com.android.i18n/javalib/core-icu4j.jar"
+fi
+for j in $jars; do
   bcp="${bcp:+$bcp:}$fs$j"
 done
 

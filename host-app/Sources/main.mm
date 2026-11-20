@@ -30,12 +30,15 @@ static int RunDex(NSString* dex_path, const char* main_class) {
   setenv("ANDROID_TZDATA_ROOT", path(@"apex/com.android.tzdata").c_str(), 1);
   setenv("ANDROID_DATA", data.fileSystemRepresentation, 1);
 
+  // Full Android 14 BOOTCLASSPATH (device paths, staged into the bundle).
   std::string bcp;
-  for (NSString* jar in @[ @"apex/com.android.art/javalib/core-oj.jar", @"apex/com.android.art/javalib/core-libart.jar",
-                           @"apex/com.android.art/javalib/okhttp.jar", @"apex/com.android.art/javalib/bouncycastle.jar",
-                           @"apex/com.android.art/javalib/apache-xml.jar", @"apex/com.android.i18n/javalib/core-icu4j.jar" ]) {
+  NSString* list = [NSString stringWithContentsOfFile:[root stringByAppendingPathComponent:@"bootclasspath.txt"]
+                                             encoding:NSUTF8StringEncoding
+                                                error:nil];
+  for (NSString* dev in [list componentsSeparatedByString:@"\n"]) {
+    if (dev.length == 0) continue;
     if (!bcp.empty()) bcp += ":";
-    bcp += path(jar);
+    bcp += path([dev substringFromIndex:1]);
   }
   std::vector<std::string> opts = {
       "-Xbootclasspath:" + bcp, "-Xbootclasspath-locations:" + bcp, "-Xusejit:false", "-Xint",
@@ -74,8 +77,12 @@ static int RunDex(NSString* dex_path, const char* main_class) {
 }
 
 static void* VMThread(void*) {
-  NSString* dex = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root/test/hello.dex"];
-  g_exit_code = RunDex(dex, "Hello");
+  // ANDROPKG_DEX / ANDROPKG_MAIN select the test (default: test/hello.dex, Hello).
+  const char* dex_rel = getenv("ANDROPKG_DEX") ?: "test/hello.dex";
+  const char* main_class = getenv("ANDROPKG_MAIN") ?: "Hello";
+  NSString* dex = [[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"]
+      stringByAppendingPathComponent:@(dex_rel)];
+  g_exit_code = RunDex(dex, main_class);
   g_status = g_exit_code == 0 ? @"Hello ran on ART ✓ (see console)" : @"ART run failed (see console)";
   Log([NSString stringWithFormat:@"exit code %d", g_exit_code]);
   if (getenv("ANDROPKG_EXIT")) exit(g_exit_code);

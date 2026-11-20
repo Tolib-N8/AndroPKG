@@ -168,6 +168,7 @@ endfunction()
 andropkg_jni_dylib(libjavacore libjavacore libexpat)
 andropkg_jni_dylib(libopenjdk libopenjdk libfdlibm)
 andropkg_jni_dylib(libicu_jni libicu_jni)
+andropkg_jni_dylib(libandroid_runtime libandroid_runtime libutils libcutils)
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")

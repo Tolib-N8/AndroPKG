@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the iOS runtime + runner app, installs it on a connected iPhone and runs Hello.dex.
-#   scripts/runner-ios.sh [device-udid]
+#   scripts/runner-ios.sh [MainClass [dex-under-android-root]]   (default: Hello test/hello.dex)
+#   ANDROPKG_DEVICE=<udid> to pick a device
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 [ -f "$root/Config/Local.xcconfig" ] || { echo "create Config/Local.xcconfig (see .example)"; exit 1; }
@@ -9,15 +10,21 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 ninja -C "$root/build/runtime-ios" >/dev/null
 J=${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}
 mkdir -p "$root/build/tests/hello"
-"$J/bin/javac" --release 8 -nowarn -d "$root/build/tests/hello" "$root/tests/hello/Hello.java" 2>/dev/null
-JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --output "$root/build/tests/hello" "$root/build/tests/hello"/*.class
+sdkjar="$HOME/Library/Android/sdk/platforms/android-37.0/android.jar"
+for t in "$root"/tests/*/; do
+  name=$(basename "$t"); outd="$root/build/tests/$name"; mkdir -p "$outd"
+  "$J/bin/javac" --release 8 -nowarn -cp "$sdkjar" -d "$outd" "$t"*.java 2>/dev/null
+  JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --lib "$sdkjar" --output "$outd" "$outd"/*.class
+done
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 (cd "$root/host-app" && xcodegen generate --quiet)
-dev=${1:-$(xcrun devicectl list devices 2>/dev/null | awk '/physical/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}
+main=${1:-Hello}
+dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
+dev=${ANDROPKG_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | awk '/physical/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}
 [ -n "$dev" ] || { echo "no connected device"; exit 1; }
 xcodebuild -project "$root/host-app/AndroPkgRunner.xcodeproj" -scheme AndroPkgRunner -configuration Debug \
   -destination "id=$dev" -derivedDataPath "$root/build/ios-dd" -allowProvisioningUpdates -quiet build
 app="$root/build/ios-dd/Build/Products/Debug-iphoneos/AndroPkgRunner.app"
 xcrun devicectl device install app --device "$dev" "$app" >/dev/null
 xcrun devicectl device process launch --device "$dev" --console --terminate-existing \
-  --environment-variables '{"ANDROPKG_EXIT": "1"}' "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"
+  --environment-variables "{\"ANDROPKG_EXIT\": \"1\", \"ANDROPKG_MAIN\": \"$main\", \"ANDROPKG_DEX\": \"$dex\"}" "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"

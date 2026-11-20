@@ -26,6 +26,8 @@ external/tinyxml2      external/tinyxml2
 external/dlmalloc      external/dlmalloc
 bionic                 bionic
 external/boringssl     external/boringssl
+frameworks/base        frameworks/base
+frameworks/native      frameworks/native
 "
 # Big repos: partial clone + sparse checkout of just what the runtime builds.
 sparse_paths() {
@@ -33,6 +35,10 @@ sparse_paths() {
     bionic) echo "/libc/include/elf.h /libc/include/bits/elf_common.h /libc/include/bits/auxvec.h
                  /libc/kernel/uapi/ /libc/kernel/android/uapi/
                  !/libc/kernel/uapi/linux/netfilter*/" ;;
+    frameworks/base) echo "/core/jni/ /libs/androidfw/ /libs/hwui/ /include/ /native/android/ /core/proto/" ;;
+    frameworks/native) echo "/include/ /libs/binder/include/ /libs/nativewindow/include/ /libs/nativebase/include/
+                            /libs/arect/include/ /libs/math/include/ /libs/ui/include/ /libs/gui/include/
+                            /libs/input/ /include/input/" ;;
     external/boringssl) echo "/src/include/" ;;   # headers only until BoringSSL is built (NativeBN, TLS)
     external/icu) echo "/Android.bp /build/ /icu4c/source/Android.bp /icu4c/source/common/ /icu4c/source/i18n/
                        /icu4c/source/stubdata/ /libicu/ /libandroidicuinit/ /android_icu4c/ /android_icu4j/Android.bp

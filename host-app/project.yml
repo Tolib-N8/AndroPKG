@@ -53,3 +53,7 @@ targets:
         embed: true
         codeSign: true
         link: false
+      - framework: ../build/runtime-ios/libandroid_runtime.dylib
+        embed: true
+        codeSign: true
+        link: false

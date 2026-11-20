@@ -77,7 +77,10 @@ class Gen:
         if m is None:
             raise SystemExit(f"bp module {t['bp']} not found")
         srcs, gen_srcs = [], []
-        for s in m.get("srcs", []) + [":" + g for g in m.get("generated_sources", [])]:
+        bp_srcs = m.get("srcs", []) + [":" + g for g in m.get("generated_sources", [])]
+        if "srcs" in t:  # andropkg picks the sources itself (module used for flags/includes only)
+            bp_srcs = [os.path.join(self.root, x) for x in t["srcs"]]
+        for s in bp_srcs:
             if s.startswith(":"):
                 gen_srcs.append(s[1:])
             else:

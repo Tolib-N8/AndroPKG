@@ -748,6 +748,20 @@ index 251bcfd..3f1fd9b 100644
    }
  
    // Convert an ObjPtr to a compressed reference.
+diff --git a/runtime/monitor.cc b/runtime/monitor.cc
+index 3fed8d4..4916707 100644
+--- a/runtime/monitor.cc
++++ b/runtime/monitor.cc
+@@ -1522,7 +1522,8 @@ void Monitor::VisitLocks(StackVisitor* stack_visitor,
+       // not be optimized out.
+       success = stack_visitor->GetVReg(m, dex_reg, kReferenceVReg, &value);
+       if (success) {
+-        ObjPtr<mirror::Object> o = reinterpret_cast<mirror::Object*>(value);
++        // andropkg: vreg values are compressed references, not pointers.
++        ObjPtr<mirror::Object> o = mirror::PtrCompression<false, mirror::Object>::Decompress(value);
+         callback(o, callback_context);
+         break;
+       }
 diff --git a/runtime/native/java_lang_Class.cc b/runtime/native/java_lang_Class.cc
 index 5e54f85..d8f0c69 100644
 --- a/runtime/native/java_lang_Class.cc
@@ -790,10 +804,10 @@ index 7e52a50..d82845f 100644
  // It turns out that most of the performance overhead comes from copying. Don't validate for now.
  // This defers finding stale ObjPtr objects until they are used.
 diff --git a/runtime/runtime.cc b/runtime/runtime.cc
-index 36d7d7e..a63d3b1 100644
+index 36d7d7e..ec8d7c1 100644
 --- a/runtime/runtime.cc
 +++ b/runtime/runtime.cc
-@@ -2202,9 +2202,13 @@ void Runtime::InitNativeMethods() {
+@@ -2202,14 +2202,27 @@ void Runtime::InitNativeMethods() {
      }
    }
    {
@@ -807,6 +821,20 @@ index 36d7d7e..a63d3b1 100644
      std::string error_msg;
      if (!java_vm_->LoadNativeLibrary(
            env, kOpenJdkLibrary, nullptr, java_lang_Object, &error_msg)) {
+       LOG(FATAL) << "LoadNativeLibrary failed for \"" << kOpenJdkLibrary << "\": " << error_msg;
+     }
++#if defined(ANDROPKG)
++    // andropkg: no zygote registers framework natives, so load the framework's native half
++    // here when it is shipped (plain-Java runs work without it).
++    std::string fw_error;
++    if (!java_vm_->LoadNativeLibrary(env, "libandroid_runtime.so", nullptr, java_lang_Object,
++                                     &fw_error)) {
++      VLOG(startup) << "andropkg: libandroid_runtime not loaded: " << fw_error;
++    }
++#endif
+   }
+   env->DeleteGlobalRef(java_lang_Object);
+ 
 diff --git a/runtime/runtime_common.cc b/runtime/runtime_common.cc
 index c4a695f..a3a76e3 100644
 --- a/runtime/runtime_common.cc
@@ -838,10 +866,20 @@ index c4a695f..a3a76e3 100644
    os << "Unknown architecture/word size/OS in ucontext dump";
  #endif
 diff --git a/runtime/stack.cc b/runtime/stack.cc
-index d7d5851..34ee5fe 100644
+index d7d5851..6bc57dd 100644
 --- a/runtime/stack.cc
 +++ b/runtime/stack.cc
-@@ -220,8 +220,7 @@ bool StackVisitor::GetVRegFromDebuggerShadowFrame(uint16_t vreg,
+@@ -199,7 +199,8 @@ ObjPtr<mirror::Object> StackVisitor::GetThisObject() const {
+       if (!GetVReg(m, reg, kReferenceVReg, &value)) {
+         return nullptr;
+       }
+-      return reinterpret_cast<mirror::Object*>(value);
++      // andropkg: vreg values are compressed references, not pointers.
++      return mirror::PtrCompression<false, mirror::Object>::Decompress(value);
+     }
+   }
+ }
+@@ -220,8 +221,7 @@ bool StackVisitor::GetVRegFromDebuggerShadowFrame(uint16_t vreg,
      if (updated_vreg_flags[vreg]) {
        // Value is set by the debugger.
        if (kind == kReferenceVReg) {
@@ -851,7 +889,7 @@ index d7d5851..34ee5fe 100644
        } else {
          *val = shadow_frame->GetVReg(vreg);
        }
-@@ -276,8 +275,7 @@ bool StackVisitor::GetVReg(ArtMethod* m,
+@@ -276,8 +276,7 @@ bool StackVisitor::GetVReg(ArtMethod* m,
    } else {
      DCHECK(cur_shadow_frame_ != nullptr);
      if (kind == kReferenceVReg) {

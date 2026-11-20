@@ -97,4 +97,21 @@ TARGETS = [
          exclude_srcs=["libcore/luni/src/main/native/libcore_math_NativeBN.cpp"],
          andropkg_srcs=[f"{ANDROPKG}/runtime/libcore/NativeBN_disabled.cpp"]),
     dict(name="libopenjdk", bp="libopenjdk"),
+
+    # ---- Android framework natives (libandroid_runtime.dylib) -------------------------
+    dict(name="libcutils", bp="libcutils", extra_includes=["system/core/libutils/include"]),
+    # Looper (epoll + eventfd -> andropkg compat) isn't part of libutils' host variant.
+    dict(name="libutils", bp="libutils", extra_srcs=["system/core/libutils/Looper.cpp"]),
+    dict(name="libandroid_runtime", bp="libandroid_runtime",
+         srcs=["frameworks/base/core/jni/core_jni_helpers.cpp",
+               "frameworks/base/core/jni/android_os_SystemClock.cpp",
+               "frameworks/base/core/jni/android_util_Log.cpp",
+               "frameworks/base/core/jni/android_util_EventLog.cpp",
+               "frameworks/base/core/jni/android_os_MessageQueue.cpp",
+               "frameworks/base/core/jni/android_os_Trace.cpp",
+               "frameworks/base/core/jni/android_os_SystemProperties.cpp"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/android_runtime/android_runtime_onload.cc",
+                        f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc"],
+         skip_generated=["deviceproductinfoconstants_aidl"],
+         extra_includes=["frameworks/base/core/jni", "frameworks/base/core/jni/include"]),
 ]

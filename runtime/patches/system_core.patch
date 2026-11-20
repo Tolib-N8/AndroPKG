@@ -1,0 +1,52 @@
+diff --git a/libutils/SystemClock.cpp b/libutils/SystemClock.cpp
+index 9c71141..6ce9f36 100644
+--- a/libutils/SystemClock.cpp
++++ b/libutils/SystemClock.cpp
+@@ -73,6 +73,8 @@ int64_t elapsedRealtimeNano()
+     }
+ 
+     return seconds_to_nanoseconds(ts.tv_sec) + ts.tv_nsec;
++#elif defined(__APPLE__)
++    return systemTime(SYSTEM_TIME_BOOTTIME);  // andropkg: counts during sleep, like Linux
+ #else
+     return systemTime(SYSTEM_TIME_MONOTONIC);
+ #endif
+diff --git a/libutils/Timers.cpp b/libutils/Timers.cpp
+index 4cfac57..db17d87 100644
+--- a/libutils/Timers.cpp
++++ b/libutils/Timers.cpp
+@@ -29,7 +29,20 @@ static void checkClockId(int clock) {
+     LOG_ALWAYS_FATAL_IF(clock < 0 || clock >= clock_id_max, "invalid clock id");
+ }
+ 
+-#if defined(__linux__)
++#if defined(__APPLE__)
++// andropkg: Android clock semantics on Darwin. Linux CLOCK_MONOTONIC stops during suspend
++// (== Darwin CLOCK_UPTIME_RAW); CLOCK_BOOTTIME keeps counting (== Darwin CLOCK_MONOTONIC).
++nsecs_t systemTime(int clock) {
++    checkClockId(clock);
++    static constexpr clockid_t clocks[] = {CLOCK_REALTIME, CLOCK_UPTIME_RAW,
++                                           CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID,
++                                           CLOCK_MONOTONIC};
++    static_assert(clock_id_max == arraysize(clocks));
++    timespec t = {};
++    clock_gettime(clocks[clock], &t);
++    return nsecs_t(t.tv_sec)*1000000000LL + t.tv_nsec;
++}
++#elif defined(__linux__)
+ nsecs_t systemTime(int clock) {
+     checkClockId(clock);
+     static constexpr clockid_t clocks[] = {CLOCK_REALTIME, CLOCK_MONOTONIC,
+diff --git a/libutils/include/utils/Compat.h b/libutils/include/utils/Compat.h
+index 3221899..724898c 100644
+--- a/libutils/include/utils/Compat.h
++++ b/libutils/include/utils/Compat.h
+@@ -23,7 +23,7 @@
+ #include <sys/mman.h>
+ #endif
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(ANDROPKG)  // andropkg: *64 aliases come from the compat layer
+ 
+ /* Mac OS has always had a 64-bit off_t, so it doesn't have off64_t. */
+ static_assert(sizeof(off_t) >= 8, "This code requires that Mac OS have at least a 64-bit off_t.");
