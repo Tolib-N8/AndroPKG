@@ -51,3 +51,7 @@ for want in "sqlite 1 rows: alpha;гамма;" "prefs name=andropkg" "http 200 b
   grep -q "$want" "$log/storage.log" || fail "storage: $want" storage
 done
 echo "ok   storage checks"
+# BACK (the iOS edge swipe) finishes the root activity when asked to (pre-Android-12 rule).
+ANDROPKG_TEST_BACK=1 run back "last activity gone" -Dandropkg.back.finishesRoot=1 $(apk widgets)
+# Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
+ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

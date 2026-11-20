@@ -60,7 +60,19 @@ void InjectText(const char* utf8);
 void InjectDeleteBackward();
 void InjectEnter();
 void SetImeListener(void (*listener)(int visible));
+void InjectKey(int action, int keycode);
+void SetHostVisible(bool visible);
 }  // namespace
+
+/// The host app moved to the background (0) or foreground (1).
+extern "C" __attribute__((visibility("default"))) void andropkg_app_visibility(int visible) {
+  SetHostVisible(visible != 0);
+}
+
+/// A key event for the focused window: action 0 down / 1 up, Android keycode (4 = BACK).
+extern "C" __attribute__((visibility("default"))) void andropkg_inject_key(int action, int keycode) {
+  InjectKey(action, keycode);
+}
 
 /// Host keyboard -> the focused text editor of the focused window.
 extern "C" __attribute__((visibility("default"))) void andropkg_ime_insert_text(const char* utf8) {
@@ -238,6 +250,9 @@ struct {
   jfieldID preferredFrameTimelineIndex, frameTimelinesLength, frameInterval, frameTimelines;
   jfieldID ftVsyncId, ftExpectedPresentationTime, ftDeadline;
   jmethodID referenceGet;
+  jclass dataClass, timelineClass;
+  jmethodID dataCtor;      // VsyncEventData(FrameTimeline[], int preferredIndex, int length, long interval)
+  jmethodID timelineCtor;  // FrameTimeline(long vsyncId, long expectedPresentTime, long deadline)
 } gVsync;
 
 nsecs_t MonotonicNow() {  // System.nanoTime()'s clock
@@ -295,6 +310,9 @@ class VsyncReceiver : public android::MessageHandler {
   android::sp<android::MessageQueue> queue_;
   bool pending_ = false;
   int64_t frame_ = 0;
+
+ public:
+  int64_t frame() const { return frame_; }
 };
 
 jlong der_init(JNIEnv* env, jclass, jobject receiverWeak, jobject dataWeak, jobject messageQueue, jint, jint,
@@ -310,6 +328,20 @@ jlong der_init(JNIEnv* env, jclass, jobject receiverWeak, jobject dataWeak, jobj
 }
 void der_scheduleVsync(JNIEnv*, jclass, jlong ptr) { reinterpret_cast<VsyncReceiver*>(ptr)->Schedule(); }
 
+// The vsync a frame would land on now (Choreographer.getVsyncEventData, back animations).
+jobject der_getLatestVsyncEventData(JNIEnv* env, jclass, jlong ptr) {
+  nsecs_t ts = MonotonicNow();
+  nsecs_t next = (ts / kVsyncPeriod + 1) * kVsyncPeriod;
+  jlong id = ptr ? reinterpret_cast<VsyncReceiver*>(ptr)->frame() + 1 : 1;
+  jobject t = env->NewObject(gVsync.timelineClass, gVsync.timelineCtor, id, static_cast<jlong>(next),
+                             static_cast<jlong>(next));
+  jobjectArray arr = env->NewObjectArray(1, gVsync.timelineClass, t);
+  jobject data = env->NewObject(gVsync.dataClass, gVsync.dataCtor, arr, 0, 1, static_cast<jlong>(kVsyncPeriod));
+  env->DeleteLocalRef(t);
+  env->DeleteLocalRef(arr);
+  return data;
+}
+
 // ---- input (M3): host touches -> the focused window's InputEventReceiver ------------------
 
 struct {
@@ -318,11 +350,16 @@ struct {
   jmethodID setSource;
   jmethodID recycle;
   jmethodID dispatchInputEvent;  // InputEventReceiver.dispatchInputEvent(int seq, InputEvent)
+  jclass keyEventClass;
+  jmethodID keyEventCtor;  // KeyEvent(long downTime, long eventTime, int action, int code, int repeat)
+  jmethodID keySetSource;
+  jmethodID onFocusEvent;  // InputEventReceiver.onFocusEvent(boolean)
 } gInput;
 
 // Host input for the focused window, delivered on its Looper: a touch, or keyboard text.
 struct TouchEvent {
-  enum Kind { kTouch, kText, kDeleteBackward, kEnter } kind = kTouch;
+  enum Kind { kTouch, kText, kDeleteBackward, kEnter, kKey, kFocus, kVisibility } kind = kTouch;
+  int keycode = 0;
   int action = 0;
   float x = 0, y = 0;
   std::string text;
@@ -339,6 +376,35 @@ std::atomic<ImeListener> gImeListener{nullptr};
 void ime_setKeyboardVisible(JNIEnv*, jclass, jboolean visible) {
   if (ImeListener l = gImeListener.load()) l(visible ? 1 : 0);
   if (getenv("ANDROPKG_DEBUG_IME")) ALOGI("ime: keyboard %s", visible ? "shown" : "hidden");
+}
+
+// dev.andropkg.system.HostApp: the host app's foreground/background state.
+struct {
+  jclass clazz;
+  jmethodID setVisible;
+} gHostApp;
+
+jclass LoadServicesClass(JNIEnv* env, const char* name) {
+  jclass loaderClass = env->FindClass("java/lang/ClassLoader");
+  jmethodID getSystem = env->GetStaticMethodID(loaderClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+  jmethodID loadClass = env->GetMethodID(loaderClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+  jobject loader = env->CallStaticObjectMethod(loaderClass, getSystem);
+  jstring jname = env->NewStringUTF(name);
+  jclass c = static_cast<jclass>(env->CallObjectMethod(loader, loadClass, jname));
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return nullptr;
+  }
+  return c;
+}
+
+bool InitHostApp(JNIEnv* env) {
+  if (gHostApp.clazz) return true;
+  jclass c = LoadServicesClass(env, "dev.andropkg.system.HostApp");
+  if (c == nullptr) return false;
+  gHostApp.setVisible = env->GetStaticMethodID(c, "setVisible", "(Z)V");
+  gHostApp.clazz = static_cast<jclass>(env->NewGlobalRef(c));
+  return true;
 }
 
 bool InitIme(JNIEnv* env) {
@@ -386,6 +452,37 @@ class InputReceiver : public android::MessageHandler {
         e = pending_.front();
         pending_.pop_front();
       }
+      if (e.kind == TouchEvent::kVisibility) {
+        if (InitHostApp(env)) {
+          env->CallStaticVoidMethod(gHostApp.clazz, gHostApp.setVisible, static_cast<jboolean>(e.action != 0));
+        }
+        queue_->raiseAndClearException(env, "HostApp.setVisible");
+        continue;
+      }
+      if (e.kind == TouchEvent::kFocus) {  // what InputDispatcher sends a newly focused window
+        jobject receiver = env->CallObjectMethod(receiver_, gVsync.referenceGet);
+        if (receiver) {
+          env->CallVoidMethod(receiver, gInput.onFocusEvent, static_cast<jboolean>(e.action != 0));
+          env->DeleteLocalRef(receiver);
+        }
+        queue_->raiseAndClearException(env, "onFocusEvent");
+        continue;
+      }
+      if (e.kind == TouchEvent::kKey) {  // a hardware-style key (BACK from the host's gesture)
+        jlong now = systemTime(SYSTEM_TIME_MONOTONIC) / 1000000;
+        if (e.action == 0) key_down_time_ = now;
+        jobject ev = env->NewObject(gInput.keyEventClass, gInput.keyEventCtor, key_down_time_, now, e.action,
+                                    e.keycode, 0);
+        env->CallVoidMethod(ev, gInput.keySetSource, 0x101 /* InputDevice.SOURCE_KEYBOARD */);
+        jobject receiver = env->CallObjectMethod(receiver_, gVsync.referenceGet);
+        if (receiver) {
+          env->CallVoidMethod(receiver, gInput.dispatchInputEvent, ++seq_, ev);
+          env->DeleteLocalRef(receiver);
+        }
+        env->DeleteLocalRef(ev);
+        queue_->raiseAndClearException(env, "dispatchInputEvent(key)");
+        continue;
+      }
       if (e.kind != TouchEvent::kTouch) {
         if (InitIme(env)) {
           if (e.kind == TouchEvent::kText) {
@@ -425,6 +522,7 @@ class InputReceiver : public android::MessageHandler {
   std::mutex lock_;
   std::deque<TouchEvent> pending_;
   jlong down_time_ = 0;
+  jlong key_down_time_ = 0;
   jint seq_ = 0;
 };
 
@@ -440,17 +538,33 @@ jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject /*inputChannel
   auto* r = new InputReceiver(env, receiverWeak, mq);
   r->incStrong(nullptr);
   std::lock_guard<std::mutex> g(gReceiversLock);
+  // The newest window takes focus (one task, top window first), as InputDispatcher would.
+  TouchEvent lose;
+  lose.kind = TouchEvent::kFocus;
+  lose.action = 0;
+  if (!gReceivers.empty()) gReceivers.back()->Post(lose);
   gReceivers.push_back(r);
+  TouchEvent gain;
+  gain.kind = TouchEvent::kFocus;
+  gain.action = 1;
+  r->Post(gain);
   return reinterpret_cast<jlong>(r);
 }
 
 void ier_dispose(JNIEnv*, jclass, jlong ptr) {
   std::lock_guard<std::mutex> g(gReceiversLock);
+  bool wasTop = !gReceivers.empty() && reinterpret_cast<jlong>(gReceivers.back()) == ptr;
   for (auto it = gReceivers.begin(); it != gReceivers.end(); ++it) {
     if (reinterpret_cast<jlong>(*it) == ptr) {
       gReceivers.erase(it);
       break;
     }
+  }
+  if (wasTop && !gReceivers.empty()) {  // focus returns to the window below
+    TouchEvent gain;
+    gain.kind = TouchEvent::kFocus;
+    gain.action = 1;
+    gReceivers.back()->Post(gain);
   }
 }
 
@@ -469,6 +583,23 @@ void InjectKeyboard(TouchEvent::Kind kind, const char* text) {
   if (text) e.text = text;
   std::lock_guard<std::mutex> g(gReceiversLock);
   if (!gReceivers.empty()) gReceivers.back()->Post(e);
+}
+
+void InjectKey(int action, int keycode) {
+  TouchEvent e;
+  e.kind = TouchEvent::kKey;
+  e.action = action;
+  e.keycode = keycode;
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  if (!gReceivers.empty()) gReceivers.back()->Post(e);
+}
+
+void SetHostVisible(bool visible) {
+  TouchEvent e;
+  e.kind = TouchEvent::kVisibility;
+  e.action = visible ? 1 : 0;
+  std::lock_guard<std::mutex> g(gReceiversLock);
+  if (!gReceivers.empty()) gReceivers.back()->Post(e);  // any window: all share the main Looper
 }
 
 void InjectText(const char* utf8) { InjectKeyboard(TouchEvent::kText, utf8); }
@@ -491,6 +622,22 @@ void MaybeTestTap(uint64_t frame) {
         usleep(300 * 1000);
         InjectKeyboard(TouchEvent::kText, type);
       }
+    }).detach();
+  }
+  if (getenv("ANDROPKG_TEST_BACKGROUND")) {  // background, then foreground again
+    std::thread([] {
+      usleep(400 * 1000);
+      SetHostVisible(false);
+      usleep(400 * 1000);
+      SetHostVisible(true);
+    }).detach();
+  }
+  if (getenv("ANDROPKG_TEST_BACK")) {  // press BACK once
+    std::thread([] {
+      usleep(500 * 1000);
+      InjectKey(0, 4);
+      usleep(50 * 1000);
+      InjectKey(1, 4);
     }).detach();
   }
   if (const char* sw = getenv("ANDROPKG_TEST_SWIPE"); sw && sscanf(sw, "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
@@ -628,6 +775,11 @@ int register_andropkg_window(JNIEnv* env) {
   gVsync.ftVsyncId = env->GetFieldID(ft, "vsyncId", "J");
   gVsync.ftExpectedPresentationTime = env->GetFieldID(ft, "expectedPresentationTime", "J");
   gVsync.ftDeadline = env->GetFieldID(ft, "deadline", "J");
+  gVsync.dataClass = static_cast<jclass>(env->NewGlobalRef(data));
+  gVsync.timelineClass = static_cast<jclass>(env->NewGlobalRef(ft));
+  gVsync.dataCtor = env->GetMethodID(
+      data, "<init>", "([Landroid/view/DisplayEventReceiver$VsyncEventData$FrameTimeline;IIJ)V");
+  gVsync.timelineCtor = env->GetMethodID(ft, "<init>", "(JJJ)V");
   jclass ref = env->FindClass("java/lang/ref/Reference");
   gVsync.referenceGet = env->GetMethodID(ref, "get", "()Ljava/lang/Object;");
   if (env->ExceptionCheck()) {
@@ -669,6 +821,8 @@ int register_andropkg_window(JNIEnv* env) {
         der_init),
       M("nativeGetDisplayEventReceiverFinalizer", "()J", NoopFinalizerPtr),
       M("nativeScheduleVsync", "(J)V", der_scheduleVsync),
+      M("nativeGetLatestVsyncEventData", "(J)Landroid/view/DisplayEventReceiver$VsyncEventData;",
+        der_getLatestVsyncEventData),
   };
   REGISTER("android/view/SurfaceControl", kSurfaceControl);
   REGISTER("android/view/SurfaceSession", kSurfaceSession);
@@ -681,8 +835,13 @@ int register_andropkg_window(JNIEnv* env) {
   gInput.obtain = env->GetStaticMethodID(me, "obtain", "(JJIFFI)Landroid/view/MotionEvent;");
   gInput.setSource = env->GetMethodID(me, "setSource", "(I)V");
   gInput.recycle = env->GetMethodID(me, "recycle", "()V");
+  jclass ke = env->FindClass("android/view/KeyEvent");
+  gInput.keyEventClass = static_cast<jclass>(env->NewGlobalRef(ke));
+  gInput.keyEventCtor = env->GetMethodID(ke, "<init>", "(JJIII)V");
+  gInput.keySetSource = env->GetMethodID(ke, "setSource", "(I)V");
   jclass ier = env->FindClass("android/view/InputEventReceiver");
   gInput.dispatchInputEvent = env->GetMethodID(ier, "dispatchInputEvent", "(ILandroid/view/InputEvent;)V");
+  gInput.onFocusEvent = env->GetMethodID(ier, "onFocusEvent", "(Z)V");
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
     return -1;

@@ -165,6 +165,8 @@ public final class AndroPkgSystem {
         services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
         services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
+        services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
+                new InputMethodManagerImpl()));
         activityClientController =
                 LocalService.create("android.app.IActivityClientController", new ActivityClientControllerImpl()).iface;
         // The service manager itself is in-process: no binder driver, no servicemanager daemon.
@@ -270,6 +272,17 @@ public final class AndroPkgSystem {
     static final class ActivityClientControllerImpl {
         public boolean finishActivity(IBinder token, int resultCode, Intent data, int finishTask) {
             return stack.finish(token, resultCode, data);
+        }
+
+        public int getTaskForActivity(IBinder token, boolean onlyRoot) {
+            return !onlyRoot || stack.isRoot(token) ? 1 /* the app's one task */ : -1;
+        }
+
+        // onBackPressed(IBinder token, IRequestFinishCallback callback): BACK on a task's root
+        // activity. Android 12+ moves the task back instead of finishing it; on iOS the app
+        // simply stays. Tests: -Dandropkg.back.finishesRoot=1 finishes it (pre-12 behavior).
+        public void onBackPressed(IBinder token, Object callback) {
+            if (System.getProperty("andropkg.back.finishesRoot") != null) Hidden.call(callback, "requestFinish");
         }
 
         public void activityDestroyed(IBinder token) {

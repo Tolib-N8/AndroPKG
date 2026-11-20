@@ -59,6 +59,9 @@ final class LocalService {
                     }
                     Method m = find(impl.getClass(), name, arity);
                     if (m != null) return Hidden.invoke(m, impl, args == null ? new Object[0] : args);
+                    // An implementation can take any signature of a method as (Object[] args).
+                    Method any = findVarargs(impl.getClass(), name);
+                    if (any != null) return Hidden.invoke(any, impl, (Object) (args == null ? new Object[0] : args));
                     if (reported.add(name + "/" + arity)) Log.w(TAG, shortName + "." + name + "() -> default");
                     replyToResultReceivers(args);
                     return Hidden.defaultValue(method.getReturnType());
@@ -91,6 +94,17 @@ final class LocalService {
         } catch (ClassNotFoundException e) {
             return null;
         }
+    }
+
+    private static Method findVarargs(Class<?> c, String name) {
+        for (Method m : c.getDeclaredMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (m.getName().equals(name) && p.length == 1 && p[0] == Object[].class) {
+                m.setAccessible(true);
+                return m;
+            }
+        }
+        return null;
     }
 
     private static Method find(Class<?> c, String name, int arity) {

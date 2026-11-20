@@ -12,6 +12,11 @@ public class MainActivity extends Activity {
     private static final String TAG = "HelloTest";
     private int taps;
 
+    @Override protected void onPause() { super.onPause(); Log.i(TAG, "onPause"); }
+    @Override protected void onStop() { super.onStop(); Log.i(TAG, "onStop"); }
+    @Override protected void onRestart() { super.onRestart(); Log.i(TAG, "onRestart"); }
+    @Override protected void onResume() { super.onResume(); Log.i(TAG, "onResume"); }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);

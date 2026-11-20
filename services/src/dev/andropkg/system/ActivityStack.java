@@ -55,6 +55,24 @@ final class ActivityStack {
     }
 
     /** True once every activity ever started has been destroyed. */
+    /** The task went behind (iOS app backgrounded): pause and stop the top activity. */
+    synchronized void background() {
+        Record top = top();
+        if (top == null) return;
+        AndroPkgSystem.schedule(top.token, null, pauseItem(false));
+        AndroPkgSystem.schedule(top.token, null, stopItem());
+    }
+
+    /** Back to front: the top activity restarts and resumes. */
+    synchronized void foreground() {
+        Record top = top();
+        if (top != null) AndroPkgSystem.schedule(top.token, null, resumeItem(false));
+    }
+
+    synchronized boolean isRoot(IBinder token) {
+        return !stack.isEmpty() && stack.get(0).token == token;
+    }
+
     synchronized boolean isEmpty() {
         return stack.isEmpty() && alive.isEmpty();
     }

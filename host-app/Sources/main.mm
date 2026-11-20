@@ -28,6 +28,7 @@ static void (*g_inject_touch)(int action, float x, float y);
 static void (*g_ime_insert_text)(const char* utf8);
 static void (*g_ime_delete_backward)();
 static void (*g_ime_enter)();
+static void (*g_inject_key)(int action, int keycode);
 
 // Touches on the Android window, in window pixels (MotionEvent actions; first finger only
 // until multi-touch lands).
@@ -59,6 +60,13 @@ static void (*g_ime_enter)();
 }
 - (void)deleteBackward {
   if (g_ime_delete_backward) g_ime_delete_backward();
+}
+// The iOS back gesture (swipe from the left edge) is Android's BACK key.
+- (void)edgeSwipe:(UIScreenEdgePanGestureRecognizer*)g {
+  if (g.state == UIGestureRecognizerStateEnded && g_inject_key) {
+    g_inject_key(0, 4 /* KEYCODE_BACK */);
+    g_inject_key(1, 4);
+  }
 }
 - (UITextAutocorrectionType)autocorrectionType {
   return UITextAutocorrectionTypeNo;  // no marked/replaced text yet: plain key input
@@ -170,6 +178,7 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   g_ime_insert_text = reinterpret_cast<void (*)(const char*)>(dlsym(RTLD_DEFAULT, "andropkg_ime_insert_text"));
   g_ime_delete_backward = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_delete_backward"));
   g_ime_enter = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_enter"));
+  g_inject_key = reinterpret_cast<void (*)(int, int)>(dlsym(RTLD_DEFAULT, "andropkg_inject_key"));
   if (auto set_ime = reinterpret_cast<void (*)(void (*)(int))>(dlsym(RTLD_DEFAULT, "andropkg_set_ime_listener"))) {
     set_ime([](int visible) {
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -232,6 +241,12 @@ static void* VMThread(void*) {
   return nullptr;
 }
 
+// iOS app lifecycle -> the Android task (top activity paused+stopped / restarted+resumed).
+static void SetAppVisible(int visible) {
+  auto set = reinterpret_cast<void (*)(int)>(dlsym(RTLD_DEFAULT, "andropkg_app_visibility"));  // after ART is up
+  if (set) set(visible);
+}
+
 @interface SceneDelegate : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic, strong) UIWindow* window;
 @end
@@ -252,11 +267,19 @@ static void* VMThread(void*) {
   g_frame_view = [[AndroidWindowView alloc] initWithFrame:root.bounds];
   g_frame_view.userInteractionEnabled = YES;
   g_frame_view.multipleTouchEnabled = NO;
+  UIScreenEdgePanGestureRecognizer* back =
+      [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:g_frame_view action:@selector(edgeSwipe:)];
+  back.edges = UIRectEdgeLeft;
+  [g_frame_view addGestureRecognizer:back];
   g_frame_view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   g_frame_view.contentMode = UIViewContentModeScaleToFill;
   g_frame_view.hidden = YES;
   [root addSubview:g_frame_view];
   self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
+  [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidEnterBackgroundNotification object:scene
+                                                   queue:nil usingBlock:^(NSNotification*) { SetAppVisible(0); }];
+  [NSNotificationCenter.defaultCenter addObserverForName:UISceneWillEnterForegroundNotification object:scene
+                                                   queue:nil usingBlock:^(NSNotification*) { SetAppVisible(1); }];
   self.window.rootViewController = vc;
   [self.window makeKeyAndVisible];
 }
