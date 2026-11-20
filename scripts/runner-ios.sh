@@ -22,7 +22,9 @@ done
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 (cd "$root/host-app" && xcodegen generate --quiet)
 if [ "${1:-}" = --apk ]; then
+  # Tests finish on their own; ANDROPKG_INTERACTIVE=1 keeps the app on screen.
   envs="\"ANDROPKG_APK\": \"test/$2.apk\""
+  [ -n "${ANDROPKG_INTERACTIVE:-}" ] || envs="$envs, \"ANDROPKG_AUTOFINISH\": \"1\""
 else
   main=${1:-Hello}
   dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
@@ -36,3 +38,9 @@ app="$root/build/ios-dd/Build/Products/Debug-iphoneos/AndroPkgRunner.app"
 xcrun devicectl device install app --device "$dev" "$app" >/dev/null
 xcrun devicectl device process launch --device "$dev" --console --terminate-existing \
   --environment-variables "{\"ANDROPKG_EXIT\": \"1\", $envs}" "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"
+if [ "${1:-}" = --apk ]; then  # first window frame, for checking: build/ios-frame.png
+  xcrun devicectl device copy from --device "$dev" --domain-type appDataContainer \
+    --domain-identifier "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")" \
+    --source Documents/frame.png --destination "$root/build/ios-frame.png" >/dev/null 2>&1 \
+    && echo "first frame: build/ios-frame.png"
+fi

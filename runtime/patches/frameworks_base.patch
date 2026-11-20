@@ -173,3 +173,38 @@ index 78db54a..bb95c44 100644
  #define CRITICAL_JNI_PARAMS
  #define CRITICAL_JNI_PARAMS_COMMA
  #else
+diff --git a/libs/hwui/utils/Color.cpp b/libs/hwui/utils/Color.cpp
+index 913af8a..48e44de 100644
+--- a/libs/hwui/utils/Color.cpp
++++ b/libs/hwui/utils/Color.cpp
+@@ -19,7 +19,7 @@
+ #include <ui/ColorSpace.h>
+ #include <utils/Log.h>
+ 
+-#ifdef __ANDROID__ // Layoutlib does not support hardware buffers or native windows
++#if defined(__ANDROID__) || defined(ANDROPKG) // Layoutlib does not support hardware buffers or native windows; andropkg: CPU windows
+ #include <android/hardware_buffer.h>
+ #include <android/native_window.h>
+ #endif
+@@ -31,7 +31,7 @@
+ namespace android {
+ namespace uirenderer {
+ 
+-#ifdef __ANDROID__ // Layoutlib does not support hardware buffers or native windows
++#if defined(__ANDROID__) || defined(ANDROPKG) // Layoutlib does not support hardware buffers or native windows; andropkg: CPU windows
+ static inline SkImageInfo createImageInfo(int32_t width, int32_t height, int32_t format,
+                                           sk_sp<SkColorSpace> colorSpace) {
+     SkColorType colorType = kUnknown_SkColorType;
+diff --git a/libs/hwui/utils/Color.h b/libs/hwui/utils/Color.h
+index 0fd61c7..843646e 100644
+--- a/libs/hwui/utils/Color.h
++++ b/libs/hwui/utils/Color.h
+@@ -92,7 +92,7 @@ static constexpr float EOCF_sRGB(float srgb) {
+     return srgb <= 0.04045f ? srgb / 12.92f : powf((srgb + 0.055f) / 1.055f, 2.4f);
+ }
+ 
+-#ifdef __ANDROID__ // Layoutlib does not support hardware buffers or native windows
++#if defined(__ANDROID__) || defined(ANDROPKG) // Layoutlib does not support hardware buffers or native windows; andropkg: CPU windows
+ SkImageInfo ANativeWindowToImageInfo(const ANativeWindow_Buffer& buffer,
+                                                  sk_sp<SkColorSpace> colorSpace);
+ 

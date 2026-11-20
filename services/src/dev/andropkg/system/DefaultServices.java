@@ -17,7 +17,6 @@ final class DefaultServices {
     private DefaultServices() {}
 
     private static final String[][] INTERFACES = {
-        {"window", "android.view.IWindowManager"},
         {"power", "android.os.IPowerManager"},
         {"input", "android.hardware.input.IInputManager"},
         {"input_method", "com.android.internal.view.IInputMethodManager"},

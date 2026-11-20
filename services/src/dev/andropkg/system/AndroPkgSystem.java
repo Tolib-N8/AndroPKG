@@ -45,12 +45,34 @@ public final class AndroPkgSystem {
         apkPath = args[0];
         dataDir = args[1];
         launchActivity = args.length > 2 ? args[2] : null;
+        startWatchdog(Thread.currentThread());
         installServices();
+        // Software rendering: windows draw through Surface.lockCanvas() into CPU buffers until
+        // hwui's GPU pipeline (RenderThread over Metal) is ported.
+        Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
         parsePackage();
         Log.i(TAG, "starting " + appInfo.packageName + " (" + apkPath + ")");
         // Never returns: the app's main looper takes over this thread.
         Hidden.callStatic(Hidden.cls("android.app.ActivityThread"), "main",
                 (Object) new String[] {"seq=1"});
+    }
+
+    /** -Dandropkg.watchdog=<seconds>: then log where the main thread is (hang diagnosis). */
+    private static void startWatchdog(Thread main) {
+        String s = System.getProperty("andropkg.watchdog");
+        if (s == null) return;
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(Long.parseLong(s) * 1000);
+            } catch (InterruptedException e) {
+                return;
+            }
+            StringBuilder b = new StringBuilder("watchdog: main thread is at\n");
+            for (StackTraceElement e : main.getStackTrace()) b.append("    at ").append(e).append('\n');
+            Log.w(TAG, b.toString());
+        }, "andropkg-watchdog");
+        t.setDaemon(true);
+        t.start();
     }
 
     // ---- package ----------------------------------------------------------------------
@@ -122,7 +144,9 @@ public final class AndroPkgSystem {
         services.put("activity_task", LocalService.create("android.app.IActivityTaskManager", new ActivityTaskManagerImpl()));
         services.put("package", LocalService.create("android.content.pm.IPackageManager", new PackageManagerImpl()));
         services.put("permissionmgr", LocalService.create("android.permission.IPermissionManager", new Object()));
-        services.put("display", LocalService.create("android.hardware.display.IDisplayManager", new DisplayManagerImpl()));
+        DisplayManagerImpl display = new DisplayManagerImpl();
+        services.put("display", LocalService.create("android.hardware.display.IDisplayManager", display));
+        services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
         activityClientController =
                 LocalService.create("android.app.IActivityClientController", new ActivityClientControllerImpl()).iface;
         // The service manager itself is in-process: no binder driver, no servicemanager daemon.
@@ -173,7 +197,7 @@ public final class AndroPkgSystem {
 
         public void attachApplication(Object thread, long startSeq) {
             appThread = thread;
-            Configuration config = new Configuration(Resources.getSystem().getConfiguration());
+            Configuration config = WindowManagerImpl.displayConfiguration(Resources.getSystem().getConfiguration());
             Object compat = Hidden.getField(Hidden.cls("android.content.res.CompatibilityInfo"),
                     "DEFAULT_COMPATIBILITY_INFO");
             Hidden.call(thread, "bindApplication",
@@ -199,7 +223,7 @@ public final class AndroPkgSystem {
                 .setComponent(new ComponentName(appInfo.packageName, className));
         IBinder token = new Binder();
         activities.put(token, info);
-        Configuration config = new Configuration(Resources.getSystem().getConfiguration());
+        Configuration config = WindowManagerImpl.displayConfiguration(Resources.getSystem().getConfiguration());
 
         Object launch = Hidden.callStatic(Hidden.cls("android.app.servertransaction.LaunchActivityItem"),
                 "obtain", intent, 0, info, config, new Configuration(), 0 /* deviceId */,

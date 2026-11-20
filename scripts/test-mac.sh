@@ -1,0 +1,34 @@
+#!/bin/sh
+# Runs the macOS regression set: plain-Java tests on ART, then APKs through andropkg's system
+# services (lifecycle, first rendered frame). Exits non-zero on the first failure.
+#   scripts/test-mac.sh            (expects build/runtime-macos built; builds Java parts)
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+"$root/scripts/build-java.sh" >/dev/null
+J=${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}
+sdk="$HOME/Library/Android/sdk/platforms/android-37.0/android.jar"
+for t in tests/*/; do
+  ls "$t"*.java >/dev/null 2>&1 || continue
+  out="build/tests/$(basename "$t")"; mkdir -p "$out"
+  "$J/bin/javac" --release 8 -nowarn -cp "$sdk" -d "$out" "$t"*.java 2>/dev/null
+  JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --lib "$sdk" --output "$out" "$out"/*.class
+done
+log=$(mktemp -d)
+fail() { echo "FAIL: $1 (log: $log/$2.log)"; exit 1; }
+run() {  # run <name> <expected-regex> <dalvikvm args...>
+  name=$1; want=$2; shift 2
+  ANDROPKG_BCP=full timeout 300 scripts/run-dalvikvm-mac.sh "$@" >"$log/$name.log" 2>&1 || true
+  grep -qE "$want" "$log/$name.log" || fail "$name" "$name"
+  echo "ok   $name"
+}
+run hello "^done" -cp build/tests/hello/classes.dex Hello
+run looper "looper done" -cp build/tests/looper/classes.dex LooperTest
+run resources "resources ok" -cp build/tests/resources/classes.dex ResourcesTest
+apk() { echo -Xhidden-api-policy:disabled -Dandropkg.test.autofinish=1 -cp build/services/services.dex \
+  dev.andropkg.system.AndroPkgSystem "$root/build/apps/$1.apk" "$root/build/android-root/data/app/$1"; }
+run lifecycle "\[lifecycle\] onDestroy" $(apk lifecycle)
+frame="$log/hello-frame.png"
+ANDROPKG_FRAME_PNG=$frame run hello-apk "HelloTest.*onDraw" $(apk hello)
+[ -s "$frame" ] || fail "hello-apk frame" hello-apk
+echo "ok   hello-apk frame ($frame)"

@@ -529,7 +529,7 @@ index 7b3d849..fa865cf 100644
      case gc::kAllocatorTypeDlMalloc: {
        SetQuickAllocEntryPoints_dlmalloc(qpoints, entry_points_instrumented);
 diff --git a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
-index 7e96f29..d9531a7 100644
+index 7e96f29..3b46345 100644
 --- a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
 +++ b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
 @@ -60,6 +60,22 @@
@@ -571,7 +571,124 @@ index 7e96f29..d9531a7 100644
    // The resolution trampoline stashes the resolved method into the callee-save frame to transport
    // it. Thus, when exiting, the stack cannot be verified (as the resolved method most likely
    // does not have the same stack layout as the callee-save method).
-@@ -2164,12 +2182,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
+@@ -1436,7 +1454,8 @@ template<class T> class BuildNativeCallFrameStateMachine {
+     return gpr_index_ > 0;
+   }
+ 
+-  void AdvanceInt(uint32_t val) {
++  // andropkg: `stack_size` is the argument's natural size (Darwin packs stack arguments).
++  void AdvanceInt(uint32_t val, size_t stack_size = sizeof(uint32_t)) {
+     if (HaveIntGpr()) {
+       gpr_index_--;
+       if (kMultiGPRegistersWidened) {
+@@ -1449,9 +1468,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
+       stack_entries_++;
+       if (kMultiGPRegistersWidened) {
+         DCHECK_EQ(sizeof(uintptr_t), sizeof(int64_t));
+-        PushStack(static_cast<int64_t>(bit_cast<int32_t, uint32_t>(val)));
++        PushStack(static_cast<int64_t>(bit_cast<int32_t, uint32_t>(val)), stack_size);
+       } else {
+-        PushStack(val);
++        PushStack(val, stack_size);
+       }
+       gpr_index_ = 0;
+     }
+@@ -1527,7 +1546,7 @@ template<class T> class BuildNativeCallFrameStateMachine {
+         }
+       } else {
+         stack_entries_++;
+-        PushStack(static_cast<uintptr_t>(bit_cast<uint32_t, float>(val)));
++        PushStack(static_cast<uintptr_t>(bit_cast<uint32_t, float>(val)), sizeof(float));
+         fpr_index_ = 0;
+       }
+     }
+@@ -1579,6 +1598,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
+   }
+ 
+   uint32_t GetStackEntries() const {
++#if defined(__APPLE__) && defined(__aarch64__)
++    return static_cast<uint32_t>((stack_bytes_ + 7) / 8);  // andropkg: in 8-byte units
++#endif
+     return stack_entries_;
+   }
+ 
+@@ -1600,10 +1622,20 @@ template<class T> class BuildNativeCallFrameStateMachine {
+   void PushFpr8(uint64_t val) {
+     delegate_->PushFpr8(val);
+   }
+-  void PushStack(uintptr_t val) {
++  void PushStack(uintptr_t val, size_t size = sizeof(uintptr_t)) {
++#if defined(__APPLE__) && defined(__aarch64__)
++    // andropkg: Apple arm64 ABI — stack arguments take their natural size and alignment
++    // (AAPCS64 gives every one an 8-byte slot).
++    stack_bytes_ = RoundUp(stack_bytes_, size);
++    delegate_->PushStackAt(val, stack_bytes_, size);
++    stack_bytes_ += size;
++#else
++    UNUSED(size);
+     delegate_->PushStack(val);
++#endif
+   }
+ 
++  size_t stack_bytes_ = 0;  // andropkg: Darwin stack argument area, in bytes
+   uint32_t gpr_index_;      // Number of free GPRs
+   uint32_t fpr_index_;      // Number of free FPRs
+   uint32_t stack_entries_;  // Stack entries are in multiples of 32b, as floats are usually not
+@@ -1651,8 +1683,12 @@ class ComputeNativeCallFrameSize {
+           break;
+         case Primitive::kPrimBoolean:
+         case Primitive::kPrimByte:
++          sm.AdvanceInt(0, 1);
++          break;
+         case Primitive::kPrimChar:
+         case Primitive::kPrimShort:
++          sm.AdvanceInt(0, 2);
++          break;
+         case Primitive::kPrimInt:
+           sm.AdvanceInt(0);
+           break;
+@@ -1690,6 +1726,8 @@ class ComputeNativeCallFrameSize {
+     // counting is already done in the superclass
+   }
+ 
++  void PushStackAt(uintptr_t /* val */, size_t /* offset */, size_t /* size */) {}
++
+  protected:
+   uint32_t num_stack_entries_;
+ };
+@@ -1798,6 +1836,11 @@ class FillNativeCall {
+     cur_stack_arg_++;
+   }
+ 
++  // andropkg (Apple arm64): packed stack arguments, little-endian low `size` bytes of `val`.
++  void PushStackAt(uintptr_t val, size_t offset, size_t size) {
++    memcpy(reinterpret_cast<uint8_t*>(cur_stack_arg_) + offset, &val, size);
++  }
++
+  private:
+   uintptr_t* cur_gpr_reg_;
+   uint32_t* cur_fpr_reg_;
+@@ -1918,10 +1961,16 @@ void BuildGenericJniFrameVisitor::Visit() {
+       current_vreg_ += 1u;
+       break;
+     case Primitive::kPrimBoolean:  // Fall-through.
+-    case Primitive::kPrimByte:     // Fall-through.
++    case Primitive::kPrimByte:
++      sm_.AdvanceInt(*reinterpret_cast<jint*>(GetParamAddress()), 1);
++      current_vreg_ += 1u;
++      break;
+     case Primitive::kPrimChar:     // Fall-through.
+-    case Primitive::kPrimShort:    // Fall-through.
+-    case Primitive::kPrimInt:      // Fall-through.
++    case Primitive::kPrimShort:
++      sm_.AdvanceInt(*reinterpret_cast<jint*>(GetParamAddress()), 2);
++      current_vreg_ += 1u;
++      break;
++    case Primitive::kPrimInt:
+       sm_.AdvanceInt(*reinterpret_cast<jint*>(GetParamAddress()));
+       current_vreg_ += 1u;
+       break;
+@@ -2164,12 +2213,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
  extern "C" TwoWordReturn artInvokeInterfaceTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -586,7 +703,7 @@ index 7e96f29..d9531a7 100644
    return artInvokeCommon<kDirect>(method_idx, this_object, self, sp);
  }
  
-@@ -2178,6 +2198,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2178,6 +2229,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
      mirror::Object* this_object ATTRIBUTE_UNUSED,
      Thread* self,
      ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -594,7 +711,7 @@ index 7e96f29..d9531a7 100644
    // For static, this_object is not required and may be random garbage. Don't pass it down so that
    // it doesn't cause ObjPtr alignment failure check.
    return artInvokeCommon<kStatic>(method_idx, nullptr, self, sp);
-@@ -2186,12 +2207,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2186,12 +2238,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
  extern "C" TwoWordReturn artInvokeSuperTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -609,7 +726,7 @@ index 7e96f29..d9531a7 100644
    return artInvokeCommon<kVirtual>(method_idx, this_object, self, sp);
  }
  
-@@ -2202,6 +2225,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
+@@ -2202,6 +2256,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
                                                        Thread* self,
                                                        ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -965,10 +1082,19 @@ index 36d7d7e..ec8d7c1 100644
    env->DeleteGlobalRef(java_lang_Object);
  
 diff --git a/runtime/runtime_common.cc b/runtime/runtime_common.cc
-index c4a695f..a3a76e3 100644
+index c4a695f..c822632 100644
 --- a/runtime/runtime_common.cc
 +++ b/runtime/runtime_common.cc
-@@ -280,6 +280,25 @@ void UContext::Dump(std::ostream& os) const {
+@@ -16,6 +16,8 @@
+ 
+ #include "runtime_common.h"
+ 
++#include <dlfcn.h>
++
+ #include <signal.h>
+ 
+ #include <cinttypes>
+@@ -280,6 +282,47 @@ void UContext::Dump(std::ostream& os) const {
    DumpRegister64(os, "pstate", context.pstate);
    DumpArmStatusRegister(os, context.pstate);
    os << '\n';
@@ -990,6 +1116,28 @@ index c4a695f..a3a76e3 100644
 +  os << '\n';
 +  DumpRegister32(os, "cpsr", ss.__cpsr);
 +  DumpArmStatusRegister(os, ss.__cpsr);
++  // andropkg: no libunwindstack on Darwin; symbolize pc/lr and walk the frame-pointer chain.
++  auto sym = [&os](const char* what, uintptr_t addr) {
++    Dl_info info = {};
++    os << '\n' << what << " 0x" << std::hex << addr << std::dec;
++    if (addr != 0 && dladdr(reinterpret_cast<void*>(addr), &info) != 0) {
++      const char* lib = info.dli_fname ? strrchr(info.dli_fname, '/') : nullptr;
++      os << "  " << (lib ? lib + 1 : "?") << " +0x" << std::hex
++         << (addr - reinterpret_cast<uintptr_t>(info.dli_fbase)) << std::dec;
++      if (info.dli_sname) os << "  " << info.dli_sname << "+" << (addr - reinterpret_cast<uintptr_t>(info.dli_saddr));
++    }
++  };
++  sym("pc", ss.__pc);
++  sym("lr", ss.__lr);
++  uintptr_t fp = ss.__fp;
++  const uintptr_t stack_lo = ss.__sp, stack_hi = ss.__sp + 8 * 1024 * 1024;
++  for (int depth = 0; depth < 48 && fp >= stack_lo && fp < stack_hi && (fp & 7) == 0; ++depth) {
++    uintptr_t next = reinterpret_cast<uintptr_t*>(fp)[0];
++    uintptr_t ret = reinterpret_cast<uintptr_t*>(fp)[1];
++    sym(("  #" + std::to_string(depth)).c_str(), ret);
++    if (next <= fp) break;
++    fp = next;
++  }
 +  os << '\n';
  #else
    os << "Unknown architecture/word size/OS in ucontext dump";

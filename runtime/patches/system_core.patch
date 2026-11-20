@@ -12,7 +12,7 @@ index 9c71141..6ce9f36 100644
      return systemTime(SYSTEM_TIME_MONOTONIC);
  #endif
 diff --git a/libutils/Timers.cpp b/libutils/Timers.cpp
-index 4cfac57..db17d87 100644
+index 4cfac57..2fa1339 100644
 --- a/libutils/Timers.cpp
 +++ b/libutils/Timers.cpp
 @@ -29,7 +29,20 @@ static void checkClockId(int clock) {
@@ -27,7 +27,7 @@ index 4cfac57..db17d87 100644
 +    checkClockId(clock);
 +    static constexpr clockid_t clocks[] = {CLOCK_REALTIME, CLOCK_UPTIME_RAW,
 +                                           CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID,
-+                                           CLOCK_MONOTONIC};
++                                           _CLOCK_MONOTONIC};
 +    static_assert(clock_id_max == arraysize(clocks));
 +    timespec t = {};
 +    clock_gettime(clocks[clock], &t);

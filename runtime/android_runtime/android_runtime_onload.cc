@@ -61,6 +61,8 @@ extern int register_android_os_SystemProperties(JNIEnv* env);
 extern int register_andropkg_binder_stubs(JNIEnv* env);
 extern int register_andropkg_process_stubs(JNIEnv* env);
 extern int register_andropkg_framework_stubs(JNIEnv* env);
+extern int register_andropkg_parcel(JNIEnv* env);
+extern int register_andropkg_window(JNIEnv* env);
 extern int register_android_content_res_ApkAssets(JNIEnv* env);
 extern int register_android_content_AssetManager(JNIEnv* env);
 extern int register_android_content_StringBlock(JNIEnv* env);
@@ -100,7 +102,9 @@ static const RegJni kRegistrations[] = {
     {"XmlBlock", register_android_content_XmlBlock},
     {"ResourceTimer", register_android_content_res_ResourceTimer},
     {"ClassLoaderFactory", register_com_android_internal_os_ClassLoaderFactory},
+    {"Parcel (andropkg)", register_andropkg_parcel},
     {"android.graphics (hwui)", register_hwui_graphics},
+    {"window system (andropkg)", register_andropkg_window},
 };
 
 }  // namespace android

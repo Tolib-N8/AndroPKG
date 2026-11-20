@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hello andropkg</string>
+    <string name="title">Hello from Android 14</string>
+    <string name="subtitle">An APK\'s Activity, drawn by hwui + Skia, on iOS without a VM.</string>
+</resources>

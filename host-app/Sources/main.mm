@@ -2,6 +2,7 @@
 // main(). Output goes to stdout (devicectl --console) and to the screen.
 #import <UIKit/UIKit.h>
 
+#include <dlfcn.h>
 #include <jni.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -17,6 +18,34 @@ static int g_screen_w = 1080, g_screen_h = 2400, g_screen_dpi = 420;
 static void Log(NSString* s) {
   printf("[ART-RUNNER] %s\n", s.UTF8String);
   fflush(stdout);
+}
+
+// ---- Android window frames -> screen ----------------------------------------------------
+// The Android display is the native screen (same pixel size), so a frame maps 1:1.
+static UIImageView* g_frame_view;
+
+static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
+  CFDataRef data = CFDataCreate(nullptr, static_cast<const UInt8*>(rgba), static_cast<CFIndex>(stride) * h);
+  CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGImageRef cg = CGImageCreate(w, h, 8, 32, stride, cs,
+                                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big, provider,
+                                nullptr, false, kCGRenderingIntentDefault);
+  UIImage* image = [UIImage imageWithCGImage:cg];
+  CGImageRelease(cg);
+  CGColorSpaceRelease(cs);
+  CGDataProviderRelease(provider);
+  CFRelease(data);
+  static int frames = 0;
+  if (frames++ == 0) {  // keep the first frame (scripts/runner-ios.sh pulls it for checking)
+    NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    [UIImagePNGRepresentation(image) writeToFile:[docs stringByAppendingPathComponent:@"frame.png"] atomically:YES];
+    Log([NSString stringWithFormat:@"first frame %dx%d", w, h]);
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{
+    g_frame_view.image = image;
+    g_frame_view.hidden = NO;
+  });
 }
 
 static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
@@ -52,6 +81,7 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
       "-Dandropkg.display.height=" + std::to_string(g_screen_h),
       "-Dandropkg.display.dpi=" + std::to_string(g_screen_dpi),
   };
+  if (getenv("ANDROPKG_AUTOFINISH")) opts.push_back("-Dandropkg.test.autofinish=1");
   std::vector<JavaVMOption> vm_opts;
   for (auto& o : opts) vm_opts.push_back({const_cast<char*>(o.c_str()), nullptr});
   JavaVMInitArgs args = {JNI_VERSION_1_6, static_cast<jint>(vm_opts.size()), vm_opts.data(), JNI_FALSE};
@@ -64,6 +94,11 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
     return 1;
   }
   Log([NSString stringWithFormat:@"VM started in %.0f ms", (CFAbsoluteTimeGetCurrent() - t0) * 1000]);
+  // libandroid_runtime is loaded by now (Runtime::InitNativeMethods).
+  using SetSink = void (*)(void (*)(const void*, int, int, int, void*), void*);
+  if (auto set_sink = reinterpret_cast<SetSink>(dlsym(RTLD_DEFAULT, "andropkg_set_frame_sink"))) {
+    set_sink(FrameSink, nullptr);
+  }
 
   jclass cls = env->FindClass(main_class);
   jmethodID main = cls ? env->GetStaticMethodID(cls, "main", "([Ljava/lang/String;)V") : nullptr;
@@ -127,6 +162,11 @@ static void* VMThread(void*) {
   vc.view = label;
   label.backgroundColor = UIColor.systemBackgroundColor;
   [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) { label.text = g_status; }];
+  g_frame_view = [[UIImageView alloc] initWithFrame:label.bounds];
+  g_frame_view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  g_frame_view.contentMode = UIViewContentModeScaleToFill;
+  g_frame_view.hidden = YES;
+  [label addSubview:g_frame_view];
   self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
   self.window.rootViewController = vc;
   [self.window makeKeyAndVisible];

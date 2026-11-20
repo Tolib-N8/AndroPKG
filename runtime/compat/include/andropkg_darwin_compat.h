@@ -5,6 +5,14 @@
 
 #if defined(__APPLE__)
 #include <sys/types.h>
+#include <time.h>
+
+/* Linux clock semantics, which all of AOSP assumes: CLOCK_MONOTONIC stops while the device
+ * sleeps (SystemClock.uptimeMillis, System.nanoTime, Looper and Choreographer timing share
+ * it). Darwin's CLOCK_MONOTONIC keeps counting (Linux CLOCK_BOOTTIME); CLOCK_UPTIME_RAW is
+ * the Linux one. Code that means "boot time" uses _CLOCK_MONOTONIC explicitly. */
+#undef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC _CLOCK_UPTIME_RAW
 
 #ifndef ANDROPKG_NO_LARGEFILE_ALIASES
 typedef off_t off64_t;
