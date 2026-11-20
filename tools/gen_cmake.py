@@ -18,7 +18,7 @@ from bp import Tree, Variant  # noqa: E402
 # Flags that are meaningless or harmful for Apple clang / Mach-O.
 DROP_FLAGS = {
     "-Werror", "-fvisibility=protected", "-ggdb3", "-Wl,--exclude-libs=libziparchive.a",
-    "-fsanitize-address-use-after-return=never", "-Wframe-larger-than=1736",
+    "-fsanitize-address-use-after-return=never", "-Wframe-larger-than=1736", "-fno-tree-sra",
 }
 DROP_PREFIXES = ("-Werror=", "-Wl,--", "-fsanitize", "-Wframe-larger-than", "-Xclang")
 

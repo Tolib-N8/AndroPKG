@@ -1,0 +1,16 @@
+diff --git a/libs/ui/include/ui/FatVector.h b/libs/ui/include/ui/FatVector.h
+index cb61e6a..1cc82c8 100644
+--- a/libs/ui/include/ui/FatVector.h
++++ b/libs/ui/include/ui/FatVector.h
+@@ -43,6 +43,11 @@ public:
+ 
+     typedef T value_type; // needed to implement std::allocator
+     typedef T* pointer;   // needed to implement std::allocator
++    // andropkg: newer libc++ requires allocators to provide rebind.
++    template <class U>
++    struct rebind {
++        typedef InlineStdAllocator<U, SIZE> other;
++    };
+ 
+     explicit InlineStdAllocator(Allocation& allocation) : mAllocation(allocation) {}
+     InlineStdAllocator(const InlineStdAllocator& other) : mAllocation(other.mAllocation) {}

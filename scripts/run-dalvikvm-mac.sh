@@ -21,6 +21,8 @@ if [ ! -d "$fs" ]; then
   ln -sfn "$pb/framework-res.apk" "$fs/system/framework/framework-res.apk"
   ln -sfn "$pb/build.prop" "$fs/system/build.prop"
   ln -sfn "$pb/fonts" "$fs/system/fonts"
+  mkdir -p "$fs/system/etc"
+  ln -sfn "$pb/fonts.xml" "$fs/system/etc/fonts.xml"
 fi
 
 # Boot classpath: ANDROPKG_BCP=full -> the whole Android 14 BOOTCLASSPATH (framework etc.);

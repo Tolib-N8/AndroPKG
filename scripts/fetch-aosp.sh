@@ -30,6 +30,21 @@ external/conscrypt     external/conscrypt
 frameworks/base        frameworks/base
 frameworks/native      frameworks/native
 system/incremental_delivery system/incremental_delivery
+external/skia          external/skia
+frameworks/minikin     frameworks/minikin
+external/harfbuzz_ng   external/harfbuzz_ng
+external/freetype      external/freetype
+external/libpng        external/libpng
+external/libjpeg-turbo external/libjpeg-turbo
+external/webp          external/webp
+external/wuffs-mirror-release-c external/wuffs-mirror-release-c
+external/dng_sdk       external/dng_sdk
+external/piex          external/piex
+external/sfntly        external/sfntly
+external/image_io      external/image_io
+external/modp_b64      external/modp_b64
+external/vulkan-headers external/vulkan-headers
+hardware/libhardware   hardware/libhardware
 "
 # Big repos: partial clone + sparse checkout of just what the runtime builds.
 sparse_paths() {
@@ -37,11 +52,21 @@ sparse_paths() {
     bionic) echo "/libc/include/elf.h /libc/include/bits/elf_common.h /libc/include/bits/auxvec.h
                  /libc/kernel/uapi/ /libc/kernel/android/uapi/
                  !/libc/kernel/uapi/linux/netfilter*/" ;;
+    external/skia) echo "/Android.bp /include/ /src/ /client_utils/ /mac/ /linux/ /android/ /modules/skcms/
+                        /modules/skshaper/include/ /modules/skparagraph/include/ /modules/skottie/include/
+                        /modules/skunicode/include/ /modules/skresources/include/ /modules/svg/include/" ;;
+    external/vulkan-headers) echo "/include/" ;;
+    hardware/libhardware) echo "/include/" ;;
+    external/sfntly) echo "/Android.bp /cpp/src/" ;;
+    external/wuffs-mirror-release-c) echo "/Android.bp /release/c/" ;;
+    external/harfbuzz_ng) echo "/Android.bp /src/" ;;
+    external/freetype) echo "/Android.bp /include/ /src/ /builds/unix/" ;;
     system/incremental_delivery) echo "/incfs/util/ /incfs/Android.bp /incfs/include/" ;;
     frameworks/base) echo "/core/jni/ /libs/androidfw/ /libs/hwui/ /include/ /native/android/ /core/proto/" ;;
     frameworks/native) echo "/include/ /libs/binder/include/ /libs/nativewindow/include/ /libs/nativebase/include/
-                            /libs/arect/include/ /libs/math/include/ /libs/ui/include/ /libs/gui/include/
-                            /libs/input/ /include/input/" ;;
+                            /libs/arect/include/ /libs/math/include/ /libs/ui/ /libs/gui/include/
+                            /libs/input/ /include/input/ /libs/ultrahdr/
+                            /opengl/include/" ;;
     external/boringssl) echo "/Android.bp /sources.bp /err_data.c /src/include/ /src/crypto/ /src/ssl/ /src/third_party/fiat/
                              /src/decrepit/ /apple-aarch64/" ;;
     external/conscrypt) echo "/Android.bp /common/src/jni/" ;;

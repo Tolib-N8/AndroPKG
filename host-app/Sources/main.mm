@@ -11,13 +11,15 @@
 
 static NSString* g_status = @"starting ART…";
 static int g_exit_code = 1;
+// The screen the Android display maps to (read on the main thread before ART starts).
+static int g_screen_w = 1080, g_screen_h = 2400, g_screen_dpi = 420;
 
 static void Log(NSString* s) {
   printf("[ART-RUNNER] %s\n", s.UTF8String);
   fflush(stdout);
 }
 
-static int RunDex(NSString* dex_path, const char* main_class) {
+static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
   NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
   NSString* data = [NSTemporaryDirectory() stringByAppendingPathComponent:@"android-data"];
   mkdir(data.fileSystemRepresentation, 0700);
@@ -44,6 +46,11 @@ static int RunDex(NSString* dex_path, const char* main_class) {
   std::vector<std::string> opts = {
       "-Xbootclasspath:" + bcp, "-Xbootclasspath-locations:" + bcp, "-Xusejit:false", "-Xint",
       std::string("-Djava.class.path=") + dex_path.fileSystemRepresentation,
+      // andropkg's system services are the platform: they may use @hide APIs.
+      "-Xhidden-api-policy:disabled",
+      "-Dandropkg.display.width=" + std::to_string(g_screen_w),
+      "-Dandropkg.display.height=" + std::to_string(g_screen_h),
+      "-Dandropkg.display.dpi=" + std::to_string(g_screen_dpi),
   };
   std::vector<JavaVMOption> vm_opts;
   for (auto& o : opts) vm_opts.push_back({const_cast<char*>(o.c_str()), nullptr});
@@ -65,7 +72,11 @@ static int RunDex(NSString* dex_path, const char* main_class) {
     Log(@"main class/method not found");
     return 1;
   }
-  jobjectArray argv = env->NewObjectArray(0, env->FindClass("java/lang/String"), nullptr);
+  jobjectArray argv = env->NewObjectArray(static_cast<jsize>(main_args.size()),
+                                          env->FindClass("java/lang/String"), nullptr);
+  for (size_t i = 0; i < main_args.size(); i++) {
+    env->SetObjectArrayElement(argv, static_cast<jsize>(i), env->NewStringUTF(main_args[i].c_str()));
+  }
   t0 = CFAbsoluteTimeGetCurrent();
   env->CallStaticVoidMethod(cls, main, argv);
   if (env->ExceptionCheck()) {
@@ -78,12 +89,25 @@ static int RunDex(NSString* dex_path, const char* main_class) {
 }
 
 static void* VMThread(void*) {
-  // ANDROPKG_DEX / ANDROPKG_MAIN select the test (default: test/hello.dex, Hello).
-  const char* dex_rel = getenv("ANDROPKG_DEX") ?: "test/hello.dex";
-  const char* main_class = getenv("ANDROPKG_MAIN") ?: "Hello";
-  NSString* dex = [[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"]
-      stringByAppendingPathComponent:@(dex_rel)];
-  g_exit_code = RunDex(dex, main_class);
+  NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
+  std::vector<std::string> main_args;
+  const char* dex_rel;
+  const char* main_class;
+  if (const char* apk = getenv("ANDROPKG_APK")) {
+    // An Android app: andropkg's system services boot ActivityThread for the APK.
+    dex_rel = "system/framework/andropkg-services.dex";
+    main_class = "dev/andropkg/system/AndroPkgSystem";
+    NSString* name = [@(apk).lastPathComponent stringByDeletingPathExtension];
+    NSString* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString* data = [[docs stringByAppendingPathComponent:@"data/app"] stringByAppendingPathComponent:name];
+    main_args = {[root stringByAppendingPathComponent:@(apk)].fileSystemRepresentation, data.fileSystemRepresentation};
+  } else {
+    // ANDROPKG_DEX / ANDROPKG_MAIN select a plain-Java test (default: test/hello.dex, Hello).
+    dex_rel = getenv("ANDROPKG_DEX") ?: "test/hello.dex";
+    main_class = getenv("ANDROPKG_MAIN") ?: "Hello";
+  }
+  NSString* dex = [root stringByAppendingPathComponent:@(dex_rel)];
+  g_exit_code = RunDex(dex, main_class, main_args);
   g_status = g_exit_code == 0 ? @"Hello ran on ART ✓ (see console)" : @"ART run failed (see console)";
   Log([NSString stringWithFormat:@"exit code %d", g_exit_code]);
   if (getenv("ANDROPKG_EXIT")) exit(g_exit_code);
@@ -113,6 +137,10 @@ static void* VMThread(void*) {
 @end
 @implementation AppDelegate
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)opts {
+  UIScreen* screen = UIScreen.mainScreen;
+  g_screen_w = static_cast<int>(screen.nativeBounds.size.width);
+  g_screen_h = static_cast<int>(screen.nativeBounds.size.height);
+  g_screen_dpi = static_cast<int>(160 * screen.nativeScale);  // Android dp == iOS point
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack

@@ -15,10 +15,23 @@ index 1a13029..e75d25d 100644
  static const int BLOCKED_THREAD_SIGNAL = __SIGRTMIN + 2;
  #endif
 diff --git a/luni/src/main/native/libcore_io_Linux.cpp b/luni/src/main/native/libcore_io_Linux.cpp
-index 43a6b1a..5a0946f 100644
+index 43a6b1a..36cee90 100644
 --- a/luni/src/main/native/libcore_io_Linux.cpp
 +++ b/luni/src/main/native/libcore_io_Linux.cpp
-@@ -1595,9 +1595,13 @@ static jobject Linux_getsockoptUcred(JNIEnv* env, jobject, jobject javaFd, jint
+@@ -77,6 +77,12 @@
+ #include "ScopedByteBufferArray.h"
+ #include "ScopedMsghdr.h"
+ 
++#ifdef ANDROPKG
++// andropkg: every path handed to a syscall goes through Android -> iOS path translation.
++#include "andropkg/translated_utf_chars.h"
++#define ScopedUtfChars andropkg::TranslatedUtfChars
++#endif
++
+ 
+ #ifndef __unused
+ #define __unused __attribute__((__unused__))
+@@ -1595,9 +1601,13 @@ static jobject Linux_getsockoptUcred(JNIEnv* env, jobject, jobject javaFd, jint
  static jint Linux_gettid(JNIEnv* env __unused, jobject) {
  #if defined(__BIONIC__)
    return TEMP_FAILURE_RETRY(gettid());
@@ -32,7 +45,7 @@ index 43a6b1a..5a0946f 100644
  }
  
  static jint Linux_getuid(JNIEnv*, jobject) {
-@@ -2665,8 +2669,12 @@ static jstring Linux_strerror(JNIEnv* env, jobject, jint errnum) {
+@@ -2665,8 +2675,12 @@ static jstring Linux_strerror(JNIEnv* env, jobject, jint errnum) {
        return env->NewStringUTF(android::base::StringPrintf("Unknown error %d", errnum).c_str());
      }
      return env->NewStringUTF(buffer);
@@ -76,6 +89,52 @@ index 83aa0ae..d182a8c 100644
  #elif __solaris__
    #include <thread.h>
    #include <signal.h>
+diff --git a/ojluni/src/main/native/io_util.h b/ojluni/src/main/native/io_util.h
+index 31088a9..bb05fca 100644
+--- a/ojluni/src/main/native/io_util.h
++++ b/ojluni/src/main/native/io_util.h
+@@ -84,16 +84,31 @@ void throwFileNotFoundException(JNIEnv *env, jstring path);
+  * declares a unique variable.
+  */
+ 
++#ifdef ANDROPKG
++/* andropkg: java.io paths are translated onto the iOS layout (andropkg/paths.h). */
++#include "andropkg/paths.h"
++#define ANDROPKG_PATH_DECL(var) const char *_##var##orig = NULL; char _##var##buf[1024];
++#define ANDROPKG_PATH_TRANSLATE(var) \
++        _##var##orig = var; var = andropkg_translate_path(var, _##var##buf, sizeof _##var##buf);
++#define ANDROPKG_PATH_ORIG(var) _##var##orig
++#else
++#define ANDROPKG_PATH_DECL(var)
++#define ANDROPKG_PATH_TRANSLATE(var)
++#define ANDROPKG_PATH_ORIG(var) var
++#endif
++
+ #define WITH_PLATFORM_STRING(env, strexp, var)                                \
+     if (1) {                                                                  \
+         const char *var;                                                      \
++        ANDROPKG_PATH_DECL(var)                                               \
+         jstring _##var##str = (strexp);                                       \
+         if (_##var##str == NULL) {                                            \
+             JNU_ThrowNullPointerException((env), NULL);                       \
+             goto _##var##end;                                                 \
+         }                                                                     \
+         var = JNU_GetStringPlatformChars((env), _##var##str, NULL);           \
+-        if (var == NULL) goto _##var##end;
++        if (var == NULL) goto _##var##end;                                    \
++        ANDROPKG_PATH_TRANSLATE(var)
+ 
+ #define WITH_FIELD_PLATFORM_STRING(env, object, id, var)                      \
+     WITH_PLATFORM_STRING(env,                                                 \
+@@ -103,7 +118,7 @@ void throwFileNotFoundException(JNIEnv *env, jstring path);
+                          var)
+ 
+ #define END_PLATFORM_STRING(env, var)                                         \
+-        JNU_ReleaseStringPlatformChars(env, _##var##str, var);                \
++        JNU_ReleaseStringPlatformChars(env, _##var##str, ANDROPKG_PATH_ORIG(var)); \
+     _##var##end: ;                                                            \
+     } else ((void)NULL)
+ 
 diff --git a/ojluni/src/main/native/linux_close.cpp b/ojluni/src/main/native/linux_close.cpp
 index f588d63..bd58dec 100644
 --- a/ojluni/src/main/native/linux_close.cpp

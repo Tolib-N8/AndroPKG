@@ -60,11 +60,24 @@ extern int register_android_os_Trace(JNIEnv* env);
 extern int register_android_os_SystemProperties(JNIEnv* env);
 extern int register_andropkg_binder_stubs(JNIEnv* env);
 extern int register_andropkg_process_stubs(JNIEnv* env);
+extern int register_andropkg_framework_stubs(JNIEnv* env);
 extern int register_android_content_res_ApkAssets(JNIEnv* env);
 extern int register_android_content_AssetManager(JNIEnv* env);
 extern int register_android_content_StringBlock(JNIEnv* env);
 extern int register_android_content_XmlBlock(JNIEnv* env);
 extern int register_android_content_res_ResourceTimer(JNIEnv* env);
+extern int register_com_android_internal_os_ClassLoaderFactory(JNIEnv* env);
+}  // namespace android
+
+// hwui's android.graphics.* JNI (frameworks/base/libs/hwui/apex/jni_runtime.cpp).
+extern "C" void init_android_graphics();
+extern "C" int register_android_graphics_classes(JNIEnv* env);
+
+namespace android {
+static int register_hwui_graphics(JNIEnv* env) {
+  init_android_graphics();
+  return register_android_graphics_classes(env);
+}
 
 struct RegJni {
   const char* name;
@@ -80,11 +93,14 @@ static const RegJni kRegistrations[] = {
     {"SystemProperties", register_android_os_SystemProperties},
     {"Binder (andropkg stubs)", register_andropkg_binder_stubs},
     {"Process (andropkg)", register_andropkg_process_stubs},
+    {"framework stubs (andropkg)", register_andropkg_framework_stubs},
     {"ApkAssets", register_android_content_res_ApkAssets},
     {"AssetManager", register_android_content_AssetManager},
     {"StringBlock", register_android_content_StringBlock},
     {"XmlBlock", register_android_content_XmlBlock},
     {"ResourceTimer", register_android_content_res_ResourceTimer},
+    {"ClassLoaderFactory", register_com_android_internal_os_ClassLoaderFactory},
+    {"android.graphics (hwui)", register_hwui_graphics},
 };
 
 }  // namespace android
@@ -102,7 +118,7 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
   andropkg::LoadSystemProperties();  // before any framework class initializer runs
   // Registration helpers leave local refs (FindClass...); ART asserts the table is empty
   // after startup, so release them all at once.
-  env->PushLocalFrame(512);
+  env->PushLocalFrame(4096);
   for (const auto& r : android::kRegistrations) {
     if (r.fn(env) < 0) {
       ALOGE("andropkg: registering %s natives failed", r.name);

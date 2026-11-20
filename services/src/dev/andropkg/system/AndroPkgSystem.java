@@ -62,6 +62,10 @@ public final class AndroPkgSystem {
         appInfo = (ApplicationInfo) Hidden.getField(parsedPackage, "applicationInfo");
         appInfo.sourceDir = appInfo.publicSourceDir = apkPath;
         appInfo.dataDir = dataDir;
+        // As on a device: dataDir is the credential-protected dir (/data/user/0/<pkg>).
+        Hidden.setField(appInfo, "credentialProtectedDataDir", dataDir);
+        Hidden.setField(appInfo, "deviceProtectedDataDir", dataDir + "_de");
+        new File(dataDir + "_de").mkdirs();
         appInfo.nativeLibraryDir = dataDir + "/lib";
         appInfo.uid = Process.myUid();
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
@@ -118,6 +122,7 @@ public final class AndroPkgSystem {
         services.put("activity_task", LocalService.create("android.app.IActivityTaskManager", new ActivityTaskManagerImpl()));
         services.put("package", LocalService.create("android.content.pm.IPackageManager", new PackageManagerImpl()));
         services.put("permissionmgr", LocalService.create("android.permission.IPermissionManager", new Object()));
+        services.put("display", LocalService.create("android.hardware.display.IDisplayManager", new DisplayManagerImpl()));
         activityClientController =
                 LocalService.create("android.app.IActivityClientController", new ActivityClientControllerImpl()).iface;
         // The service manager itself is in-process: no binder driver, no servicemanager daemon.
@@ -140,13 +145,32 @@ public final class AndroPkgSystem {
 
         private IBinder lookup(String name) {
             IBinder b = services.get(name);
-            if (b == null && missing.add(name)) Log.w(TAG, "service \"" + name + "\" not provided");
+            if (b == null && !missing.contains(name)) {
+                b = DefaultServices.create(name);
+                if (b != null) services.put(name, b);
+                else if (missing.add(name)) Log.w(TAG, "service \"" + name + "\" not provided");
+            }
             return b;
         }
     }
 
     /** IActivityManager: process attach + launch (what ActivityManagerService does). */
     static final class ActivityManagerImpl {
+        private final SettingsProvider settings = new SettingsProvider();
+        private Object settingsHolder;
+
+        // getContentProvider(IApplicationThread, String callingPackage, String name, int userId,
+        //                    boolean stable): only platform providers live outside the app.
+        public synchronized Object getContentProvider(Object caller, String callingPackage, String name,
+                int userId, boolean stable) {
+            if (SettingsProvider.AUTHORITY.equals(name)) {
+                if (settingsHolder == null) settingsHolder = settings.holder();
+                return settingsHolder;
+            }
+            Log.w(TAG, "content provider \"" + name + "\" not provided");
+            return null;
+        }
+
         public void attachApplication(Object thread, long startSeq) {
             appThread = thread;
             Configuration config = new Configuration(Resources.getSystem().getConfiguration());

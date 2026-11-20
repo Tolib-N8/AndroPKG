@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the iOS runtime + runner app, installs it on a connected iPhone and runs Hello.dex.
 #   scripts/runner-ios.sh [MainClass [dex-under-android-root]]   (default: Hello test/hello.dex)
+#   scripts/runner-ios.sh --apk <name>        runs build/apps/<name>.apk as an Android app
 #   ANDROPKG_DEVICE=<udid> to pick a device
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -12,14 +13,21 @@ J=${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}
 mkdir -p "$root/build/tests/hello"
 sdkjar="$HOME/Library/Android/sdk/platforms/android-37.0/android.jar"
 for t in "$root"/tests/*/; do
+  ls "$t"*.java >/dev/null 2>&1 || continue  # tests/apps/: APKs, built by build-java.sh
   name=$(basename "$t"); outd="$root/build/tests/$name"; mkdir -p "$outd"
   "$J/bin/javac" --release 8 -nowarn -cp "$sdkjar" -d "$outd" "$t"*.java 2>/dev/null
   JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --lib "$sdkjar" --output "$outd" "$outd"/*.class
 done
+"$root/scripts/build-java.sh" >/dev/null
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 (cd "$root/host-app" && xcodegen generate --quiet)
-main=${1:-Hello}
-dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
+if [ "${1:-}" = --apk ]; then
+  envs="\"ANDROPKG_APK\": \"test/$2.apk\""
+else
+  main=${1:-Hello}
+  dex=${2:-test/$(echo "$main" | tr 'A-Z' 'a-z' | sed 's/test$//').dex}
+  envs="\"ANDROPKG_MAIN\": \"$main\", \"ANDROPKG_DEX\": \"$dex\""
+fi
 dev=${ANDROPKG_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | awk '/physical/ && /available/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{16}$/) {print $i; exit}}')}
 [ -n "$dev" ] || { echo "no connected device"; exit 1; }
 xcodebuild -project "$root/host-app/AndroPkgRunner.xcodeproj" -scheme AndroPkgRunner -configuration Debug \
@@ -27,4 +35,4 @@ xcodebuild -project "$root/host-app/AndroPkgRunner.xcodeproj" -scheme AndroPkgRu
 app="$root/build/ios-dd/Build/Products/Debug-iphoneos/AndroPkgRunner.app"
 xcrun devicectl device install app --device "$dev" "$app" >/dev/null
 xcrun devicectl device process launch --device "$dev" --console --terminate-existing \
-  --environment-variables "{\"ANDROPKG_EXIT\": \"1\", \"ANDROPKG_MAIN\": \"$main\", \"ANDROPKG_DEX\": \"$dex\"}" "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"
+  --environment-variables "{\"ANDROPKG_EXIT\": \"1\", $envs}" "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"

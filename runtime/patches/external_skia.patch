@@ -1,0 +1,28 @@
+diff --git a/mac/include/config/SkUserConfig.h b/mac/include/config/SkUserConfig.h
+index 44ca9dd..ed4f9a7 100644
+--- a/mac/include/config/SkUserConfig.h
++++ b/mac/include/config/SkUserConfig.h
+@@ -89,13 +89,21 @@
+ 
+ // Correct SK_BUILD_FOR flags that may have been set by
+ // SkTypes.h/Android.bp
+-#ifndef SK_BUILD_FOR_MAC
++#if defined(ANDROPKG) && defined(__APPLE__)
++    // andropkg: the Darwin config also serves iOS.
++    #include <TargetConditionals.h>
++#endif
++#if defined(ANDROPKG) && TARGET_OS_IPHONE
++    #ifndef SK_BUILD_FOR_IOS
++        #define SK_BUILD_FOR_IOS
++    #endif
++#elif !defined(SK_BUILD_FOR_MAC)
+     #define SK_BUILD_FOR_MAC
+ #endif
+ #ifdef SK_BUILD_FOR_ANDROID
+     #undef SK_BUILD_FOR_ANDROID
+ #endif
+-#if defined(SK_BUILD_FOR_ANDROID) || defined(SK_BUILD_FOR_IOS) || \
++#if defined(SK_BUILD_FOR_ANDROID) || (defined(SK_BUILD_FOR_IOS) && defined(SK_BUILD_FOR_MAC)) || \
+     defined(SK_BUILD_FOR_UNIX) || defined(SK_BUILD_FOR_WIN)
+     #error "Only SK_BUILD_FOR_MAC should be defined!"
+ #endif

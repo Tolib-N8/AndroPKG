@@ -17,7 +17,7 @@ GLOBAL_CFLAGS = [
     # silently depends on it (e.g. ART's vtable linking BitVector over alloca()).
     "-ftrivial-auto-var-init=zero",
 ]
-GLOBAL_CPPFLAGS = ["-std=gnu++17", "-Wno-c++11-narrowing", "-Wno-strict-primary-template-shadow", "-fno-rtti", "-Wno-c++20-designator", "-Wno-deprecated-copy"]
+GLOBAL_CPPFLAGS = ["-std=gnu++17", "-Wno-invalid-specialization", "-Wno-c++11-narrowing", "-Wno-strict-primary-template-shadow", "-fno-rtti", "-Wno-c++20-designator", "-Wno-deprecated-copy"]
 GLOBAL_CONLYFLAGS = ["-std=gnu17"]
 
 # art/build/art.go globalFlags() + hostFlags() for our configuration (interpreter only).
@@ -41,6 +41,10 @@ EXTERNAL_INCLUDES = {
     "libicu": [f"{AOSP}/external/icu/icu4c/source/common", f"{AOSP}/external/icu/icu4c/source/i18n",
                f"{AOSP}/external/icu/android_icu4c/include"],  # uconfig_local.h (with -DANDROID)
     "libnativehelper_compat_libc++": [f"{AOSP}/libnativehelper/header_only_include"],
+    "libz": [],  # Darwin's libz
+    "libarect": [f"{AOSP}/frameworks/native/libs/arect/include"],
+    "libnativewindow_headers": [f"{AOSP}/frameworks/native/libs/nativewindow/include",
+                                f"{AOSP}/frameworks/native/libs/nativebase/include"],
 }
 
 TARGETS = [
@@ -102,6 +106,36 @@ TARGETS = [
     dict(name="libcutils", bp="libcutils", extra_includes=["system/core/libutils/include"]),
     # Looper (epoll + eventfd -> andropkg compat) isn't part of libutils' host variant.
     dict(name="libutils", bp="libutils", extra_srcs=["system/core/libutils/Looper.cpp"]),
+    # ---- graphics: Skia (CPU), codecs, fonts/text, hwui (in libandroid_runtime.dylib) ---
+    dict(name="libpng", bp="libpng"),
+    dict(name="libjpeg", bp="libjpeg"),
+    dict(name="libwebp-decode", bp="libwebp-decode"),
+    dict(name="libwebp-encode", bp="libwebp-encode",  # cpu.c also in decode (archives dedupe on Android)
+         exclude_srcs=["external/webp/src/dsp/cpu.c"]),
+    dict(name="libwuffs", bp="libwuffs_mirror_release_c"),
+    dict(name="libsfntly", bp="libsfntly"),
+    dict(name="libft2", bp="libft2"),
+    dict(name="libharfbuzz_ng", bp="libharfbuzz_ng"),
+    # RAW (dng_sdk/piex) decoding is left out: not portable to Darwin's int64_t, rarely used.
+    dict(name="libskia", bp="libskia", remove_cflags=["-DSK_CODEC_DECODES_RAW"],
+         exclude_srcs=["external/skia/src/codec/SkRawCodec.cpp"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/graphics/skia_raw_disabled.cc"]),
+    dict(name="libminikin", bp="libminikin"),
+    dict(name="libmodpb64", bp="libmodpb64"),
+    dict(name="libimage_io", bp="libimage_io"),
+    dict(name="libjpegencoder", bp="libjpegencoder"),
+    dict(name="libjpegdecoder", bp="libjpegdecoder"),
+    dict(name="libultrahdr", bp="libultrahdr"),
+    # Host hwui is the layoutlib build; register JNI like the device (jni_runtime.cpp).
+    dict(name="libhwui", bp="libhwui", cpp_std="gnu++20",
+         exclude_srcs=["frameworks/base/libs/hwui/apex/LayoutlibLoader.cpp"],
+         extra_srcs=["frameworks/base/libs/hwui/apex/jni_runtime.cpp"],
+         andropkg_srcs=[f"{ANDROPKG}/runtime/graphics/gpu_unavailable.cc",
+                        f"{ANDROPKG}/runtime/graphics/hwui_jni_pending.cc"],
+         extra_includes=["frameworks/native/libs/ui/include_types", "frameworks/native/libs/ui/include",
+                         "frameworks/native/include", "frameworks/native/libs/math/include",
+                         "frameworks/native/opengl/include", "external/vulkan-headers/include",
+                         "hardware/libhardware/include"]),
     dict(name="libincfs-utils", bp="libincfs-utils"),
     # androidfw (and code including its headers) is C++20 (std::span).
     dict(name="libandroidfw", bp="libandroidfw", cpp_std="gnu++20",
@@ -118,12 +152,15 @@ TARGETS = [
                "frameworks/base/core/jni/android_util_EventLog.cpp",
                "frameworks/base/core/jni/android_os_MessageQueue.cpp",
                "frameworks/base/core/jni/android_os_Trace.cpp",
-               "frameworks/base/core/jni/android_os_SystemProperties.cpp"],
+               "frameworks/base/core/jni/android_os_SystemProperties.cpp",
+               "frameworks/base/core/jni/com_android_internal_os_ClassLoaderFactory.cpp"],
          andropkg_srcs=[f"{ANDROPKG}/runtime/android_runtime/android_runtime_onload.cc",
                         f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc",
                         f"{ANDROPKG}/runtime/android_runtime/system_properties.cc",
-                        f"{ANDROPKG}/runtime/android_runtime/process_stubs.cc"],
+                        f"{ANDROPKG}/runtime/android_runtime/process_stubs.cc",
+                        f"{ANDROPKG}/runtime/android_runtime/framework_stubs.cc"],
          skip_generated=["deviceproductinfoconstants_aidl"],
          extra_includes=["frameworks/base/core/jni", "frameworks/base/core/jni/include",
+                         "art/libnativeloader/include",
                          "frameworks/native/include"]),
 ]

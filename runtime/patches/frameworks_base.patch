@@ -57,6 +57,58 @@ index 87f9652..4c2618b 100644
      jniThrowException(env, "java/io/IOException", error_msg.c_str());
      return 0;
    }
+diff --git a/core/jni/android_os_SystemProperties.cpp b/core/jni/android_os_SystemProperties.cpp
+index 7f3b32e..007ee7a 100644
+--- a/core/jni/android_os_SystemProperties.cpp
++++ b/core/jni/android_os_SystemProperties.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include <utility>
+ #include <optional>
++#include <mutex>
++#include <set>
+ 
+ #include "android-base/logging.h"
+ #include "android-base/parsebool.h"
+@@ -43,10 +45,24 @@ namespace {
+ 
+ using android::base::ParseBoolResult;
+ 
++#if !defined(__BIONIC__) && defined(ANDROPKG)
++// andropkg: property "handles" (SystemProperties.Handle) are interned key strings; reads go
++// through libbase's property store like the keyed accessors.
++const std::string* InternPropertyKey(const char* key) {
++    static std::mutex lock;
++    static std::set<std::string> keys;
++    std::lock_guard<std::mutex> guard(lock);
++    return &*keys.insert(key).first;
++}
++#endif
++
+ template<typename Functor>
+ void ReadProperty(const prop_info* prop, Functor&& functor)
+ {
+-#if defined(__BIONIC__)
++#if !defined(__BIONIC__) && defined(ANDROPKG)
++    std::forward<Functor>(functor)(android::base::GetProperty(
++            *reinterpret_cast<const std::string*>(prop), "").c_str());
++#elif defined(__BIONIC__)
+     auto thunk = [](void* cookie,
+                     const char* /*name*/,
+                     const char* value,
+@@ -139,6 +155,12 @@ jlong SystemProperties_find(JNIEnv* env, jclass, jstring keyJ)
+     }
+     const prop_info* prop = __system_property_find(key.c_str());
+     return reinterpret_cast<jlong>(prop);
++#elif defined(ANDROPKG)
++    ScopedUtfChars key(env, keyJ);
++    if (!key.c_str() || android::base::GetProperty(key.c_str(), "").empty()) {
++        return 0;  // like bionic: no handle for an unset property
++    }
++    return reinterpret_cast<jlong>(InternPropertyKey(key.c_str()));
+ #else
+     LOG(FATAL) << "fast property access supported only on device";
+     __builtin_unreachable();  // Silence warning
 diff --git a/core/jni/core_jni_helpers.h b/core/jni/core_jni_helpers.h
 index 210dc89..9555709 100644
 --- a/core/jni/core_jni_helpers.h

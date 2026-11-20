@@ -36,7 +36,8 @@ endif()
 # ART modules optionally get kIsDebugBuild checks (see ANDROPKG_ART_TARGETS below).
 if(ANDROPKG_ART_DEBUG)
   set(ANDROPKG_OPT_FLAGS -UNDEBUG -DDYNAMIC_ANNOTATIONS_ENABLED=1 -O1 -g)
-  add_compile_options(-DNDEBUG -O1 -g)
+  # Line tables only outside ART: keeps symbolized stacks, saves gigabytes of debug info.
+  add_compile_options(-DNDEBUG -O1 -gline-tables-only)
 else()
   set(ANDROPKG_OPT_FLAGS -DNDEBUG -O2 -g)
   add_compile_options(${ANDROPKG_OPT_FLAGS})
@@ -178,11 +179,26 @@ andropkg_jni_dylib(libopenjdk libopenjdk libfdlibm)
 andropkg_jni_dylib(libicu_jni libicu_jni)
 andropkg_jni_dylib(libjavacrypto libjavacrypto)
 # andropkg-owned stand-ins for platform JNI libraries that talk to absent system daemons.
-add_library(andropkg_stats_jni OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/android_runtime/stats_jni_stub.cc)
-target_compile_options(andropkg_stats_jni PRIVATE -std=gnu++17)
-target_include_directories(andropkg_stats_jni PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
-andropkg_jni_dylib(libstats_jni andropkg_stats_jni)
-andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils)
+function(andropkg_stub_jni name src)
+  add_library(andropkg_${name} OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/android_runtime/${src})
+  target_compile_options(andropkg_${name} PRIVATE -std=gnu++17)
+  target_include_directories(andropkg_${name} PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+  andropkg_jni_dylib(${name} andropkg_${name})
+endfunction()
+andropkg_stub_jni(libstats_jni stats_jni_stub.cc)
+andropkg_stub_jni(libframework-connectivity-jni connectivity_jni_stub.cc)
+andropkg_stub_jni(libframework-connectivity-tiramisu-jni connectivity_t_jni_stub.cc)
+andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils
+    libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
+    libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat)
+# Skia's Apple ports (CoreText fonts, CG/ImageIO codecs) are part of the build.
+if(ANDROPKG_PLATFORM STREQUAL "ios")
+  set(_uti_fw "-framework MobileCoreServices")
+else()
+  set(_uti_fw "-framework CoreServices")
+endif()
+target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundation" "-framework CoreGraphics"
+                      "-framework CoreText" "-framework ImageIO" ${_uti_fw})
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")

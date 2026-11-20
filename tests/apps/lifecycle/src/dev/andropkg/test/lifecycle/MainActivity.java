@@ -1,4 +1,4 @@
-package dev.andropkg.test;
+package dev.andropkg.test.lifecycle;
 
 import android.app.Activity;
 import android.app.Application;
