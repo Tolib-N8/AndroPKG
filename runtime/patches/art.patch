@@ -261,10 +261,10 @@ index f311f09..63524fc 100644
  #endif
  
 diff --git a/libnativeloader/native_loader.cpp b/libnativeloader/native_loader.cpp
-index 2deb5ef..98ac736 100644
+index 2deb5ef..d6b3407 100644
 --- a/libnativeloader/native_loader.cpp
 +++ b/libnativeloader/native_loader.cpp
-@@ -311,6 +311,21 @@ void* OpenNativeLibrary(JNIEnv* env, int32_t target_sdk_version, const char* pat
+@@ -311,6 +311,27 @@ void* OpenNativeLibrary(JNIEnv* env, int32_t target_sdk_version, const char* pat
      if (handle != nullptr) {
        return handle;
      }
@@ -274,8 +274,14 @@ index 2deb5ef..98ac736 100644
 +    // by the native bridge (andropkg ELF loader).
 +    if (path_arg != nullptr && strchr(path_arg, '/') == nullptr) {
 +      std::string name(path_arg);
++      std::string base;
 +      if (name.size() > 3 && name.compare(name.size() - 3, 3, ".so") == 0) {
-+        std::string dylib = "@rpath/" + name.substr(0, name.size() - 3) + ".dylib";
++        base = name.substr(0, name.size() - 3);
++      } else if (name.size() > 6 && name.compare(name.size() - 6, 6, ".dylib") == 0) {
++        base = name.substr(0, name.size() - 6);  // System.mapLibraryName() on Darwin
++      }
++      if (!base.empty()) {
++        std::string dylib = "@rpath/" + base + ".dylib";
 +        handle = dlopen(dylib.c_str(), RTLD_NOW);
 +        if (handle != nullptr) {
 +          return handle;
@@ -550,6 +556,39 @@ index f27bddb..bb8f6c3 100644
    CHECK(card_table_.get() != nullptr) << "Failed to create card table";
    if (foreground_collector_type_ == kCollectorTypeCC && kUseTableLookupReadBarrier) {
      rb_table_.reset(new accounting::ReadBarrierTable());
+diff --git a/runtime/gc/space/space.cc b/runtime/gc/space/space.cc
+index cae9ce8..0c70798 100644
+--- a/runtime/gc/space/space.cc
++++ b/runtime/gc/space/space.cc
+@@ -16,6 +16,10 @@
+ 
+ #include "space.h"
+ 
++#if defined(__APPLE__)
++#include "andropkg/ref_arena.h"
++#endif
++
+ #include <android-base/logging.h>
+ 
+ #include "base/macros.h"
+@@ -81,9 +85,15 @@ DiscontinuousSpace::DiscontinuousSpace(const std::string& name,
+     Space(name, gc_retention_policy) {
+   // TODO: Fix this if we ever support objects not in the low 32 bit.
+   const size_t capacity = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+-  live_bitmap_ = accounting::LargeObjectBitmap::Create("large live objects", nullptr, capacity);
++#if defined(__APPLE__)
++  // andropkg: objects live in the reference arena [base, base + 4GB), not the low 4GB.
++  uint8_t* const heap_begin = reinterpret_cast<uint8_t*>(gAndropkgRefBase);
++#else
++  uint8_t* const heap_begin = nullptr;
++#endif
++  live_bitmap_ = accounting::LargeObjectBitmap::Create("large live objects", heap_begin, capacity);
+   CHECK(live_bitmap_.IsValid());
+-  mark_bitmap_ = accounting::LargeObjectBitmap::Create("large marked objects", nullptr, capacity);
++  mark_bitmap_ = accounting::LargeObjectBitmap::Create("large marked objects", heap_begin, capacity);
+   CHECK(mark_bitmap_.IsValid());
+ }
+ 
 diff --git a/runtime/interpreter/interpreter_common.cc b/runtime/interpreter/interpreter_common.cc
 index ac9980f..b087282 100644
 --- a/runtime/interpreter/interpreter_common.cc
@@ -672,15 +711,16 @@ index bef0fd3..3377c35 100644
  #include <algorithm>
  #include <vector>
 diff --git a/runtime/lock_word-inl.h b/runtime/lock_word-inl.h
-index 4a2a293..dbda0bd 100644
+index 4a2a293..8e61bc0 100644
 --- a/runtime/lock_word-inl.h
 +++ b/runtime/lock_word-inl.h
-@@ -43,7 +43,11 @@ inline Monitor* LockWord::FatLockMonitor() const {
+@@ -43,7 +43,12 @@ inline Monitor* LockWord::FatLockMonitor() const {
  
  inline size_t LockWord::ForwardingAddress() const {
    DCHECK_EQ(GetState(), kForwardingAddress);
 +#if defined(__APPLE__)
-+  return gAndropkgRefBase + (static_cast<size_t>(value_) << kForwardingAddressShift);
++  // The 32-bit shift drops the state bits, exactly like the stock decode below.
++  return gAndropkgRefBase + static_cast<uint32_t>(value_ << kForwardingAddressShift);
 +#else
    return value_ << kForwardingAddressShift;
 +#endif

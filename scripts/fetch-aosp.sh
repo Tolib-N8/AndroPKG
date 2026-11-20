@@ -26,8 +26,10 @@ external/tinyxml2      external/tinyxml2
 external/dlmalloc      external/dlmalloc
 bionic                 bionic
 external/boringssl     external/boringssl
+external/conscrypt     external/conscrypt
 frameworks/base        frameworks/base
 frameworks/native      frameworks/native
+system/incremental_delivery system/incremental_delivery
 "
 # Big repos: partial clone + sparse checkout of just what the runtime builds.
 sparse_paths() {
@@ -35,11 +37,14 @@ sparse_paths() {
     bionic) echo "/libc/include/elf.h /libc/include/bits/elf_common.h /libc/include/bits/auxvec.h
                  /libc/kernel/uapi/ /libc/kernel/android/uapi/
                  !/libc/kernel/uapi/linux/netfilter*/" ;;
+    system/incremental_delivery) echo "/incfs/util/ /incfs/Android.bp /incfs/include/" ;;
     frameworks/base) echo "/core/jni/ /libs/androidfw/ /libs/hwui/ /include/ /native/android/ /core/proto/" ;;
     frameworks/native) echo "/include/ /libs/binder/include/ /libs/nativewindow/include/ /libs/nativebase/include/
                             /libs/arect/include/ /libs/math/include/ /libs/ui/include/ /libs/gui/include/
                             /libs/input/ /include/input/" ;;
-    external/boringssl) echo "/src/include/" ;;   # headers only until BoringSSL is built (NativeBN, TLS)
+    external/boringssl) echo "/Android.bp /sources.bp /err_data.c /src/include/ /src/crypto/ /src/ssl/ /src/third_party/fiat/
+                             /src/decrepit/ /apple-aarch64/" ;;
+    external/conscrypt) echo "/Android.bp /common/src/jni/" ;;
     external/icu) echo "/Android.bp /build/ /icu4c/source/Android.bp /icu4c/source/common/ /icu4c/source/i18n/
                        /icu4c/source/stubdata/ /libicu/ /libandroidicuinit/ /android_icu4c/ /android_icu4j/Android.bp
                        /android_icu4j/libcore_bridge/" ;;

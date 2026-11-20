@@ -1,0 +1,123 @@
+diff --git a/core/jni/android_content_res_ApkAssets.cpp b/core/jni/android_content_res_ApkAssets.cpp
+index 87f9652..4c2618b 100644
+--- a/core/jni/android_content_res_ApkAssets.cpp
++++ b/core/jni/android_content_res_ApkAssets.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "android_content_res_ApkAssets.h"
+ #include "core_jni_helpers.h"
++#include "andropkg/paths.h"
+ #include "jni.h"
+ #include "nativehelper/ScopedUtfChars.h"
+ 
+@@ -225,30 +226,32 @@ static jlong NativeLoad(JNIEnv* env, jclass /*clazz*/, const format_type_t forma
+   if (path.c_str() == nullptr) {
+     return 0;
+   }
++  // andropkg: device paths (/system/framework/...) live under the runtime root on iOS.
++  const std::string andropkg_path = andropkg::TranslateAndroidPath(path.c_str());
+ 
+-  ATRACE_NAME(base::StringPrintf("LoadApkAssets(%s)", path.c_str()).c_str());
++  ATRACE_NAME(base::StringPrintf("LoadApkAssets(%s)", andropkg_path.c_str()).c_str());
+ 
+   auto loader_assets = LoaderAssetsProvider::Create(env, assets_provider);
+   AssetManager2::ApkAssetsPtr apk_assets;
+   switch (format) {
+     case FORMAT_APK: {
+         auto assets = MultiAssetsProvider::Create(std::move(loader_assets),
+-                                                  ZipAssetsProvider::Create(path.c_str(),
++                                                  ZipAssetsProvider::Create(andropkg_path.c_str(),
+                                                                             property_flags));
+         apk_assets = ApkAssets::Load(std::move(assets), property_flags);
+         break;
+     }
+     case FORMAT_IDMAP:
+-      apk_assets = ApkAssets::LoadOverlay(path.c_str(), property_flags);
++      apk_assets = ApkAssets::LoadOverlay(andropkg_path.c_str(), property_flags);
+       break;
+     case FORMAT_ARSC:
+-      apk_assets = ApkAssets::LoadTable(AssetsProvider::CreateAssetFromFile(path.c_str()),
++      apk_assets = ApkAssets::LoadTable(AssetsProvider::CreateAssetFromFile(andropkg_path.c_str()),
+                                         std::move(loader_assets),
+                                         property_flags);
+       break;
+     case FORMAT_DIRECTORY: {
+       auto assets = MultiAssetsProvider::Create(std::move(loader_assets),
+-                                                DirectoryAssetsProvider::Create(path.c_str()));
++                                                DirectoryAssetsProvider::Create(andropkg_path.c_str()));
+       apk_assets = ApkAssets::Load(std::move(assets), property_flags);
+       break;
+     }
+@@ -259,7 +262,7 @@ static jlong NativeLoad(JNIEnv* env, jclass /*clazz*/, const format_type_t forma
+   }
+ 
+   if (apk_assets == nullptr) {
+-    const std::string error_msg = base::StringPrintf("Failed to load asset path %s", path.c_str());
++    const std::string error_msg = base::StringPrintf("Failed to load asset path %s", andropkg_path.c_str());
+     jniThrowException(env, "java/io/IOException", error_msg.c_str());
+     return 0;
+   }
+diff --git a/core/jni/core_jni_helpers.h b/core/jni/core_jni_helpers.h
+index 210dc89..9555709 100644
+--- a/core/jni/core_jni_helpers.h
++++ b/core/jni/core_jni_helpers.h
+@@ -26,7 +26,7 @@
+ // and they need all the JNI methods to have JNIEnv* and jclass/jobject as their first two arguments.
+ // The following macro allows to have those arguments when compiling for host while omitting them when
+ // compiling for Android.
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ANDROPKG)  // andropkg: real ART, @CriticalNative supported
+ #define CRITICAL_JNI_PARAMS
+ #define CRITICAL_JNI_PARAMS_COMMA
+ #else
+diff --git a/libs/androidfw/AssetManager2.cpp b/libs/androidfw/AssetManager2.cpp
+index d33b592..1c61377 100644
+--- a/libs/androidfw/AssetManager2.cpp
++++ b/libs/androidfw/AssetManager2.cpp
+@@ -40,6 +40,13 @@
+ 
+ namespace android {
+ 
++// andropkg: defined before first use (C++20 constexpr std::vector needs a complete type).
++struct Theme::Entry {
++  ApkAssetsCookie cookie;
++  uint32_t type_spec_flags;
++  Res_value value;
++};
++
+ namespace {
+ 
+ using EntryValue = std::variant<Res_value, incfs::verified_map_ptr<ResTable_map_entry>>;
+@@ -1518,16 +1525,14 @@ const AssetManager2::ApkAssetsPtr& AssetManager2::GetApkAssets(ApkAssetsCookie c
+   return res;
+ }
+ 
++
++
+ Theme::Theme(AssetManager2* asset_manager) : asset_manager_(asset_manager) {
+ }
+ 
+ Theme::~Theme() = default;
+ 
+-struct Theme::Entry {
+-  ApkAssetsCookie cookie;
+-  uint32_t type_spec_flags;
+-  Res_value value;
+-};
++
+ 
+ base::expected<std::monostate, NullOrIOError> Theme::ApplyStyle(uint32_t resid, bool force) {
+   ATRACE_NAME("Theme::ApplyStyle");
+diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
+index 78db54a..bb95c44 100644
+--- a/libs/hwui/jni/graphics_jni_helpers.h
++++ b/libs/hwui/jni/graphics_jni_helpers.h
+@@ -27,7 +27,7 @@
+ // and they need all the JNI methods to have JNIEnv* and jclass/jobject as their first two arguments.
+ // The following macro allows to have those arguments when compiling for host while omitting them when
+ // compiling for Android.
+-#ifdef __ANDROID__
++#if defined(__ANDROID__) || defined(ANDROPKG)  // andropkg: real ART, @CriticalNative supported
+ #define CRITICAL_JNI_PARAMS
+ #define CRITICAL_JNI_PARAMS_COMMA
+ #else

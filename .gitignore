@@ -10,3 +10,4 @@ prebuilts/out/
 third_party/aosp/
 __pycache__/
 *.pyc
+.vscode/

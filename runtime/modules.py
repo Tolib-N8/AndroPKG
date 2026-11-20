@@ -40,7 +40,6 @@ EXTERNAL_INCLUDES = {
     # NDK stub library; the real headers are ICU4C's.
     "libicu": [f"{AOSP}/external/icu/icu4c/source/common", f"{AOSP}/external/icu/icu4c/source/i18n",
                f"{AOSP}/external/icu/android_icu4c/include"],  # uconfig_local.h (with -DANDROID)
-    "libcrypto": [f"{AOSP}/external/boringssl/src/include"],
     "libnativehelper_compat_libc++": [f"{AOSP}/libnativehelper/header_only_include"],
 }
 
@@ -92,18 +91,28 @@ TARGETS = [
     dict(name="libexpat", bp="libexpat"),
     dict(name="libfdlibm", bp="libfdlibm"),
     dict(name="libicu_jni", bp="libicu_jni"),
-    # TODO(M3): build BoringSSL and drop the NativeBN stub (BigInteger fast paths).
-    dict(name="libjavacore", bp="libjavacore",
-         exclude_srcs=["libcore/luni/src/main/native/libcore_math_NativeBN.cpp"],
-         andropkg_srcs=[f"{ANDROPKG}/runtime/libcore/NativeBN_disabled.cpp"]),
+    # ---- BoringSSL (pure C: OPENSSL_NO_ASM, as Android.bp does for darwin) + Conscrypt --
+    dict(name="libcrypto", bp="libcrypto"),
+    dict(name="libssl", bp="libssl"),
+    dict(name="libjavacrypto", bp="libjavacrypto"),
+    dict(name="libjavacore", bp="libjavacore"),
     dict(name="libopenjdk", bp="libopenjdk"),
 
     # ---- Android framework natives (libandroid_runtime.dylib) -------------------------
     dict(name="libcutils", bp="libcutils", extra_includes=["system/core/libutils/include"]),
     # Looper (epoll + eventfd -> andropkg compat) isn't part of libutils' host variant.
     dict(name="libutils", bp="libutils", extra_srcs=["system/core/libutils/Looper.cpp"]),
-    dict(name="libandroid_runtime", bp="libandroid_runtime",
+    dict(name="libincfs-utils", bp="libincfs-utils"),
+    # androidfw (and code including its headers) is C++20 (std::span).
+    dict(name="libandroidfw", bp="libandroidfw", cpp_std="gnu++20",
+         extra_includes=["frameworks/native/include"]),
+    dict(name="libandroid_runtime", bp="libandroid_runtime", cpp_std="gnu++20",
          srcs=["frameworks/base/core/jni/core_jni_helpers.cpp",
+               "frameworks/base/core/jni/android_content_res_ApkAssets.cpp",
+               "frameworks/base/core/jni/android_util_AssetManager.cpp",
+               "frameworks/base/core/jni/android_util_StringBlock.cpp",
+               "frameworks/base/core/jni/android_util_XmlBlock.cpp",
+               "frameworks/base/core/jni/android_content_res_ResourceTimer.cpp",
                "frameworks/base/core/jni/android_os_SystemClock.cpp",
                "frameworks/base/core/jni/android_util_Log.cpp",
                "frameworks/base/core/jni/android_util_EventLog.cpp",
@@ -111,7 +120,9 @@ TARGETS = [
                "frameworks/base/core/jni/android_os_Trace.cpp",
                "frameworks/base/core/jni/android_os_SystemProperties.cpp"],
          andropkg_srcs=[f"{ANDROPKG}/runtime/android_runtime/android_runtime_onload.cc",
-                        f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc"],
+                        f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc",
+                        f"{ANDROPKG}/runtime/android_runtime/system_properties.cc"],
          skip_generated=["deviceproductinfoconstants_aidl"],
-         extra_includes=["frameworks/base/core/jni", "frameworks/base/core/jni/include"]),
+         extra_includes=["frameworks/base/core/jni", "frameworks/base/core/jni/include",
+                         "frameworks/native/include"]),
 ]

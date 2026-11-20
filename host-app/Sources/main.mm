@@ -29,6 +29,7 @@ static int RunDex(NSString* dex_path, const char* main_class) {
   setenv("ANDROID_I18N_ROOT", path(@"apex/com.android.i18n").c_str(), 1);
   setenv("ANDROID_TZDATA_ROOT", path(@"apex/com.android.tzdata").c_str(), 1);
   setenv("ANDROID_DATA", data.fileSystemRepresentation, 1);
+  setenv("ANDROPKG_ANDROID_ROOT", root.fileSystemRepresentation, 1);  // /system/... -> bundle
 
   // Full Android 14 BOOTCLASSPATH (device paths, staged into the bundle).
   std::string bcp;

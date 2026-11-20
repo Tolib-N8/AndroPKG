@@ -12,6 +12,10 @@
 
 #include <string>
 
+namespace andropkg {
+void LoadSystemProperties();
+}
+
 namespace android {
 
 static JavaVM* gVm = nullptr;
@@ -55,6 +59,11 @@ extern int register_android_os_MessageQueue(JNIEnv* env);
 extern int register_android_os_Trace(JNIEnv* env);
 extern int register_android_os_SystemProperties(JNIEnv* env);
 extern int register_andropkg_binder_stubs(JNIEnv* env);
+extern int register_android_content_res_ApkAssets(JNIEnv* env);
+extern int register_android_content_AssetManager(JNIEnv* env);
+extern int register_android_content_StringBlock(JNIEnv* env);
+extern int register_android_content_XmlBlock(JNIEnv* env);
+extern int register_android_content_res_ResourceTimer(JNIEnv* env);
 
 struct RegJni {
   const char* name;
@@ -69,6 +78,11 @@ static const RegJni kRegistrations[] = {
     {"Trace", register_android_os_Trace},
     {"SystemProperties", register_android_os_SystemProperties},
     {"Binder (andropkg stubs)", register_andropkg_binder_stubs},
+    {"ApkAssets", register_android_content_res_ApkAssets},
+    {"AssetManager", register_android_content_AssetManager},
+    {"StringBlock", register_android_content_StringBlock},
+    {"XmlBlock", register_android_content_XmlBlock},
+    {"ResourceTimer", register_android_content_res_ResourceTimer},
 };
 
 }  // namespace android
@@ -76,6 +90,14 @@ static const RegJni kRegistrations[] = {
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
   android::gVm = vm;
   JNIEnv* env = android::AndroidRuntime::getJNIEnv();
+  // Plain-Java runs (no framework.jar on the boot classpath): nothing to register.
+  jclass probe = env->FindClass("android/os/SystemClock");
+  if (probe == nullptr) {
+    env->ExceptionClear();
+    return JNI_VERSION_1_6;
+  }
+  env->DeleteLocalRef(probe);
+  andropkg::LoadSystemProperties();  // before any framework class initializer runs
   // Registration helpers leave local refs (FindClass...); ART asserts the table is empty
   // after startup, so release them all at once.
   env->PushLocalFrame(512);

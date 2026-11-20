@@ -19,6 +19,7 @@ if [ ! -d "$fs" ]; then
     ln -sfn "$pb/bootclasspath/$(basename "$dev")" "$fs$dev"
   done < "$pb/bootclasspath.txt"
   ln -sfn "$pb/framework-res.apk" "$fs/system/framework/framework-res.apk"
+  ln -sfn "$pb/build.prop" "$fs/system/build.prop"
   ln -sfn "$pb/fonts" "$fs/system/fonts"
 fi
 
@@ -38,6 +39,6 @@ done
 
 export ANDROID_ROOT="$fs/system" ANDROID_ART_ROOT="$fs/apex/com.android.art" \
        ANDROID_I18N_ROOT="$fs/apex/com.android.i18n" ANDROID_TZDATA_ROOT="$fs/apex/com.android.tzdata" \
-       ANDROID_DATA="$fs/data"
+       ANDROID_DATA="$fs/data" ANDROPKG_ANDROID_ROOT="$fs"
 exec "$bin/dalvikvm" -Xbootclasspath:"$bcp" -Xbootclasspath-locations:"$bcp" \
   -Xusejit:false -Xint "$@"

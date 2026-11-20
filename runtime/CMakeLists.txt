@@ -32,12 +32,15 @@ if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "gen_cmake.py failed")
 endif()
 
+# Everything is built like Soong release builds (NDEBUG: some AOSP asserts don't even compile);
+# ART modules optionally get kIsDebugBuild checks (see ANDROPKG_ART_TARGETS below).
 if(ANDROPKG_ART_DEBUG)
   set(ANDROPKG_OPT_FLAGS -UNDEBUG -DDYNAMIC_ANNOTATIONS_ENABLED=1 -O1 -g)
+  add_compile_options(-DNDEBUG -O1 -g)
 else()
   set(ANDROPKG_OPT_FLAGS -DNDEBUG -O2 -g)
+  add_compile_options(${ANDROPKG_OPT_FLAGS})
 endif()
-add_compile_options(${ANDROPKG_OPT_FLAGS})
 if(NOT CMAKE_OSX_SYSROOT)
   execute_process(COMMAND xcrun --show-sdk-path OUTPUT_VARIABLE CMAKE_OSX_SYSROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
 endif()
@@ -51,6 +54,11 @@ foreach(_d bionic/libc/include/bits/.. bionic/libc/kernel/uapi bionic/libc/kerne
 endforeach()
 
 include(${_gen})
+if(ANDROPKG_ART_DEBUG)
+  foreach(_t ${ANDROPKG_ART_TARGETS})
+    target_compile_options(${_t} PRIVATE -UNDEBUG -DDYNAMIC_ANNOTATIONS_ENABLED=1)
+  endforeach()
+endif()
 
 # andropkg's own Darwin implementations of Linux/bionic facilities (futex, ...).
 file(GLOB ANDROPKG_COMPAT_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/compat/src/*.cc ${CMAKE_CURRENT_SOURCE_DIR}/compat/src/*.c)
@@ -143,7 +151,7 @@ endforeach()
 set(ANDROPKG_ART_PARTS fmtlib liblog libbase liblz4 libziparchive libartpalette tinyxml2
     libartbase libdexfile libprofile libelffile libsigchain libnativebridge libnativeloader
     libnativehelper libodrstatslog libart libart_asm libopenjdkjvm andropkg_compat
-    libicuuc libicui18n libicuuc_stubdata libandroidicuinit libandroidio)
+    libicuuc libicui18n libicuuc_stubdata libandroidicuinit libandroidio libcrypto libssl)
 set(_objs)
 foreach(_p ${ANDROPKG_ART_PARTS})
   list(APPEND _objs $<TARGET_OBJECTS:${_p}>)
@@ -168,7 +176,8 @@ endfunction()
 andropkg_jni_dylib(libjavacore libjavacore libexpat)
 andropkg_jni_dylib(libopenjdk libopenjdk libfdlibm)
 andropkg_jni_dylib(libicu_jni libicu_jni)
-andropkg_jni_dylib(libandroid_runtime libandroid_runtime libutils libcutils)
+andropkg_jni_dylib(libjavacrypto libjavacrypto)
+andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils)
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")

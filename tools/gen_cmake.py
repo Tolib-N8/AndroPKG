@@ -118,7 +118,7 @@ class Gen:
         cflags = [f for f in m.get("cflags", []) + self.cfg.get("GLOBAL_CFLAGS", []) + t.get("cflags", []) if keep_flag(f)]
         cppflags = [f for f in self.cfg.get("GLOBAL_CPPFLAGS", []) + m.get("cppflags", []) if keep_flag(f)]
         std = {"c++2a": "gnu++20", "c++20": "gnu++20", "gnu++20": "gnu++20", "c++17": "gnu++17",
-               "gnu++17": "gnu++17", "experimental": "gnu++2b"}.get(m.get("cpp_std", ""), None)
+               "gnu++17": "gnu++17", "experimental": "gnu++2b"}.get(t.get("cpp_std", m.get("cpp_std", "")), None)
         if std:
             cppflags = [f for f in cppflags if not f.startswith("-std=")] + [f"-std={std}"]
         conly = [f for f in m.get("conlyflags", []) + self.cfg.get("GLOBAL_CONLYFLAGS", []) if keep_flag(f)]
@@ -185,6 +185,11 @@ class Gen:
             self.out.append(f"set(ANDROPKG_ASM_DEFINES_DIR {q(gen_dir)})")
             self.out.append(f"set(ANDROPKG_ASM_DEFINES_OWNER {t['name']})")
             return [f"{gen_dir}/asm_defines.h"], [gen_dir]
+        if gm["_type"] == "cc_object":
+            # Prebuilt-object modules (e.g. BoringSSL's bcm_object): compile their sources as
+            # part of the owner, with the owner's flags plus their include dirs.
+            incs = gm.get("local_include_dirs", []) + gm.get("export_include_dirs", [])
+            return [x for x in gm.get("srcs", []) if not x.startswith(":")], incs
         raise SystemExit(f"don't know how to generate {g} ({gm['_type']}) for {t['name']}")
 
     def run(self, out_path):
@@ -194,6 +199,8 @@ class Gen:
                 self.emit_target(t)
             except SystemExit as e:
                 raise SystemExit(f"{t['name']}: {e}")
+        art = [t["name"] for t in self.cfg["TARGETS"] if t.get("art")]
+        self.out.append(f"set(ANDROPKG_ART_TARGETS {' '.join(art)})")
         with open(out_path, "w") as f:
             f.write("\n".join(self.out) + "\n")
 

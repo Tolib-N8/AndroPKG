@@ -57,3 +57,7 @@ targets:
         embed: true
         codeSign: true
         link: false
+      - framework: ../build/runtime-ios/libjavacrypto.dylib
+        embed: true
+        codeSign: true
+        link: false
