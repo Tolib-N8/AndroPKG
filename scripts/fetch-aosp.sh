@@ -43,6 +43,7 @@ external/piex          external/piex
 external/sfntly        external/sfntly
 external/image_io      external/image_io
 external/modp_b64      external/modp_b64
+external/sqlite        external/sqlite
 external/vulkan-headers external/vulkan-headers
 hardware/libhardware   hardware/libhardware
 "
@@ -56,6 +57,7 @@ sparse_paths() {
                         /modules/skshaper/include/ /modules/skparagraph/include/ /modules/skottie/include/
                         /modules/skunicode/include/ /modules/skresources/include/ /modules/svg/include/" ;;
     external/vulkan-headers) echo "/include/" ;;
+    external/sqlite) echo "/Android.bp /dist/ /android/" ;;
     hardware/libhardware) echo "/include/" ;;
     external/sfntly) echo "/Android.bp /cpp/src/" ;;
     external/wuffs-mirror-release-c) echo "/Android.bp /release/c/" ;;

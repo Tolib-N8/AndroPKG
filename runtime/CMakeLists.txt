@@ -202,7 +202,8 @@ target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/inpu
 
 andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
-    libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput)
+    libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput
+    libsqlite libsqlite3_android)
 # Skia's Apple ports (CoreText fonts, CG/ImageIO codecs) are part of the build.
 if(ANDROPKG_PLATFORM STREQUAL "ios")
   set(_uti_fw "-framework MobileCoreServices")

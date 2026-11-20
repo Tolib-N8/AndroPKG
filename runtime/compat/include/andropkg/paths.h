@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 /// Returns `path` itself, or a translated copy written into `buf` when `path` is under an
-/// Android system partition (/system, /apex, /product, /system_ext, /vendor, /odm).
+/// Android system partition (/system, /apex, /product, /system_ext, /vendor, /odm) or /data.
 const char* andropkg_translate_path(const char* path, char* buf, size_t len);
 #ifdef __cplusplus
 }

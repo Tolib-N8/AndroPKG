@@ -27,7 +27,6 @@ final class DefaultServices {
         {"audio", "android.media.IAudioService"},
         {"clipboard", "android.content.IClipboard"},
         {"notification", "android.app.INotificationManager"},
-        {"user", "android.os.IUserManager"},
         {"appops", "com.android.internal.app.IAppOpsService"},
         {"accessibility", "android.view.accessibility.IAccessibilityManager"},
         {"autofill", "android.view.autofill.IAutoFillManager"},

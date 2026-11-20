@@ -73,6 +73,10 @@ extern int register_android_view_MotionEvent(JNIEnv* env);
 extern int register_android_view_KeyEvent(JNIEnv* env);
 extern int register_android_view_VelocityTracker(JNIEnv* env);
 extern int register_android_view_KeyCharacterMap(JNIEnv* env);
+extern int register_android_database_CursorWindow(JNIEnv* env);
+extern int register_android_database_SQLiteConnection(JNIEnv* env);
+extern int register_android_database_SQLiteGlobal(JNIEnv* env);
+extern int register_android_database_SQLiteDebug(JNIEnv* env);
 extern int register_com_android_internal_util_VirtualRefBasePtr(JNIEnv* env);
 extern int register_android_animation_PropertyValuesHolder(JNIEnv* env);
 extern int register_android_text_AndroidCharacter(JNIEnv* env);
@@ -116,6 +120,10 @@ static const RegJni kRegistrations[] = {
     {"KeyEvent", register_android_view_KeyEvent},
     {"VelocityTracker", register_android_view_VelocityTracker},
     {"KeyCharacterMap", register_android_view_KeyCharacterMap},
+    {"android_database_CursorWindow", register_android_database_CursorWindow},
+    {"android_database_SQLiteConnection", register_android_database_SQLiteConnection},
+    {"android_database_SQLiteGlobal", register_android_database_SQLiteGlobal},
+    {"android_database_SQLiteDebug", register_android_database_SQLiteDebug},
     {"com_android_internal_util_VirtualRefBasePtr", register_com_android_internal_util_VirtualRefBasePtr},
     {"android_animation_PropertyValuesHolder", register_android_animation_PropertyValuesHolder},
     {"android_text_AndroidCharacter", register_android_text_AndroidCharacter},

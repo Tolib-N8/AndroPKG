@@ -94,6 +94,14 @@ int fallocate(int fd, int mode, off_t offset, off_t len);  // ENOSYS (CMC GC onl
 #include <string.h>  // glibc/bionic headers pull this in transitively; Darwin's don't.
 #include <errno.h>
 #include <sys/socket.h>
+/* Linux-only socket options, answered by libcore's getsockopt wrapper (values unused by
+ * Darwin): the socket's address family and protocol. */
+#ifndef SO_DOMAIN
+#define SO_DOMAIN 0x7ff0
+#endif
+#ifndef SO_PROTOCOL
+#define SO_PROTOCOL 0x7ff1
+#endif
 
 #ifndef TEMP_FAILURE_RETRY
 #define TEMP_FAILURE_RETRY(exp)            \

@@ -57,6 +57,51 @@ index 87f9652..4c2618b 100644
      jniThrowException(env, "java/io/IOException", error_msg.c_str());
      return 0;
    }
+diff --git a/core/jni/android_database_CursorWindow.cpp b/core/jni/android_database_CursorWindow.cpp
+index 2435406..919a260 100644
+--- a/core/jni/android_database_CursorWindow.cpp
++++ b/core/jni/android_database_CursorWindow.cpp
+@@ -111,6 +111,12 @@ fail:
+     return 0;
+ }
+ 
++#if defined(ANDROPKG) && !defined(__linux__)
++static jlong nativeCreateFromParcel(JNIEnv* env, jclass, jobject) {
++    jniThrowRuntimeException(env, "CursorWindow parceling is not supported");
++    return 0;
++}
++#else
+ static jlong nativeCreateFromParcel(JNIEnv* env, jclass clazz, jobject parcelObj) {
+     Parcel* parcel = parcelForJavaObject(env, parcelObj);
+ 
+@@ -128,6 +134,7 @@ static jlong nativeCreateFromParcel(JNIEnv* env, jclass clazz, jobject parcelObj
+             window->getNumRows(), window->getNumColumns(), window);
+     return reinterpret_cast<jlong>(window);
+ }
++#endif
+ 
+ static void nativeDispose(JNIEnv* env, jclass clazz, jlong windowPtr) {
+     CursorWindow* window = reinterpret_cast<CursorWindow*>(windowPtr);
+@@ -142,6 +149,11 @@ static jstring nativeGetName(JNIEnv* env, jclass clazz, jlong windowPtr) {
+     return env->NewStringUTF(window->name().string());
+ }
+ 
++#if defined(ANDROPKG) && !defined(__linux__)
++static void nativeWriteToParcel(JNIEnv* env, jclass, jlong, jobject) {
++    jniThrowRuntimeException(env, "CursorWindow parceling is not supported");
++}
++#else
+ static void nativeWriteToParcel(JNIEnv * env, jclass clazz, jlong windowPtr,
+         jobject parcelObj) {
+     CursorWindow* window = reinterpret_cast<CursorWindow*>(windowPtr);
+@@ -154,6 +166,7 @@ static void nativeWriteToParcel(JNIEnv * env, jclass clazz, jlong windowPtr,
+         jniThrowRuntimeException(env, msg.string());
+     }
+ }
++#endif
+ 
+ static void nativeClear(JNIEnv * env, jclass clazz, jlong windowPtr) {
+     CursorWindow* window = reinterpret_cast<CursorWindow*>(windowPtr);
 diff --git a/core/jni/android_os_SystemProperties.cpp b/core/jni/android_os_SystemProperties.cpp
 index 7f3b32e..007ee7a 100644
 --- a/core/jni/android_os_SystemProperties.cpp
@@ -251,6 +296,41 @@ index d33b592..1c61377 100644
  
  base::expected<std::monostate, NullOrIOError> Theme::ApplyStyle(uint32_t resid, bool force) {
    ATRACE_NAME("Theme::ApplyStyle");
+diff --git a/libs/androidfw/CursorWindow.cpp b/libs/androidfw/CursorWindow.cpp
+index 2a6dc7b..e361929 100644
+--- a/libs/androidfw/CursorWindow.cpp
++++ b/libs/androidfw/CursorWindow.cpp
+@@ -135,6 +135,10 @@ fail_silent:
+     return UNKNOWN_ERROR;
+ }
+ 
++#if defined(ANDROPKG) && !defined(__linux__)
++// andropkg: no libbinder Parcel; cursor windows stay in process.
++status_t CursorWindow::createFromParcel(Parcel*, CursorWindow**) { return INVALID_OPERATION; }
++#else
+ status_t CursorWindow::createFromParcel(Parcel* parcel, CursorWindow** outWindow) {
+     *outWindow = nullptr;
+ 
+@@ -203,7 +207,11 @@ fail_silent:
+     delete window;
+     return UNKNOWN_ERROR;
+ }
++#endif
+ 
++#if defined(ANDROPKG) && !defined(__linux__)
++status_t CursorWindow::writeToParcel(Parcel*) { return INVALID_OPERATION; }
++#else
+ status_t CursorWindow::writeToParcel(Parcel* parcel) {
+     LOG(DEBUG) << "Writing to parcel: " << this->toString();
+ 
+@@ -235,6 +243,7 @@ fail:
+ fail_silent:
+     return UNKNOWN_ERROR;
+ }
++#endif
+ 
+ status_t CursorWindow::clear() {
+     if (mReadOnly) {
 diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
 index 78db54a..bb95c44 100644
 --- a/libs/hwui/jni/graphics_jni_helpers.h

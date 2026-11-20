@@ -49,6 +49,9 @@ static constexpr int kSockNonblock = 04000, kSockCloexec = 02000000;
 int accept4(int fd, struct sockaddr* addr, socklen_t* len, int flags) {
   int s = accept(fd, addr, len);
   if (s == -1) return -1;
+  // Darwin's accept() inherits O_NONBLOCK from the listening socket; Linux's doesn't.
+  int fl = fcntl(s, F_GETFL);
+  if (fl != -1 && (fl & O_NONBLOCK)) fcntl(s, F_SETFL, fl & ~O_NONBLOCK);
   int f = ((flags & kSockCloexec) ? O_CLOEXEC : 0) | ((flags & kSockNonblock) ? O_NONBLOCK : 0);
   if (apply_fd_flags(s, f) == -1) {
     int e = errno;
