@@ -53,6 +53,24 @@ final class WindowManagerImpl {
         Hidden.call(wc, "setRotation", 0);
     }
 
+    /** The display frame and the system bars an app window must keep clear of. */
+    static void fillInsets(Object insetsState) {
+        int w = display.width, h = display.height;
+        Hidden.call(insetsState, "setDisplayFrame", new Rect(0, 0, w, h));
+        addBar(insetsState, 0, android.view.WindowInsets.Type.statusBars(), new Rect(0, 0, w, display.insetTop));
+        if (display.insetBottom > 0) {
+            addBar(insetsState, 1, android.view.WindowInsets.Type.navigationBars(),
+                    new Rect(0, h - display.insetBottom, w, h));
+        }
+    }
+
+    private static void addBar(Object insetsState, int index, int type, Rect frame) {
+        int id = (int) Hidden.callStatic(Hidden.cls("android.view.InsetsSource"), "createId", null, index, type);
+        Object source = Hidden.call(insetsState, "getOrCreateSource", id, type);
+        Hidden.call(source, "setFrame", frame);
+        Hidden.call(source, "setVisible", true);
+    }
+
     static Configuration displayConfiguration(Configuration base) {
         Configuration c = new Configuration(base);
         applyDisplay(c);
@@ -74,7 +92,7 @@ final class WindowManagerImpl {
                 int requestedVisibleTypes, Object outInputChannel, Object outInsetsState,
                 Object outActiveControls, Rect outAttachedFrame, float[] outSizeCompatScale) {
             Log.i(TAG, "window added: " + Hidden.call(attrs, "getTitle"));
-            Hidden.call(outInsetsState, "setDisplayFrame", new Rect(0, 0, display.width, display.height));
+            fillInsets(outInsetsState);
             if (outAttachedFrame != null) outAttachedFrame.setEmpty();
             if (outSizeCompatScale != null && outSizeCompatScale.length > 0) outSizeCompatScale[0] = 1f;
             // ADD_OKAY, and the window is visible (the activity is in front) in touch mode.
@@ -109,7 +127,7 @@ final class WindowManagerImpl {
                         android.content.res.Resources.getSystem().getConfiguration());
                 Hidden.call(outMergedConfiguration, "setConfiguration", global, new Configuration(global));
             }
-            if (outInsetsState != null) Hidden.call(outInsetsState, "setDisplayFrame", full);
+            if (outInsetsState != null) fillInsets(outInsetsState);
             int result = 0;
             if (viewVisibility == 0 /* VISIBLE */ && outSurfaceControl != null) {
                 SurfaceControl sc = surfaces.get(key(window));

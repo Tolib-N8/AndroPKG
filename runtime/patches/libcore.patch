@@ -58,6 +58,37 @@ index 43a6b1a..36cee90 100644
      return env->NewStringUTF(message);
  #endif
  }
+diff --git a/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp b/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp
+index ded578a..66980b1 100644
+--- a/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp
++++ b/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp
+@@ -14,6 +14,7 @@
+  * limitations under the License.
+  */
+ 
++#include <log/log.h>
+ #include <nativehelper/JNIHelp.h>
+ #include <nativehelper/jni_macros.h>
+ 
+@@ -26,6 +27,18 @@ static void NativeAllocationRegistry_applyFreeFunction(JNIEnv*,
+     void* nativePtr = reinterpret_cast<void*>(static_cast<uintptr_t>(ptr));
+     FreeFunction nativeFreeFunction
+         = reinterpret_cast<FreeFunction>(static_cast<uintptr_t>(freeFunction));
++#if defined(ANDROPKG)
++    // andropkg: natives andropkg leaves inert may hand out a null free function; leak the
++    // allocation instead of jumping to address 0 on the ReferenceQueueDaemon.
++    if (nativeFreeFunction == nullptr) {
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            ALOGW("NativeAllocationRegistry: null free function (ptr %p); allocation leaked", nativePtr);
++        }
++        return;
++    }
++#endif
+     nativeFreeFunction(nativePtr);
+ }
+ 
 diff --git a/ojluni/src/main/native/FileDescriptor_md.c b/ojluni/src/main/native/FileDescriptor_md.c
 index 880f5ea..66d6de8 100644
 --- a/ojluni/src/main/native/FileDescriptor_md.c

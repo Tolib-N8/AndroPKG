@@ -60,9 +60,37 @@ final class LocalService {
                     Method m = find(impl.getClass(), name, arity);
                     if (m != null) return Hidden.invoke(m, impl, args == null ? new Object[0] : args);
                     if (reported.add(name + "/" + arity)) Log.w(TAG, shortName + "." + name + "() -> default");
+                    replyToResultReceivers(args);
                     return Hidden.defaultValue(method.getReturnType());
                 });
         return binder;
+    }
+
+    /**
+     * Callers often block until the service answers through an IResultReceiver (e.g.
+     * SyncResultReceiver with a 5 s timeout). An unimplemented method answers "no result".
+     */
+    private static void replyToResultReceivers(Object[] args) {
+        if (args == null) return;
+        for (Object a : args) {
+            if (a != null && RESULT_RECEIVER != null && RESULT_RECEIVER.isInstance(a)) {
+                try {
+                    Hidden.call(a, "send", 0, null);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "IResultReceiver.send failed: " + e);
+                }
+            }
+        }
+    }
+
+    private static final Class<?> RESULT_RECEIVER = optionalClass("com.android.internal.os.IResultReceiver");
+
+    private static Class<?> optionalClass(String name) {
+        try {
+            return Class.forName(name);
+        } catch (ClassNotFoundException e) {
+            return null;
+        }
     }
 
     private static Method find(Class<?> c, String name, int arity) {

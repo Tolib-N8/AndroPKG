@@ -23,6 +23,8 @@ if [ ! -d "$fs" ]; then
   ln -sfn "$pb/fonts" "$fs/system/fonts"
   mkdir -p "$fs/system/etc"
   ln -sfn "$pb/fonts.xml" "$fs/system/etc/fonts.xml"
+  mkdir -p "$fs/system/usr/keychars"
+  ln -sfn "$root/third_party/aosp/frameworks/base/data/keyboards/Virtual.kcm" "$fs/system/usr/keychars/Virtual.kcm"
 fi
 
 # Boot classpath: ANDROPKG_BCP=full -> the whole Android 14 BOOTCLASSPATH (framework etc.);

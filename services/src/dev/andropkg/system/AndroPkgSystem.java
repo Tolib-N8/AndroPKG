@@ -147,6 +147,7 @@ public final class AndroPkgSystem {
         DisplayManagerImpl display = new DisplayManagerImpl();
         services.put("display", LocalService.create("android.hardware.display.IDisplayManager", display));
         services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
+        services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         activityClientController =
                 LocalService.create("android.app.IActivityClientController", new ActivityClientControllerImpl()).iface;
         // The service manager itself is in-process: no binder driver, no servicemanager daemon.

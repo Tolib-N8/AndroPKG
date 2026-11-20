@@ -72,6 +72,13 @@ extern int register_com_android_internal_os_ClassLoaderFactory(JNIEnv* env);
 extern int register_android_view_MotionEvent(JNIEnv* env);
 extern int register_android_view_KeyEvent(JNIEnv* env);
 extern int register_android_view_VelocityTracker(JNIEnv* env);
+extern int register_android_view_KeyCharacterMap(JNIEnv* env);
+extern int register_com_android_internal_util_VirtualRefBasePtr(JNIEnv* env);
+extern int register_android_animation_PropertyValuesHolder(JNIEnv* env);
+extern int register_android_text_AndroidCharacter(JNIEnv* env);
+extern int register_android_text_Hyphenator(JNIEnv* env);
+extern int register_android_util_CharsetUtils(JNIEnv* env);
+extern int register_android_content_res_Configuration(JNIEnv* env);
 }  // namespace android
 
 // hwui's android.graphics.* JNI (frameworks/base/libs/hwui/apex/jni_runtime.cpp).
@@ -108,6 +115,13 @@ static const RegJni kRegistrations[] = {
     {"MotionEvent", register_android_view_MotionEvent},
     {"KeyEvent", register_android_view_KeyEvent},
     {"VelocityTracker", register_android_view_VelocityTracker},
+    {"KeyCharacterMap", register_android_view_KeyCharacterMap},
+    {"com_android_internal_util_VirtualRefBasePtr", register_com_android_internal_util_VirtualRefBasePtr},
+    {"android_animation_PropertyValuesHolder", register_android_animation_PropertyValuesHolder},
+    {"android_text_AndroidCharacter", register_android_text_AndroidCharacter},
+    {"android_text_Hyphenator", register_android_text_Hyphenator},
+    {"android_util_CharsetUtils", register_android_util_CharsetUtils},
+    {"android_content_res_Configuration", register_android_content_res_Configuration},
     {"Parcel (andropkg)", register_andropkg_parcel},
     {"android.graphics (hwui)", register_hwui_graphics},
     {"window system (andropkg)", register_andropkg_window},

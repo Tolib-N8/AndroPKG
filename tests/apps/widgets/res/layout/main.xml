@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/scroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+    <LinearLayout
+        android:id="@+id/list"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+        <Button android:id="@+id/button" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="Button" />
+        <CheckBox android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="CheckBox" android:checked="true" />
+        <Switch android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="Switch" android:checked="true" />
+        <RadioGroup android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <RadioButton android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="One" android:checked="true" />
+            <RadioButton android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="Two" />
+        </RadioGroup>
+        <EditText android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="EditText hint" />
+        <SeekBar android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:progress="40" />
+        <ProgressBar style="@android:style/Widget.Material.ProgressBar.Horizontal"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:progress="70" />
+        <ProgressBar android:layout_width="wrap_content" android:layout_height="wrap_content" />
+    </LinearLayout>
+</ScrollView>

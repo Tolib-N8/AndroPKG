@@ -14,6 +14,7 @@ static NSString* g_status = @"starting ART…";
 static int g_exit_code = 1;
 // The screen the Android display maps to (read on the main thread before ART starts).
 static int g_screen_w = 1080, g_screen_h = 2400, g_screen_dpi = 420;
+static int g_inset_top = 0, g_inset_bottom = 0;  // safe area, pixels
 
 static void Log(NSString* s) {
   printf("[ART-RUNNER] %s\n", s.UTF8String);
@@ -60,7 +61,10 @@ static void (*g_inject_touch)(int action, float x, float y);
 @end
 
 static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
+  // Runs on the app's UI thread (an ART thread, no run loop): drain per frame.
+  @autoreleasepool {
   CFDataRef data = CFDataCreate(nullptr, static_cast<const UInt8*>(rgba), static_cast<CFIndex>(stride) * h);
+  if (data == nullptr) return;
   CGDataProviderRef provider = CGDataProviderCreateWithCFData(data);
   CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
   CGImageRef cg = CGImageCreate(w, h, 8, 32, stride, cs,
@@ -83,6 +87,7 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
     g_frame_view.image = image;
     g_frame_view.hidden = NO;
   });
+  }
 }
 
 static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
@@ -117,6 +122,8 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
       "-Dandropkg.display.width=" + std::to_string(g_screen_w),
       "-Dandropkg.display.height=" + std::to_string(g_screen_h),
       "-Dandropkg.display.dpi=" + std::to_string(g_screen_dpi),
+      "-Dandropkg.display.insetTop=" + std::to_string(g_inset_top),
+      "-Dandropkg.display.insetBottom=" + std::to_string(g_inset_bottom),
   };
   if (getenv("ANDROPKG_AUTOFINISH")) opts.push_back("-Dandropkg.test.autofinish=1");
   std::vector<JavaVMOption> vm_opts;
@@ -225,6 +232,13 @@ static void* VMThread(void*) {
   g_screen_w = static_cast<int>(screen.nativeBounds.size.width);
   g_screen_h = static_cast<int>(screen.nativeBounds.size.height);
   g_screen_dpi = static_cast<int>(160 * screen.nativeScale);  // Android dp == iOS point
+  // Safe area isn't known before a window exists; the key window of a fresh launch has it
+  // after the first layout. iPhones with a Dynamic Island: 59 pt top, 34 pt bottom.
+  UIWindow* probe = [[UIWindow alloc] initWithFrame:screen.bounds];
+  UIEdgeInsets safe = probe.safeAreaInsets;
+  if (safe.top == 0) safe = UIEdgeInsetsMake(59, 0, 34, 0);
+  g_inset_top = static_cast<int>(safe.top * screen.nativeScale);
+  g_inset_bottom = static_cast<int>(safe.bottom * screen.nativeScale);
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack

@@ -386,18 +386,31 @@ void InjectTouch(int action, float x, float y) {
   if (!gReceivers.empty()) gReceivers.back()->Post({action, x, y});
 }
 
-// macOS dev loop: ANDROPKG_TEST_TAP=x,y taps once, shortly after the first frame.
+// Tests: ANDROPKG_TEST_TAP=x,y taps once, ANDROPKG_TEST_SWIPE=x1,y1,x2,y2 drags (300 ms),
+// shortly after the first frame.
 void MaybeTestTap(uint64_t frame) {
-  static const char* spec = getenv("ANDROPKG_TEST_TAP");
-  if (spec == nullptr || frame != 1) return;
-  float x = 0, y = 0;
-  if (sscanf(spec, "%f,%f", &x, &y) != 2) return;
-  std::thread([x, y] {
-    usleep(300 * 1000);
-    InjectTouch(0, x, y);
-    usleep(80 * 1000);
-    InjectTouch(1, x, y);
-  }).detach();
+  if (frame != 1) return;
+  float x = 0, y = 0, x2 = 0, y2 = 0;
+  if (const char* tap = getenv("ANDROPKG_TEST_TAP"); tap && sscanf(tap, "%f,%f", &x, &y) == 2) {
+    std::thread([x, y] {
+      usleep(300 * 1000);
+      InjectTouch(0, x, y);
+      usleep(80 * 1000);
+      InjectTouch(1, x, y);
+    }).detach();
+  }
+  if (const char* sw = getenv("ANDROPKG_TEST_SWIPE"); sw && sscanf(sw, "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
+    std::thread([x, y, x2, y2] {
+      usleep(300 * 1000);
+      InjectTouch(0, x, y);
+      constexpr int kSteps = 20;
+      for (int i = 1; i <= kSteps; i++) {
+        usleep(15 * 1000);
+        InjectTouch(2, x + (x2 - x) * i / kSteps, y + (y2 - y) * i / kSteps);
+      }
+      InjectTouch(1, x2, y2);
+    }).detach();
+  }
 }
 
 // ---- registration -----------------------------------------------------------------------
@@ -454,7 +467,11 @@ void ZeroFillNatives(JNIEnv* env, const char* className) {
       env->DeleteLocalRef(ret);
       jstring n = static_cast<jstring>(env->CallObjectMethod(m, getName));
       const char* name = env->GetStringUTFChars(n, nullptr);
-      JNINativeMethod nm = {name, sig.c_str(), reinterpret_cast<void*>(&andropkg_jni_zero)};
+      // NativeAllocationRegistry calls whatever a *Finalizer() native returns: never 0.
+      bool finalizer = strstr(name, "Finalizer") != nullptr && sig == "()J";
+      JNINativeMethod nm = {name, sig.c_str(),
+                            finalizer ? reinterpret_cast<void*>(&NoopFinalizerPtr)
+                                      : reinterpret_cast<void*>(&andropkg_jni_zero)};
       if (env->RegisterNatives(c, &nm, 1) != JNI_OK) env->ExceptionClear();
       env->ReleaseStringUTFChars(n, name);
       env->DeleteLocalRef(n);

@@ -33,3 +33,7 @@ frame="$log/hello-frame.png"
 ANDROPKG_TEST_TAP=540,190 ANDROPKG_FRAME_PNG=$frame run hello-apk "HelloTest.*banner tapped 1" $(apk hello)
 [ -s "$frame" ] || fail "hello-apk frame" hello-apk
 echo "ok   hello-apk frame ($frame)"
+# Stock widgets + action bar + system bar insets; a swipe scrolls (and flings) the list.
+ANDROPKG_TEST_SWIPE=540,2000,540,600 run widgets "WidgetsTest.*onCreate done" $(apk widgets)
+grep -q "Fatal signal" "$log/widgets.log" && fail "widgets crashed" widgets
+echo "ok   widgets swipe"

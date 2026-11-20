@@ -62,7 +62,8 @@ sparse_paths() {
     external/harfbuzz_ng) echo "/Android.bp /src/" ;;
     external/freetype) echo "/Android.bp /include/ /src/ /builds/unix/" ;;
     system/incremental_delivery) echo "/incfs/util/ /incfs/Android.bp /incfs/include/" ;;
-    frameworks/base) echo "/core/jni/ /libs/androidfw/ /libs/hwui/ /include/ /native/android/ /core/proto/" ;;
+    frameworks/base) echo "/core/jni/ /libs/androidfw/ /libs/hwui/ /include/ /native/android/ /core/proto/
+                          /data/keyboards/" ;;
     frameworks/native) echo "/include/ /libs/binder/include/ /libs/nativewindow/include/ /libs/nativebase/include/
                             /libs/arect/include/ /libs/math/include/ /libs/ui/ /libs/gui/include/
                             /libs/input/ /include/input/ /libs/ultrahdr/
