@@ -21,6 +21,7 @@
 #include <atomic>
 #include <deque>
 #include <map>
+#include <set>
 #include <thread>
 #include <mutex>
 #include <string>
@@ -151,6 +152,16 @@ struct Layer {  // SurfaceControl
   std::string name;
   int width, height;
   WindowSurface* surface = nullptr;
+  // Hierarchy and geometry (SurfaceControl.Transaction; applied as set): a SurfaceView's layers
+  // are children of its window's layer, composed below (z < 0) or above it.
+  Layer* parent = nullptr;
+  float x = 0, y = 0, scaleX = 1, scaleY = 1, alpha = 1;
+  int z = 0;
+  bool relativeZ = false;  // z set relative to (the window's) layer: it orders the subtree
+  bool hidden = false;
+  bool cropped = false;
+  SkIRect crop = SkIRect::MakeEmpty();  // in the layer's own coordinates
+  int destW = 0, destH = 0;            // setDestinationFrame / setGeometry: buffer scaled to this
   WindowSurface* Surface() {
     if (!surface) {
       surface = new WindowSurface;
@@ -160,6 +171,9 @@ struct Layer {  // SurfaceControl
     return surface;
   }
 };
+
+std::mutex gWmLock;             // the window manager's state (windows, layers); before any WindowSurface::lock
+std::set<Layer*> gLayers;        // every SurfaceControl (for the composition of child layers)
 
 struct Bbq {  // BLASTBufferQueue
   std::string name;
@@ -186,7 +200,7 @@ struct {
 void EnsureWmNatives(JNIEnv* env);
 
 jlong sc_create(JNIEnv* env, jclass, jobject /*session*/, jstring name, jint w, jint h, jint /*format*/,
-                jint /*flags*/, jlong /*parent*/, jobject /*metadata*/) {
+                jint flags, jlong parent, jobject /*metadata*/) {
   EnsureWmNatives(env);
   auto* layer = new Layer;
   if (name) {
@@ -196,8 +210,67 @@ jlong sc_create(JNIEnv* env, jclass, jobject /*session*/, jstring name, jint w, 
   }
   layer->width = w;
   layer->height = h;
+  layer->parent = Ptr<Layer>(parent);
+  layer->hidden = (flags & 0x4) != 0;  // SurfaceControl.HIDDEN
+  {
+    std::lock_guard<std::mutex> g(gWmLock);
+    gLayers.insert(layer);
+  }
   return reinterpret_cast<jlong>(layer);
 }
+
+// SurfaceControl.Transaction: applied when set (no batching; the app sees no difference).
+#define TX_LAYER(sc) \
+  Layer* l = Ptr<Layer>(sc); \
+  if (l == nullptr) return; \
+  std::lock_guard<std::mutex> g(gWmLock)
+void tx_setPosition(JNIEnv*, jclass, jlong, jlong sc, jfloat x, jfloat y) { TX_LAYER(sc); l->x = x; l->y = y; }
+void tx_setLayer(JNIEnv*, jclass, jlong, jlong sc, jint z) {
+  TX_LAYER(sc);
+  l->z = z;
+  l->relativeZ = false;
+}
+// SurfaceView: z relative to its window's layer (-2: below the window, seen through its hole).
+void tx_setRelativeLayer(JNIEnv*, jclass, jlong, jlong sc, jlong rel, jint z) {
+  TX_LAYER(sc);
+  l->z = z;
+  l->relativeZ = rel != 0;
+}
+void tx_reparent(JNIEnv*, jclass, jlong, jlong sc, jlong parent) { TX_LAYER(sc); l->parent = Ptr<Layer>(parent); }
+void tx_setFlags(JNIEnv*, jclass, jlong, jlong sc, jint flags, jint mask) {
+  TX_LAYER(sc);
+  if (mask & 0x1) l->hidden = (flags & 0x1) != 0;  // SURFACE_HIDDEN
+}
+void tx_setAlpha(JNIEnv*, jclass, jlong, jlong sc, jfloat a) { TX_LAYER(sc); l->alpha = a; }
+void tx_setWindowCrop(JNIEnv*, jclass, jlong, jlong sc, jint left, jint top, jint right, jint bottom) {
+  TX_LAYER(sc);
+  l->cropped = right > left && bottom > top;
+  l->crop = SkIRect::MakeLTRB(left, top, right, bottom);
+}
+void tx_setMatrix(JNIEnv*, jclass, jlong, jlong sc, jfloat dsdx, jfloat, jfloat, jfloat dsdy) {
+  TX_LAYER(sc);
+  l->scaleX = dsdx;
+  l->scaleY = dsdy;
+}
+void tx_setScale(JNIEnv*, jclass, jlong, jlong sc, jfloat sx, jfloat sy) { TX_LAYER(sc); l->scaleX = sx; l->scaleY = sy; }
+void tx_setDestinationFrame(JNIEnv*, jclass, jlong, jlong sc, jint left, jint top, jint right, jint bottom) {
+  TX_LAYER(sc);
+  l->x = left;
+  l->y = top;
+  l->destW = right - left;
+  l->destH = bottom - top;
+}
+void tx_setGeometry(JNIEnv* env, jclass, jlong, jlong sc, jobject /*sourceCrop*/, jobject dest, jlong) {
+  if (dest == nullptr) return;
+  int left = env->GetIntField(dest, gJni.rectLeft), top = env->GetIntField(dest, gJni.rectTop);
+  int right = env->GetIntField(dest, gJni.rectRight), bottom = env->GetIntField(dest, gJni.rectBottom);
+  TX_LAYER(sc);
+  l->x = left;
+  l->y = top;
+  l->destW = right - left;
+  l->destH = bottom - top;
+}
+void tx_noop(JNIEnv*, jclass, jlong, jboolean) {}  // nativeApplyTransaction: already applied
 jlong sc_copy(JNIEnv*, jclass, jlong ptr) { return ptr; }
 jlong sc_getHandle(JNIEnv*, jclass, jlong ptr) { return ptr; }
 jint sc_getLayerId(JNIEnv*, jclass, jlong ptr) { return static_cast<jint>(ptr & 0x7fffffff); }
@@ -715,7 +788,6 @@ struct HostWindow {
   bool placed = false;  // nativeSetWindow called at least once
 };
 
-std::mutex gWmLock;                            // before any WindowSurface::lock
 std::map<int, HostWindow> gWindows;            // by window id (InputChannel.mPtr)
 std::vector<InputReceiver*> gOrphanReceivers;  // windows not added through WindowManagerImpl
 InputReceiver* gFocused = nullptr;
@@ -756,6 +828,71 @@ void UpdateFocusLocked() {
   }
 }
 
+// A window's child layers with content (SurfaceView), each with its place relative to the window
+// surface and the z of its top-level ancestor under the window.
+struct ChildLayer {
+  Layer* layer;
+  float x, y, alpha;
+  int z, depth;
+  bool cropped;
+  SkRect clip;  // in window-surface coordinates
+};
+std::vector<ChildLayer> ChildLayersLocked(Layer* window) {
+  std::vector<ChildLayer> out;
+  for (Layer* l : gLayers) {
+    if (l == window || l->surface == nullptr || l->surface->frames == 0) continue;
+    float x = 0, y = 0, alpha = 1;
+    int z = 0, depth = 0;
+    bool shown = true, cropped = false, zFixed = false;
+    SkRect clip = SkRect::MakeEmpty();
+    Layer* p = l;
+    for (; p != nullptr && p != window; p = p->parent, depth++) {
+      shown &= !p->hidden;
+      alpha *= p->alpha;
+      // a crop is in the layer's coordinates: intersect in the child's frame, then move up
+      if (p->cropped) {
+        SkRect c = SkRect::Make(p->crop);
+        clip = cropped ? (clip.intersect(c) ? clip : SkRect::MakeEmpty()) : c;
+        cropped = true;
+      }
+      x += p->x;
+      y += p->y;
+      if (cropped) clip.offset(p->x, p->y);
+      if (!zFixed) {  // the z of the ancestor right under the window, unless one is relative
+        z = p->z;
+        zFixed = p->relativeZ;
+      }
+      if (depth > 32) break;
+    }
+    if (p != window || !shown || alpha <= 0) continue;
+    out.push_back({l, x, y, alpha, z, depth, cropped, clip});
+  }
+  std::sort(out.begin(), out.end(), [](const ChildLayer& a, const ChildLayer& b) {
+    return a.z != b.z ? a.z < b.z : a.depth < b.depth;
+  });
+  return out;
+}
+
+void DrawChildLocked(SkCanvas* canvas, const ChildLayer& c, int ox, int oy) {
+  WindowSurface* s = c.layer->surface;
+  std::lock_guard<std::mutex> g(s->lock);
+  if (s->drawnW <= 0 || s->pixels.size() < static_cast<size_t>(s->drawnW) * s->drawnH) return;
+  SkBitmap bm;
+  bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
+                   s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
+  bm.setImmutable();
+  float w = c.layer->destW > 0 ? c.layer->destW : s->drawnW * c.layer->scaleX;
+  float h = c.layer->destH > 0 ? c.layer->destH : s->drawnH * c.layer->scaleY;
+  canvas->save();
+  canvas->translate(ox, oy);
+  if (c.cropped) canvas->clipRect(c.clip);
+  SkPaint paint;
+  paint.setAlphaf(c.alpha);
+  canvas->drawImageRect(bm.asImage(), SkRect::MakeXYWH(c.x, c.y, w, h), SkSamplingOptions(SkFilterMode::kLinear),
+                        &paint);
+  canvas->restore();
+}
+
 void ComposeLocked() {
   std::vector<HostWindow*> drawn;
   for (HostWindow* w : VisibleTopDownLocked()) {
@@ -763,7 +900,13 @@ void ComposeLocked() {
   }
   if (drawn.empty() || gDisplayW <= 0 || gDisplayH <= 0) return;
   std::reverse(drawn.begin(), drawn.end());  // bottom first
-  if (drawn.size() == 1 && drawn[0]->dim == 0 && drawn[0]->sx == 0 && drawn[0]->sy == 0) {
+  std::map<HostWindow*, std::vector<ChildLayer>> children;
+  bool anyChildren = false;
+  for (HostWindow* w : drawn) {
+    children[w] = ChildLayersLocked(w->layer);
+    anyChildren |= !children[w].empty();
+  }
+  if (drawn.size() == 1 && !anyChildren && drawn[0]->dim == 0 && drawn[0]->sx == 0 && drawn[0]->sy == 0) {
     WindowSurface* s = drawn[0]->layer->surface;
     std::lock_guard<std::mutex> g(s->lock);
     if (s->drawnW == gDisplayW && s->drawnH == gDisplayH) {  // one full-screen window: as is
@@ -776,14 +919,24 @@ void ComposeLocked() {
   std::unique_ptr<SkCanvas> canvas = SkCanvas::MakeRasterDirect(info, gScreen.data(), gDisplayW * 4);
   for (HostWindow* w : drawn) {
     if (w->dim > 0) canvas->drawColor(SkColorSetARGB(static_cast<U8CPU>(w->dim * 255), 0, 0, 0));
-    WindowSurface* s = w->layer->surface;
-    std::lock_guard<std::mutex> g(s->lock);
-    if (s->drawnW <= 0 || s->pixels.size() < static_cast<size_t>(s->drawnW) * s->drawnH) continue;
-    SkBitmap bm;
-    bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
-                     s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
-    bm.setImmutable();
-    canvas->drawImage(bm.asImage(), w->sx, w->sy);
+    const std::vector<ChildLayer>& kids = children[w];
+    for (const ChildLayer& c : kids) {  // below the window: seen through the hole it punches
+      if (c.z < 0) DrawChildLocked(canvas.get(), c, w->sx, w->sy);
+    }
+    {
+      WindowSurface* s = w->layer->surface;
+      std::lock_guard<std::mutex> g(s->lock);
+      if (s->drawnW > 0 && s->pixels.size() >= static_cast<size_t>(s->drawnW) * s->drawnH) {
+        SkBitmap bm;
+        bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
+                         s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
+        bm.setImmutable();
+        canvas->drawImage(bm.asImage(), w->sx, w->sy);
+      }
+    }
+    for (const ChildLayer& c : kids) {
+      if (c.z >= 0) DrawChildLocked(canvas.get(), c, w->sx, w->sy);
+    }
   }
   Present(gScreen.data(), gDisplayW, gDisplayH, gDisplayW * 4);
 }
@@ -797,6 +950,14 @@ void PostFrame(WindowSurface* s) {
     if (w.layer && w.layer->surface == s) {
       if (w.visible) ComposeLocked();
       return;
+    }
+  }
+  if (anyPlaced) {  // a child layer's frame (SurfaceView)
+    for (Layer* l : gLayers) {
+      if (l->surface == s) {
+        ComposeLocked();
+        return;
+      }
     }
   }
   if (!anyPlaced) {  // no window manager: show the surface as it is
@@ -1065,6 +1226,14 @@ void RunTestScript(std::string script) {
       if (gLastW > 0 && WritePngTo(path.c_str(), gLastFrame.data(), gLastW, gLastH, gLastW * 4)) {
         ALOGI("test: shot %dx%d -> %s", gLastW, gLastH, path.c_str());
       }
+    } else if (op == "pixel" && sscanf(arg.c_str(), "%f,%f", &x, &y) == 2) {
+      // The displayed pixel (RGB) at x,y: "test: pixel X,Y = rrggbb".
+      std::lock_guard<std::mutex> g(gLastFrameLock);
+      int px = static_cast<int>(x), py = static_cast<int>(y);
+      if (px >= 0 && py >= 0 && px < gLastW && py < gLastH) {
+        uint32_t c = gLastFrame[static_cast<size_t>(py) * gLastW + px];  // RGBA in memory
+        ALOGI("test: pixel %d,%d = %02x%02x%02x", px, py, c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff);
+      }
     } else if (op == "log") {
       // logged above
     } else {
@@ -1287,6 +1456,18 @@ int register_andropkg_window(JNIEnv* env) {
       M("nativeGetNativeTransactionFinalizer", "()J", NoopFinalizerPtr),
       M("nativeGetHandle", "(J)J", sc_getHandle),
       M("nativeGetLayerId", "(J)I", sc_getLayerId),
+      M("nativeSetPosition", "(JJFF)V", tx_setPosition),
+      M("nativeSetLayer", "(JJI)V", tx_setLayer),
+      M("nativeSetRelativeLayer", "(JJJI)V", tx_setRelativeLayer),
+      M("nativeReparent", "(JJJ)V", tx_reparent),
+      M("nativeSetFlags", "(JJII)V", tx_setFlags),
+      M("nativeSetAlpha", "(JJF)V", tx_setAlpha),
+      M("nativeSetWindowCrop", "(JJIIII)V", tx_setWindowCrop),
+      M("nativeSetMatrix", "(JJFFFF)V", tx_setMatrix),
+      M("nativeSetScale", "(JJFF)V", tx_setScale),
+      M("nativeSetDestinationFrame", "(JJIIII)V", tx_setDestinationFrame),
+      M("nativeSetGeometry", "(JJLandroid/graphics/Rect;Landroid/graphics/Rect;J)V", tx_setGeometry),
+      M("nativeApplyTransaction", "(JZ)V", tx_noop),
   };
   static const JNINativeMethod kSurfaceSession[] = {
       M("nativeCreate", "()J", sc_createTransaction),

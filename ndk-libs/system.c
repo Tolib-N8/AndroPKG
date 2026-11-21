@@ -62,6 +62,7 @@ void *ndk_system_impl(const char *name) {
     snprintf(buf, sizeof buf, "bionic_%s", name);
     void *p = dlsym(self_handle(), buf);
     if (p) return p;
+    if ((p = andropkg_gl_symbol(name))) return p;  // EGL and the GL wrappers (runtime/opengl/egl.m)
     if (in_sorted(kDirectSymbols, sizeof kDirectSymbols / sizeof *kDirectSymbols, name)) return dlsym(RTLD_DEFAULT, name);
     // libandroid / libjnigraphics / libnativewindow: implemented by the runtime itself
     // (runtime/android_runtime/ndk_android.cc, AOSP's asset_manager.cpp, ...), same C ABI.

@@ -4,6 +4,7 @@
 // code runs. There is no zygote here: ART loads this library at startup
 // (Runtime::InitNativeMethods, andropkg patch) and JNI_OnLoad registers the subset we build.
 // Framework natives that aren't registered fail lazily with UnsatisfiedLinkError when called.
+#include <dlfcn.h>
 #include <android_runtime/AndroidRuntime.h>
 #include <nativehelper/JNIHelp.h>
 #include <utils/Log.h>
@@ -67,6 +68,16 @@ extern int register_andropkg_sensors(JNIEnv* env);
 extern int register_andropkg_audio(JNIEnv* env);
 extern int register_android_view_InputQueue(JNIEnv* env);
 extern int register_andropkg_native_activity(JNIEnv* env);
+// android.opengl.* / gles_jni JNI: in libandropkg_gl (runtime/opengl), next to EGL.
+static int register_andropkg_opengl(JNIEnv* env) {
+  void* h = dlopen("@rpath/libandropkg_gl.dylib", RTLD_NOW | RTLD_GLOBAL);
+  auto reg = h ? reinterpret_cast<int (*)(JNIEnv*)>(dlsym(h, "andropkg_register_opengl")) : nullptr;
+  if (reg == nullptr) {
+    ALOGE("andropkg: libandropkg_gl.dylib: %s", dlerror());
+    return 0;  // no GL for Java code; the rest works
+  }
+  return reg(env);
+}
 extern int register_android_content_res_ApkAssets(JNIEnv* env);
 extern int register_android_content_AssetManager(JNIEnv* env);
 extern int register_android_content_StringBlock(JNIEnv* env);
@@ -141,6 +152,7 @@ static const RegJni kRegistrations[] = {
     {"audio (andropkg)", register_andropkg_audio},
     {"InputQueue", register_android_view_InputQueue},
     {"NativeActivity (andropkg)", register_andropkg_native_activity},
+    {"opengl (andropkg)", register_andropkg_opengl},
 };
 
 }  // namespace android

@@ -117,5 +117,19 @@ for want in "egl 1.4 configs=1 surface 1080x2400" "program linked=1" "center=ff8
 done
 grep -q "unimplemented NDK function" "$log/gles.log" && fail "gles: unimplemented function called" gles
 echo "ok   gles checks"
+# SurfaceView: a child layer composed below the window (seen through the hole it punches),
+# a view over it; GLSurfaceView: EGL10 + GLES20 from Java through the same layers.
+ANDROPKG_TEST_SCRIPT="wait 2500; pixel 540,200; pixel 50,520; pixel 540,1500; pixel 1000,2300" \
+  run surfaceview "test: script done" $(apk surfaceview)
+for want in "540,200 = ffffff" "50,520 = 00ff00" "540,1500 = ff0000" "1000,2300 = ffff00"; do
+  grep -q "test: pixel $want" "$log/surfaceview.log" || fail "surfaceview: pixel $want" surfaceview
+done
+echo "ok   surfaceview checks"
+ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)
+for want in "\[glsv\] center=ff00ff error=0" "\[glsv\] fps=(5[5-9]|6[0-5])" "test: pixel 540,1200 = ff00ff" \
+    "test: pixel 30,1200 = 00ff00"; do
+  grep -qE "$want" "$log/glsurface.log" || fail "glsurface: $want" glsurface
+done
+echo "ok   glsurface checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

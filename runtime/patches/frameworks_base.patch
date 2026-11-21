@@ -102,6 +102,129 @@ index 2435406..919a260 100644
  
  static void nativeClear(JNIEnv * env, jclass clazz, jlong windowPtr) {
      CursorWindow* window = reinterpret_cast<CursorWindow*>(windowPtr);
+diff --git a/core/jni/android_opengl_EGL14.cpp b/core/jni/android_opengl_EGL14.cpp
+index 2f29cae..676b471 100644
+--- a/core/jni/android_opengl_EGL14.cpp
++++ b/core/jni/android_opengl_EGL14.cpp
+@@ -23,17 +23,30 @@
+ #include <nativehelper/JNIPlatformHelp.h>
+ #include <android_runtime/AndroidRuntime.h>
+ #include <android_runtime/android_view_Surface.h>
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <android_runtime/android_graphics_SurfaceTexture.h>
++#endif
+ #include <utils/misc.h>
++#if defined(ANDROPKG)
++#include <android/native_window_jni.h>
++#endif
+ 
+ #include <assert.h>
+ #include <EGL/egl.h>
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/Surface.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/GLConsumer.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/Surface.h>
++#endif
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <ui/ANativeObjectBase.h>
++#endif
+ 
+ static jclass egldisplayClass;
+ static jclass eglcontextClass;
+@@ -530,7 +543,11 @@ android_eglCreateWindowSurface
+     EGLint *attrib_list_base = (EGLint *) 0;
+     jint _remaining;
+     EGLint *attrib_list = (EGLint *) 0;
++#if defined(ANDROPKG)
++    ANativeWindow* window;
++#else
+     android::sp<ANativeWindow> window;
++#endif
+ 
+     if (attrib_list_ref) {
+         if (offset < 0) {
+@@ -566,7 +583,11 @@ not_valid_surface:
+         goto exit;
+     }
+ 
++#if defined(ANDROPKG)
++    window = ANativeWindow_fromSurface(_env, win);
++#else
+     window = android::android_view_Surface_getNativeWindow(_env, win);
++#endif
+ 
+     if (window == NULL)
+         goto not_valid_surface;
+@@ -574,7 +595,11 @@ not_valid_surface:
+     _returnValue = eglCreateWindowSurface(
+         (EGLDisplay)dpy_native,
+         (EGLConfig)config_native,
++#if defined(ANDROPKG)
++        (EGLNativeWindowType)window,
++#else
+         (EGLNativeWindowType)window.get(),
++#endif
+         (EGLint *)attrib_list
+     );
+ 
+@@ -594,6 +619,10 @@ exit:
+ static jobject
+ android_eglCreateWindowSurfaceTexture
+   (JNIEnv *_env, jobject _this, jobject dpy, jobject config, jobject win, jintArray attrib_list_ref, jint offset) {
++#if defined(ANDROPKG)  // andropkg: no SurfaceTexture producers (no libgui)
++    jniThrowException(_env, "java/lang/UnsupportedOperationException", "SurfaceTexture window surfaces");
++    return nullptr;
++#else
+     jint _exception = 0;
+     const char * _exceptionType = "";
+     const char * _exceptionMessage = "";
+@@ -671,6 +700,7 @@ exit:
+         return nullptr;
+     }
+     return toEGLHandle(_env, eglsurfaceClass, eglsurfaceConstructor, _returnValue);
++#endif
+ }
+ /* EGLSurface eglCreatePbufferSurface ( EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list ) */
+ static jobject
+diff --git a/core/jni/android_opengl_EGLExt.cpp b/core/jni/android_opengl_EGLExt.cpp
+index cdc9852..6b73937 100644
+--- a/core/jni/android_opengl_EGLExt.cpp
++++ b/core/jni/android_opengl_EGLExt.cpp
+@@ -23,18 +23,28 @@
+ #include <nativehelper/JNIPlatformHelp.h>
+ #include <android_runtime/AndroidRuntime.h>
+ #include <android_runtime/android_view_Surface.h>
++#if !defined(ANDROPKG)  // andropkg: no libgui
+ #include <android_runtime/android_graphics_SurfaceTexture.h>
++#endif
+ #include <utils/misc.h>
+ 
+ #include <assert.h>
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui
+ #include <gui/Surface.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui
+ #include <gui/GLConsumer.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui
+ #include <gui/Surface.h>
++#endif
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui
+ #include <ui/ANativeObjectBase.h>
++#endif
+ 
+ static jclass egldisplayClass;
+ static jclass eglsurfaceClass;
 diff --git a/core/jni/android_os_SystemProperties.cpp b/core/jni/android_os_SystemProperties.cpp
 index 7f3b32e..007ee7a 100644
 --- a/core/jni/android_os_SystemProperties.cpp
@@ -258,6 +381,109 @@ index 2e9f179..f06f245 100644
  
  static jstring android_view_MotionEvent_nativeAxisToString(JNIEnv* env, jclass clazz,
          jint axis) {
+diff --git a/core/jni/com_google_android_gles_jni_EGLImpl.cpp b/core/jni/com_google_android_gles_jni_EGLImpl.cpp
+index 5aea848..64b1e83 100644
+--- a/core/jni/com_google_android_gles_jni_EGLImpl.cpp
++++ b/core/jni/com_google_android_gles_jni_EGLImpl.cpp
+@@ -18,19 +18,34 @@
+ #include <nativehelper/JNIHelp.h>
+ #include <android_runtime/AndroidRuntime.h>
+ #include <android_runtime/android_view_Surface.h>
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <android_runtime/android_graphics_SurfaceTexture.h>
++#endif
+ #include <utils/misc.h>
++#if defined(ANDROPKG)
++#include <android/native_window_jni.h>
++#endif
+ 
+ 
+ #include <EGL/egl.h>
+ #include <GLES/gl.h>
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <private/EGL/display.h>
++#endif
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/Surface.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/GLConsumer.h>
++#endif
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <gui/Surface.h>
++#endif
+ 
++#if !defined(ANDROPKG)  // andropkg: no libgui (windows: window_jni.cc)
+ #include <ui/ANativeObjectBase.h>
++#endif
+ 
+ namespace android {
+ 
+@@ -174,7 +189,11 @@ static jboolean jni_eglQuerySurface(JNIEnv *_env, jobject _this, jobject display
+ 
+ static jint jni_getInitCount(JNIEnv *_env, jobject _clazz, jobject display) {
+     EGLDisplay dpy = getDisplay(_env, display);
++#if defined(ANDROPKG)
++    return dpy != EGL_NO_DISPLAY ? 1 : 0;
++#else
+     return android::egl_get_init_count(dpy);
++#endif
+ }
+ 
+ static jboolean jni_eglReleaseThread(JNIEnv *_env, jobject _this) {
+@@ -263,7 +282,11 @@ static jlong jni_eglCreateWindowSurface(JNIEnv *_env, jobject _this, jobject dis
+     }
+     EGLDisplay dpy = getDisplay(_env, display);
+     EGLContext cnf = getConfig(_env, config);
++#if defined(ANDROPKG)
++    ANativeWindow* window;
++#else
+     sp<ANativeWindow> window;
++#endif
+     if (native_window == NULL) {
+ not_valid_surface:
+         jniThrowException(_env, "java/lang/IllegalArgumentException",
+@@ -271,12 +294,20 @@ not_valid_surface:
+         return 0;
+     }
+ 
++#if defined(ANDROPKG)
++    window = ANativeWindow_fromSurface(_env, native_window);
++#else
+     window = android_view_Surface_getNativeWindow(_env, native_window);
++#endif
+     if (window == NULL)
+         goto not_valid_surface;
+ 
+     jint* base = beginNativeAttribList(_env, attrib_list);
++#if defined(ANDROPKG)
++    EGLSurface sur = eglCreateWindowSurface(dpy, cnf, window, base);
++#else
+     EGLSurface sur = eglCreateWindowSurface(dpy, cnf, window.get(), base);
++#endif
+     endNativeAttributeList(_env, attrib_list, base);
+     return reinterpret_cast<jlong>(sur);
+ }
+@@ -288,6 +319,10 @@ static jlong jni_eglCreateWindowSurfaceTexture(JNIEnv *_env, jobject _this, jobj
+         jniThrowException(_env, "java/lang/IllegalArgumentException", NULL);
+         return 0;
+     }
++#if defined(ANDROPKG)  // andropkg: no SurfaceTexture producers (no libgui)
++    jniThrowException(_env, "java/lang/UnsupportedOperationException", "SurfaceTexture window surfaces");
++    return 0;
++#else
+     EGLDisplay dpy = getDisplay(_env, display);
+     EGLContext cnf = getConfig(_env, config);
+     sp<ANativeWindow> window;
+@@ -307,6 +342,7 @@ not_valid_surface:
+     EGLSurface sur = eglCreateWindowSurface(dpy, cnf, window.get(), base);
+     endNativeAttributeList(_env, attrib_list, base);
+     return reinterpret_cast<jlong>(sur);
++#endif
+ }
+ 
+ static jboolean jni_eglGetConfigAttrib(JNIEnv *_env, jobject _this, jobject display,
 diff --git a/core/jni/core_jni_helpers.h b/core/jni/core_jni_helpers.h
 index 210dc89..9555709 100644
 --- a/core/jni/core_jni_helpers.h

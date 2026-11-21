@@ -1,4 +1,6 @@
-// andropkg NDK layer — EGL 1.4 and the GLES libraries (libEGL, libGLESv1_CM, libGLESv2/v3).
+// andropkg — EGL 1.4 and the GLES libraries (libEGL, libGLESv1_CM, libGLESv2/v3), for NDK code
+// (libandropkg_ndk resolves libEGL/libGLES* imports here: andropkg_gl_symbol) and for the
+// framework's GL JNI (gl_redirect.h).
 //
 // iOS: Apple's OpenGL ES (EAGL contexts; ES 1.1, 2.0 and 3.0). The gl* entry points are Apple's
 // own: GLES is a plain C API without variadics, so Android code calls them directly (resolved
@@ -12,6 +14,7 @@
 #include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -34,7 +37,13 @@
 #define GL_FRAMEWORK "/System/Library/Frameworks/OpenGL.framework/OpenGL"
 #endif
 
-#include "ndk_internal.h"
+#include <android/log.h>
+
+#define NDK_EXPORT __attribute__((visibility("default")))
+#define NDK_LOG_INFO ANDROID_LOG_INFO
+#define NDK_LOG_WARN ANDROID_LOG_WARN
+#define NDK_LOG_ERROR ANDROID_LOG_ERROR
+#define ndk_log(prio, ...) __android_log_print(prio, "andropkg-gl", __VA_ARGS__)
 
 #ifndef GL_RGBA8_OES
 #define GL_RGBA8_OES 0x8058
@@ -68,9 +77,24 @@ static void init_once(void) {
 }
 
 /// A GL entry point of the platform (by its GLES name), for symbols of libGLES*.
-void *ndk_gl_proc(const char *name) {
+NDK_EXPORT void *ndk_gl_proc(const char *name) {
     pthread_once(&g_once, init_once);
     return g_gl ? dlsym(g_gl, name) : NULL;
+}
+
+/// This library's implementation of an NDK symbol: bionic_<name> (EGL, GL wrappers), or NULL.
+static void *g_self;
+static void find_self(void) {
+    Dl_info d;
+    if (dladdr((void *)&ndk_gl_proc, &d)) g_self = dlopen(d.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+}
+NDK_EXPORT void *andropkg_gl_symbol(const char *name) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, find_self);
+    char buf[256];
+    if (!g_self || strlen(name) + 8 >= sizeof buf) return NULL;
+    snprintf(buf, sizeof buf, "bionic_%s", name);
+    return dlsym(g_self, buf);
 }
 
 // ---- objects ------------------------------------------------------------------------------------
@@ -630,12 +654,22 @@ NDK_EXPORT EGLBoolean bionic_eglReleaseThread(void) {
 NDK_EXPORT EGLBoolean bionic_eglCopyBuffers(EGLDisplay d, EGLSurface s, EGLNativePixmapType p) {
     return fail(EGL_BAD_NATIVE_PIXMAP);
 }
+NDK_EXPORT EGLSurface bionic_eglCreatePbufferFromClientBuffer(EGLDisplay d, EGLenum type, EGLClientBuffer b,
+                                                              EGLConfig c, const EGLint *a) {
+    t_error = EGL_BAD_PARAMETER;
+    return EGL_NO_SURFACE;
+}
+NDK_EXPORT EGLSurface bionic_eglCreatePixmapSurface(EGLDisplay d, EGLConfig c, EGLNativePixmapType p, const EGLint *a) {
+    t_error = EGL_BAD_NATIVE_PIXMAP;
+    return EGL_NO_SURFACE;
+}
+NDK_EXPORT EGLint bionic_eglDupNativeFenceFDANDROID(EGLDisplay d, EGLSyncKHR s) { return -1; }
 NDK_EXPORT EGLBoolean bionic_eglBindTexImage(EGLDisplay d, EGLSurface s, EGLint b) { return fail(EGL_BAD_MATCH); }
 NDK_EXPORT EGLBoolean bionic_eglReleaseTexImage(EGLDisplay d, EGLSurface s, EGLint b) { return fail(EGL_BAD_MATCH); }
 
 NDK_EXPORT void *bionic_eglGetProcAddress(const char *name) {
     if (!name) return NULL;
-    void *p = ndk_system_impl(name);  // our wrappers (bionic_gl*, bionic_egl*) first
+    void *p = andropkg_gl_symbol(name);  // our wrappers (bionic_gl*, bionic_egl*) first
     if (!p && strncmp(name, "gl", 2) == 0) p = ndk_gl_proc(name);
     return p;
 }

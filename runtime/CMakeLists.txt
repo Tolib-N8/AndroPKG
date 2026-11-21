@@ -247,7 +247,7 @@ add_custom_command(OUTPUT ${_ndkgen}/ndk_symbols.inc ${_ndkgen}/ndk_traps.inc
   COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen}
   DEPENDS ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs/direct.txt ${_ndk_symbol_lists}
   VERBATIM)
-file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c ${ANDROPKG_ROOT}/ndk-libs/*.m)
+file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c)
 add_library(andropkg_ndk SHARED ${_ndk_srcs}
   ${ANDROPKG_ROOT}/loader/src/elf_loader.c
   ${ANDROPKG_ROOT}/shim/src/syscall.c ${ANDROPKG_ROOT}/shim/src/tls.c ${ANDROPKG_ROOT}/shim/src/svc_entry.S
@@ -258,15 +258,52 @@ set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_N
 target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_ROOT}/loader/include ${ANDROPKG_ROOT}/shim/include
                            ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen} ${ANDROPKG_AOSP}/libnativehelper/include_jni)
 target_compile_options(andropkg_ndk PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu11 -Wno-unused-parameter>)
-target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib z "-framework Foundation")
-# EGL/GLES (ndk-libs/egl.m): OpenGL ES (EAGL) on iOS; OpenGL 2.1 stands in on macOS.
-target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_AOSP}/frameworks/native/opengl/include)
-set_source_files_properties(${ANDROPKG_ROOT}/ndk-libs/egl.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc;-Wno-unused-parameter")
+target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib andropkg_gl z)
+
+# ---- EGL + GLES (runtime/opengl): libandropkg_gl -----------------------------------------------
+# EGL 1.4 (egl.m: OpenGL ES/EAGL on iOS, OpenGL 2.1 as a GLES 2.0 stand-in on macOS) for NDK code
+# (libandropkg_ndk resolves bionic_egl*/bionic_gl* here) and the framework's GL JNI (EGL14, EGL10,
+# GLES20/30, GL10), which libandroid_runtime registers at startup through andropkg_register_opengl.
+set(_gljni ${ANDROPKG_AOSP}/frameworks/base/core/jni)
+add_library(andropkg_gljni OBJECT ${_gljni}/android_opengl_EGL14.cpp ${_gljni}/android_opengl_EGLExt.cpp
+  ${_gljni}/android_opengl_GLES20.cpp ${_gljni}/android_opengl_GLES30.cpp
+  ${_gljni}/com_google_android_gles_jni_EGLImpl.cpp ${_gljni}/com_google_android_gles_jni_GLImpl.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/opengl/register_opengl.cc)
+target_include_directories(andropkg_gljni BEFORE PRIVATE ${ANDROPKG_AOSP}/frameworks/native/opengl/include)
+target_include_directories(andropkg_gljni PRIVATE $<TARGET_PROPERTY:libandroid_runtime,INCLUDE_DIRECTORIES>)
+target_compile_options(andropkg_gljni PRIVATE $<TARGET_PROPERTY:libandroid_runtime,COMPILE_OPTIONS>
+  "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/opengl/gl_redirect.h" -DGL_GLEXT_PROTOTYPES -DEGL_EGLEXT_PROTOTYPES
+  -Wno-unused-variable -Wno-unused-but-set-variable)
+set_target_properties(andropkg_gljni PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(andropkg_gl SHARED $<TARGET_OBJECTS:andropkg_gljni> ${CMAKE_CURRENT_SOURCE_DIR}/opengl/egl.m)
+set_target_properties(andropkg_gl PROPERTIES OUTPUT_NAME andropkg_gl INSTALL_NAME_DIR "@rpath"
+                      BUILD_RPATH "@loader_path" LINKER_LANGUAGE CXX)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/opengl/egl.m PROPERTIES
+                            COMPILE_OPTIONS "-fno-objc-arc;-Wno-unused-parameter;-fvisibility=hidden")
+target_include_directories(andropkg_gl PRIVATE ${ANDROPKG_AOSP}/frameworks/native/opengl/include
+                           ${ANDROPKG_AOSP}/system/logging/liblog/include)
+target_link_libraries(andropkg_gl PRIVATE andropkg_art libandroid_runtime_dylib "-framework Foundation")
+# Entry points the framework JNI names but the platform lacks (GLES 1.x extensions; on macOS,
+# GLES 1.x/3.0 beyond OpenGL 2.1): logging stubs, never reached by the contexts offered.
 if(ANDROPKG_PLATFORM STREQUAL "ios")
-  target_link_libraries(andropkg_ndk PRIVATE "-framework OpenGLES")
+  set(_gl_fw OpenGLES)
+  set(_gl_tbds ${CMAKE_OSX_SYSROOT}/System/Library/Frameworks/OpenGLES.framework/OpenGLES.tbd)
 else()
-  target_link_libraries(andropkg_ndk PRIVATE "-framework OpenGL")
+  set(_gl_fw OpenGL)
+  set(_gl_tbd ${CMAKE_OSX_SYSROOT}/System/Library/Frameworks/OpenGL.framework/Versions/A)
+  set(_gl_tbds ${_gl_tbd}/Libraries/libGL.tbd ${_gl_tbd}/OpenGL.tbd)
 endif()
+get_target_property(_gljni_srcs andropkg_gljni SOURCES)
+set(_gl_stubs ${CMAKE_BINARY_DIR}/gen/opengl/gl_stubs.c)
+add_custom_command(OUTPUT ${_gl_stubs}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen/opengl
+  COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/gen_gl_stubs.py ${_gl_stubs}
+          ${CMAKE_CURRENT_SOURCE_DIR}/opengl/gl_redirect.h ${ANDROPKG_PLATFORM} ${_gl_tbds} -- ${_gljni_srcs}
+  DEPENDS ${ANDROPKG_TOOLS}/gen_gl_stubs.py ${CMAKE_CURRENT_SOURCE_DIR}/opengl/gl_redirect.h ${_gljni_srcs}
+  VERBATIM)
+target_sources(andropkg_gl PRIVATE ${_gl_stubs})
+target_include_directories(andropkg_gl PRIVATE ${ANDROPKG_AOSP}/system/logging/liblog/include)
+target_link_libraries(andropkg_gl PRIVATE "-framework ${_gl_fw}")
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")
@@ -278,5 +315,5 @@ if(ANDROPKG_PLATFORM STREQUAL "macos")
   target_compile_options(dalvikvm PRIVATE -std=gnu++17 -fno-rtti ${ANDROPKG_CXXFLAGS_libart})
   target_link_libraries(dalvikvm PRIVATE andropkg_art "-framework CoreFoundation")
   set_target_properties(dalvikvm PROPERTIES BUILD_RPATH "@loader_path")
-  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib libsoundpool_dylib andropkg_ndk)
+  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib libsoundpool_dylib andropkg_ndk andropkg_gl)
 endif()
