@@ -91,7 +91,9 @@ echo "ok   media checks"
 scripts/prepare-native-libs.sh build/apps/ndk.apk build/android-root/data/app/ndk/lib macos >/dev/null
 run ndk "\[ndk\] done" $(apk ndk)
 for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36" "threads: 10000" \
-    "files: stat=0 size=27 reg=1 entries>0=1 enoent=1" "cpp: static-init caught=\[too big: 5\] threads=15 seen=5 sum=15"; do
+    "files: stat=0 size=27 reg=1 entries>0=1 enoent=1" "cpp: static-init caught=\[too big: 5\] threads=15 seen=5 sum=15" \
+    "exec1: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3" \
+    "exec2: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3"; do
   grep -q "\[ndk\] $want" "$log/ndk.log" || fail "ndk: $want" ndk
 done
 grep -q "unimplemented NDK function" "$log/ndk.log" && fail "ndk: unimplemented function called" ndk

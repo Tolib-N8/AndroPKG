@@ -22,8 +22,9 @@ for so in "$tmp"/lib/arm64-v8a/*.so; do
   # dylibs); the app's lib<x>.so is found under that name too.
   ln -sf "$name" "$out/${name%.so}.dylib"
   # Skip if unchanged since the last conversion.
-  if [ -f "$out/$name.dylib" ] && cmp -s "$so" "$out/$name"; then continue; fi
+  if [ -f "$out/$name.dylib" ] && cmp -s "$so" "$out/$name"; then chmod 755 "$out/$name"; continue; fi
   cp "$so" "$out/$name"
+  chmod 755 "$out/$name"  # as the package installer extracts them (apps exec some: helpers)
   if [ "$platform" = ios ]; then
     "$conv" wrap-elf "$so" -o "$out/$name.dylib" --platform ios --install-name "@rpath/$name.dylib" --sign "$identity"
   else

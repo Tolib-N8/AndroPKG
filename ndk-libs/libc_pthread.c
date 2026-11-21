@@ -323,12 +323,13 @@ NDK_EXPORT int bionic_pthread_attr_getscope(const b_attr *a, int *s) { (void)a; 
 NDK_EXPORT int bionic_pthread_attr_setinheritsched(b_attr *a, int s) { (void)a; (void)s; return 0; }
 NDK_EXPORT int bionic_pthread_attr_getinheritsched(const b_attr *a, int *s) { (void)a; *s = 0; return 0; }
 
-typedef struct { void *(*fn)(void *); void *arg; } start_info;
+typedef struct { void *(*fn)(void *); void *arg; ndk_proc *proc; } start_info;
 
 static void *thread_start(void *p) {
     start_info si = *(start_info *)p;
     free(p);
     andropkg_tls_attach_thread();  // bionic TCB before any Android code runs
+    ndk_set_current_proc(si.proc);  // threads of an in-process "process" belong to it
     return si.fn(si.arg);
 }
 
@@ -347,6 +348,7 @@ NDK_EXPORT int bionic_pthread_create(pthread_t *t, const b_attr *battr, void *(*
     start_info *si = malloc(sizeof *si);
     si->fn = fn;
     si->arg = arg;
+    si->proc = ndk_current_proc();
     int r = pthread_create(t, &a, thread_start, si);
     pthread_attr_destroy(&a);
     if (r) free(si);

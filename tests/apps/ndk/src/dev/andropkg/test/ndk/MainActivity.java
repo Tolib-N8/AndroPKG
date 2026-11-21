@@ -39,10 +39,22 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[ndk] files: " + files(getFilesDir().getPath()));
             System.loadLibrary("ndkcpp");
             Log.i(TAG, "[ndk] cpp: " + cpp(5));
+            for (int run = 1; run <= 2; run++) Log.i(TAG, "[ndk] exec" + run + ": " + exec());
         } catch (Throwable t) {
             Log.e(TAG, "[ndk] failed", t);
         }
         if (System.getProperty("andropkg.test.autofinish") != null) finish();
+    }
+
+    /** Runs the bundled executable libndkexe.so as a process (stdin, stdout, stderr, exit code). */
+    private String exec() throws Exception {
+        String exe = getApplicationInfo().nativeLibraryDir + "/libndkexe.so";
+        Process p = new ProcessBuilder(exe, "hello").start();
+        p.getOutputStream().write("from java\n".getBytes());
+        p.getOutputStream().close();
+        String out = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream())).readLine();
+        String err = new java.io.BufferedReader(new java.io.InputStreamReader(p.getErrorStream())).readLine();
+        return out + " stderr=" + err + " exit=" + p.waitFor();
     }
 
     @Override

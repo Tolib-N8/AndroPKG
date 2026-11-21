@@ -161,6 +161,98 @@ index 83aa0ae..d182a8c 100644
  #elif __solaris__
    #include <thread.h>
    #include <signal.h>
+diff --git a/ojluni/src/main/native/UNIXProcess_md.c b/ojluni/src/main/native/UNIXProcess_md.c
+index 8fdb6a0..868b6cf 100644
+--- a/ojluni/src/main/native/UNIXProcess_md.c
++++ b/ojluni/src/main/native/UNIXProcess_md.c
+@@ -296,6 +296,41 @@ static const char * const *parentPathv;
+ 
+ static jfieldID field_exitcode;
+ 
++#if defined(__APPLE__)
++/* andropkg: iOS has no fork/exec. An app's Android ELF executable (ProcessBuilder on a file
++ * from its native library dir) runs in-process instead (ndk-libs/exec.c in libandropkg_ndk). */
++#include <dlfcn.h>
++typedef struct {
++    int (*spawn)(const char *, const char *const *, const char *const *, const char *, int, int, int);
++    int (*wait)(int);
++    void (*kill)(int);
++} AndropkgExec;
++static const AndropkgExec *andropkgExec(void) {
++    static AndropkgExec e;
++    static int tried;
++    if (!tried) {
++        tried = 1;
++        void *h = dlopen("@rpath/libandropkg_ndk.dylib", RTLD_NOW | RTLD_GLOBAL);
++        if (h) {
++            e.spawn = (int (*)(const char *, const char *const *, const char *const *, const char *, int, int, int))
++                dlsym(h, "andropkg_ndk_spawn");
++            e.wait = (int (*)(int))dlsym(h, "andropkg_ndk_wait");
++            e.kill = (void (*)(int))dlsym(h, "andropkg_ndk_kill");
++        }
++    }
++    return e.spawn && e.wait && e.kill ? &e : NULL;
++}
++static int isAndroidElf(const char *path) {
++    unsigned char m[4] = {0};
++    int fd = open(path, O_RDONLY | O_CLOEXEC);
++    if (fd < 0) return 0;
++    int ok = read(fd, m, 4) == 4 && m[0] == 0x7f && m[1] == 'E' && m[2] == 'L' && m[3] == 'F';
++    close(fd);
++    return ok;
++}
++#define ANDROPKG_SPAWNED(pid) ((pid) >= 0x40000000)
++#endif
++
+ JNIEXPORT void JNICALL
+ UNIXProcess_initIDs(JNIEnv *env, jclass clazz)
+ {
+@@ -334,6 +369,9 @@ UNIXProcess_waitForProcessExit(JNIEnv* env,
+     /* We used to use waitid() on Solaris, waitpid() on Linux, but
+      * waitpid() is more standard, so use it on all POSIX platforms. */
+     int status;
++#if defined(__APPLE__)
++    if (ANDROPKG_SPAWNED(pid) && andropkgExec()) return andropkgExec()->wait(pid);
++#endif
+     /* Wait for the child process to exit.  This returns immediately if
+        the child has already exited. */
+     while (waitpid(pid, &status, 0) < 0) {
+@@ -991,6 +1029,25 @@ UNIXProcess_forkAndExec(JNIEnv *env,
+ 
+     c->redirectErrorStream = redirectErrorStream;
+ 
++#if defined(__APPLE__)
++    if (isAndroidElf(pprog) && andropkgExec()) {
++        int child_in = c->fds[0] != -1 ? c->fds[0] : in[0];
++        int child_out = c->fds[1] != -1 ? c->fds[1] : out[1];
++        int child_err = redirectErrorStream ? child_out : (c->fds[2] != -1 ? c->fds[2] : err[1]);
++        /* The "process" gets its own copies; Finally closes ours as after a real fork. */
++        resultPid = andropkgExec()->spawn(pprog, c->argv, c->envv, c->pdir, dup(child_in), dup(child_out),
++                                          dup(child_err));
++        if (resultPid < 0) {
++            throwIOException(env, errno, "spawn failed");
++            goto Catch;
++        }
++        fds[0] = (in [1] != -1) ? in [1] : -1;
++        fds[1] = (out[0] != -1) ? out[0] : -1;
++        fds[2] = (err[0] != -1) ? err[0] : -1;
++        goto Finally;
++    }
++#endif
++
+     resultPid = startChild(c);
+     assert(resultPid != 0);
+ 
+@@ -1055,6 +1112,9 @@ UNIXProcess_forkAndExec(JNIEnv *env,
+ JNIEXPORT void JNICALL
+ UNIXProcess_destroyProcess(JNIEnv *env, jobject junk, jint pid)
+ {
++#if defined(__APPLE__)
++    if (ANDROPKG_SPAWNED(pid) && andropkgExec()) { andropkgExec()->kill(pid); return; }
++#endif
+     kill(pid, SIGTERM);
+ }
+ 
 diff --git a/ojluni/src/main/native/io_util.h b/ojluni/src/main/native/io_util.h
 index 31088a9..bb05fca 100644
 --- a/ojluni/src/main/native/io_util.h

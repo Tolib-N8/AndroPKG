@@ -197,7 +197,9 @@ final class ActivityStack {
     /** Finishes `token`'s activity, delivering its result; true if it existed. */
     synchronized boolean finish(IBinder token, int resultCode, Intent data) {
         Record r = find(token);
-        if (r == null || r.finishing) return false;
+        // Already on its way out (e.g. cleared by CLEAR_TASK): finish() succeeded, as on Android.
+        if (r == null) return alive.contains(token);
+        if (r.finishing) return true;
         r.finishing = true;
         boolean wasTop = r == top();
         stack.remove(r);

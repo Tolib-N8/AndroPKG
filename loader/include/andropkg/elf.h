@@ -46,6 +46,9 @@ typedef struct {
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
 #define STB_WEAK 2
+#define PF_X 1
+#define PF_W 2
+#define PF_R 4
 #define STT_NOTYPE 0
 #define STT_OBJECT 1
 #define STT_FUNC 2

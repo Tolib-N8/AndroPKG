@@ -37,7 +37,9 @@ for app in "$root"/tests/apps/*/; do
       lname=$(basename "$lib")
       cxx=$(ls "$lib"*.cpp 2>/dev/null | head -1)
       cc="$NDK_BIN/aarch64-linux-android24-clang"; [ -n "$cxx" ] && cc="$NDK_BIN/aarch64-linux-android24-clang++"
-      "$cc" -shared -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 -Wl,-soname,lib$lname.so \
+      kind="-shared -Wl,-soname,lib$lname.so"
+      [ -f "$lib/EXECUTABLE" ] && kind="-pie"  # an executable the app runs (shipped as lib<x>.so)
+      "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 \
         -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) -llog
       [ -n "$cxx" ] && cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$w/lib/arm64-v8a/"
     done

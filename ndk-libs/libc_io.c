@@ -94,21 +94,21 @@ NDK_EXPORT int bionic_openat(int dirfd, const char *path, int flags, int mode) {
 NDK_EXPORT int bionic_openat64(int dirfd, const char *path, int flags, int mode) { return bionic_openat(dirfd, path, flags, mode); }
 NDK_EXPORT int bionic___openat_2(int dirfd, const char *path, int flags) { return bionic_openat(dirfd, path, flags, 0); }
 NDK_EXPORT int bionic_creat(const char *path, int mode) { return bionic_open(path, L_O_CREAT | 1 /* O_WRONLY */ | L_O_TRUNC, mode); }
-NDK_EXPORT int bionic_close(int fd) { RET(close(fd)); }
-NDK_EXPORT ssize_t bionic_read(int fd, void *b, size_t n) { RET(read(fd, b, n)); }
+NDK_EXPORT int bionic_close(int fd) { RET(close(ndk_proc_fd(fd))); }
+NDK_EXPORT ssize_t bionic_read(int fd, void *b, size_t n) { RET(read(ndk_proc_fd(fd), b, n)); }
 NDK_EXPORT ssize_t bionic___read_chk(int fd, void *b, size_t n, size_t blen) { (void)blen; return bionic_read(fd, b, n); }
-NDK_EXPORT ssize_t bionic_write(int fd, const void *b, size_t n) { RET(write(fd, b, n)); }
+NDK_EXPORT ssize_t bionic_write(int fd, const void *b, size_t n) { RET(write(ndk_proc_fd(fd), b, n)); }
 NDK_EXPORT ssize_t bionic_pread(int fd, void *b, size_t n, off_t o) { RET(pread(fd, b, n, o)); }
 NDK_EXPORT ssize_t bionic_pread64(int fd, void *b, size_t n, off_t o) { RET(pread(fd, b, n, o)); }
 NDK_EXPORT ssize_t bionic___pread_chk(int fd, void *b, size_t n, off_t o, size_t blen) { (void)blen; return bionic_pread(fd, b, n, o); }
 NDK_EXPORT ssize_t bionic___pread64_chk(int fd, void *b, size_t n, off_t o, size_t blen) { (void)blen; return bionic_pread(fd, b, n, o); }
 NDK_EXPORT ssize_t bionic_pwrite(int fd, const void *b, size_t n, off_t o) { RET(pwrite(fd, b, n, o)); }
 NDK_EXPORT ssize_t bionic_pwrite64(int fd, const void *b, size_t n, off_t o) { RET(pwrite(fd, b, n, o)); }
-NDK_EXPORT ssize_t bionic_readv(int fd, const struct iovec *v, int n) { RET(readv(fd, v, n)); }
-NDK_EXPORT ssize_t bionic_writev(int fd, const struct iovec *v, int n) { RET(writev(fd, v, n)); }
+NDK_EXPORT ssize_t bionic_readv(int fd, const struct iovec *v, int n) { RET(readv(ndk_proc_fd(fd), v, n)); }
+NDK_EXPORT ssize_t bionic_writev(int fd, const struct iovec *v, int n) { RET(writev(ndk_proc_fd(fd), v, n)); }
 NDK_EXPORT off_t bionic_lseek(int fd, off_t o, int w) { RET(lseek(fd, o, w)); }
 NDK_EXPORT off_t bionic_lseek64(int fd, off_t o, int w) { RET(lseek(fd, o, w)); }
-NDK_EXPORT int bionic_dup(int fd) { RET(dup(fd)); }
+NDK_EXPORT int bionic_dup(int fd) { RET(dup(ndk_proc_fd(fd))); }
 NDK_EXPORT int bionic_dup2(int a, int b) { RET(dup2(a, b)); }
 NDK_EXPORT int bionic_dup3(int a, int b, int flags) {
     int r = dup2(a, b);
@@ -131,7 +131,7 @@ NDK_EXPORT int bionic_fdatasync(int fd) { RET(fsync(fd)); }
 NDK_EXPORT int bionic_ftruncate(int fd, off_t n) { RET(ftruncate(fd, n)); }
 NDK_EXPORT int bionic_ftruncate64(int fd, off_t n) { RET(ftruncate(fd, n)); }
 NDK_EXPORT int bionic_truncate(const char *p, off_t n) { PATH(p); RET(truncate(t_p, n)); }
-NDK_EXPORT int bionic_isatty(int fd) { int r = isatty(fd); if (!r) ndk_fix_errno(); return r; }
+NDK_EXPORT int bionic_isatty(int fd) { int r = isatty(ndk_proc_fd(fd)); if (!r) ndk_fix_errno(); return r; }
 NDK_EXPORT int bionic_flock(int fd, int op) { RET(flock(fd, op)); }  // LOCK_* values match
 
 // fcntl(fd, cmd, ...): the optional argument arrives in x2 either way.
@@ -217,7 +217,7 @@ static void to_lstat(const struct stat *s, struct l_stat *o) {
 #define STAT_WRAP(call, out) do { struct stat _s; int _r = (call); if (_r) { ndk_fix_errno(); return _r; } to_lstat(&_s, (out)); return 0; } while (0)
 NDK_EXPORT int bionic_stat(const char *p, struct l_stat *o) { PATH(p); STAT_WRAP(stat(t_p, &_s), o); }
 NDK_EXPORT int bionic_lstat(const char *p, struct l_stat *o) { PATH(p); STAT_WRAP(lstat(t_p, &_s), o); }
-NDK_EXPORT int bionic_fstat(int fd, struct l_stat *o) { STAT_WRAP(fstat(fd, &_s), o); }
+NDK_EXPORT int bionic_fstat(int fd, struct l_stat *o) { STAT_WRAP(fstat(ndk_proc_fd(fd), &_s), o); }
 NDK_EXPORT int bionic_fstatat(int dirfd, const char *p, struct l_stat *o, int flags) {
     PATH(p);
     STAT_WRAP(fstatat(at_fd(dirfd), t_p, &_s, at_flags(flags) & AT_SYMLINK_NOFOLLOW), o);

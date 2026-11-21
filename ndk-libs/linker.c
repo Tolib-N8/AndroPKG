@@ -29,6 +29,10 @@ struct ndk_lib {
     size_t ndeps;
     bool linked, initialized;
     uintptr_t start, end;  // mapped ELF range
+    // Executables run as in-process "processes" (exec.c): pristine writable segments.
+    struct { uint8_t *addr; uint8_t *copy; size_t len; } snap[8];
+    int nsnap;
+    pthread_mutex_t run_lock;
 };
 
 static pthread_mutex_t g_lock;
@@ -147,7 +151,10 @@ static void *resolve(const apk_image *img, const char *name, const Elf64_Sym *sy
 
 // ---- loading -------------------------------------------------------------------------------
 
-static ndk_lib *load_locked(const char *elf_path, char *err, size_t errlen) {
+static ndk_lib *load_locked2(const char *elf_path, char *err, size_t errlen, bool run_init);
+static ndk_lib *load_locked(const char *elf_path, char *err, size_t errlen) { return load_locked2(elf_path, err, errlen, true); }
+
+static ndk_lib *load_locked2(const char *elf_path, char *err, size_t errlen, bool run_init) {
     ndk_lib *l = find_loaded(elf_path);
     if (l) return l;
     char wrapped[PATH_MAX];
@@ -195,6 +202,7 @@ static ndk_lib *load_locked(const char *elf_path, char *err, size_t errlen) {
     if (!apk_image_link(img, resolve, l, err, errlen)) return NULL;
     l->linked = true;
     ndk_log(NDK_LOG_INFO, "loaded %s (%zu deps) at %#lx", l->name, l->ndeps, (unsigned long)base);
+    if (!run_init) return l;
     l->initialized = true;
     apk_image_run_init(img);  // dependencies ran theirs when they finished loading
     return l;
@@ -215,6 +223,39 @@ ndk_lib *ndk_load(const char *path_or_name, char *err, size_t errlen) {
 }
 
 void *ndk_sym(ndk_lib *lib, const char *name) { return lib ? search_group(lib, name) : NULL; }
+
+ndk_lib *ndk_load_executable(const char *path, char *err, size_t errlen) {
+    lock();
+    ndk_lib *l = find_loaded(path);
+    if (!l) {
+        l = load_locked2(path, err, errlen, false);
+        if (l) {
+            // Snapshot the writable segments as relocated, before any initializer ran.
+            int phnum = 0;
+            const Elf64_Phdr *ph = apk_image_phdr(l->img, &phnum);
+            for (int i = 0; i < phnum && l->nsnap < 8; i++) {
+                if (ph[i].p_type != PT_LOAD || !(ph[i].p_flags & PF_W)) continue;
+                uint8_t *a = (uint8_t *)(l->start + ph[i].p_vaddr);
+                l->snap[l->nsnap].addr = a;
+                l->snap[l->nsnap].len = ph[i].p_memsz;
+                l->snap[l->nsnap].copy = malloc(ph[i].p_memsz);
+                memcpy(l->snap[l->nsnap].copy, a, ph[i].p_memsz);
+                l->nsnap++;
+            }
+            pthread_mutex_init(&l->run_lock, NULL);
+        }
+    }
+    unlock();
+    return l;
+}
+
+void ndk_executable_begin(ndk_lib *l) {
+    pthread_mutex_lock(&l->run_lock);  // one run at a time: they share the image
+    for (int i = 0; i < l->nsnap; i++) memcpy(l->snap[i].addr, l->snap[i].copy, l->snap[i].len);
+    apk_image_run_init(l->img);
+}
+void ndk_executable_end(ndk_lib *l) { pthread_mutex_unlock(&l->run_lock); }
+uintptr_t ndk_lib_entry(ndk_lib *l) { return l->start + ((const Elf64_Ehdr *)l->start)->e_entry; }
 
 // ---- libdl for Android code ------------------------------------------------------------------
 

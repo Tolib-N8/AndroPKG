@@ -28,6 +28,25 @@ void *ndk_sym(ndk_lib *lib, const char *name);
 /// True if `pc` lies inside a loaded Android image (code compiled for the AAPCS64 ABI).
 bool ndk_is_android_pc(uintptr_t pc);
 void ndk_set_library_dir(const char *dir);
+/// Executables (exec.c): loaded and linked once; each run restores the pristine writable
+/// segments and runs the initializers again (a fresh process image).
+ndk_lib *ndk_load_executable(const char *path, char *err, size_t errlen);
+void ndk_executable_begin(ndk_lib *l);
+void ndk_executable_end(ndk_lib *l);
+uintptr_t ndk_lib_entry(ndk_lib *l);
+
+// ---- in-process "processes" (exec.c) -------------------------------------------------------
+typedef struct ndk_proc ndk_proc;
+ndk_proc *ndk_current_proc(void);
+void ndk_set_current_proc(ndk_proc *p);
+/// The fd a "process" thread means by 0/1/2 (its pipes), else `fd`.
+int ndk_proc_fd(int fd);
+/// The stream a "process" thread means by stdin/stdout/stderr, else `f`.
+void *ndk_proc_stream(void *f);
+/// exit() inside a "process": ends that process only. Returns if not in one.
+void ndk_proc_exit(int status);
+/// __cxa_atexit inside a "process": registered with it. Returns false if not in one.
+bool ndk_proc_atexit(void (*fn)(void *), void *arg);
 
 // ---- system libraries (system.c) -----------------------------------------------------------
 /// The implementation of an NDK system library symbol (bionic_<name> here, or a Darwin

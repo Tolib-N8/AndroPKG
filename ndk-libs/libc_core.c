@@ -81,6 +81,7 @@ static pthread_mutex_t g_atexit_lock = PTHREAD_MUTEX_INITIALIZER;
 static void run_atexit(void) { extern void bionic___cxa_finalize(void *); bionic___cxa_finalize(NULL); }
 
 NDK_EXPORT int bionic___cxa_atexit(void (*fn)(void *), void *arg, void *dso) {
+    if (ndk_proc_atexit(fn, arg)) return 0;
     pthread_mutex_lock(&g_atexit_lock);
     if (g_natexit == g_capatexit) {
         g_capatexit = g_capatexit ? g_capatexit * 2 : 64;
@@ -152,6 +153,7 @@ NDK_EXPORT void bionic_android_set_abort_message(const char *msg) {
 }
 
 NDK_EXPORT void bionic_abort(void) {
+    ndk_proc_exit(134);  // SIGABRT, for a "process" (exec.c)
     ndk_log(NDK_LOG_ERROR, "abort() called from native code%s%s", g_abort_message[0] ? ": " : "", g_abort_message);
     abort();
 }
@@ -165,7 +167,10 @@ NDK_EXPORT void bionic___assert2(const char *file, int line, const char *functio
     abort();
 }
 
-NDK_EXPORT void bionic_exit(int status) { exit(status); }
+NDK_EXPORT void bionic_exit(int status) {
+    ndk_proc_exit(status);  // inside an in-process "process": ends just that
+    exit(status);
+}
 
 // ---- process / thread identity ---------------------------------------------------------------
 

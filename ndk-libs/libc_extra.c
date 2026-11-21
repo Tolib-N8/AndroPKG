@@ -412,7 +412,7 @@ NDK_EXPORT int bionic_waitpid(int pid, int *status, int options) { (void)pid; (v
 NDK_EXPORT int bionic_execvp(const char *f, char *const argv[]) { (void)f; (void)argv; errno = 13; return -1; }
 NDK_EXPORT int bionic_execv(const char *f, char *const argv[]) { (void)f; (void)argv; errno = 13; return -1; }
 NDK_EXPORT int bionic_execve(const char *f, char *const argv[], char *const envp[]) { (void)f; (void)argv; (void)envp; errno = 13; return -1; }
-NDK_EXPORT void bionic__exit(int status) { _exit(status); }
+NDK_EXPORT void bionic__exit(int status) { ndk_proc_exit(status); _exit(status); }
 NDK_EXPORT int bionic_mount(const char *s, const char *t, const char *fs, unsigned long f, const void *d) {
     (void)s; (void)t; (void)fs; (void)f; (void)d;
     errno = 1;

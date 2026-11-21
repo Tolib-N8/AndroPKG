@@ -27,12 +27,12 @@ static inline FILE *F(FILE *f) {
     uintptr_t p = (uintptr_t)f, b = (uintptr_t)bionic___sF;
     if (p >= b && p < b + sizeof bionic___sF) {
         switch ((p - b) / sizeof bionic___sF[0]) {
-            case 0: return stdin;
-            case 1: return stdout;
-            default: return stderr;
+            case 0: f = stdin; break;
+            case 1: f = stdout; break;
+            default: f = stderr; break;
         }
     }
-    return f;
+    return ndk_proc_stream(f);  // an in-process "process" has its own std streams (exec.c)
 }
 
 #define FIXERR(cond) do { if (cond) ndk_fix_errno(); } while (0)
@@ -63,15 +63,15 @@ NDK_EXPORT size_t bionic___fread_chk(void *b, size_t s, size_t n, FILE *f, size_
 NDK_EXPORT size_t bionic___fwrite_chk(const void *b, size_t s, size_t n, FILE *f, size_t blen) { (void)blen; return bionic_fwrite(b, s, n, f); }
 NDK_EXPORT char *bionic_fgets(char *b, int n, FILE *f) { return fgets(b, n, F(f)); }
 NDK_EXPORT int bionic_fputs(const char *s, FILE *f) { return fputs(s, F(f)); }
-NDK_EXPORT int bionic_puts(const char *s) { return puts(s); }
+NDK_EXPORT int bionic_puts(const char *s) { FILE *o = F(stdout); return fputs(s, o) < 0 || fputc('\n', o) < 0 ? EOF : 1; }
 NDK_EXPORT int bionic_fputc(int c, FILE *f) { return fputc(c, F(f)); }
 NDK_EXPORT int bionic_putc(int c, FILE *f) { return putc(c, F(f)); }
 NDK_EXPORT int bionic_putc_unlocked(int c, FILE *f) { return putc_unlocked(c, F(f)); }
-NDK_EXPORT int bionic_putchar(int c) { return putchar(c); }
+NDK_EXPORT int bionic_putchar(int c) { return fputc(c, F(stdout)); }
 NDK_EXPORT int bionic_fgetc(FILE *f) { return fgetc(F(f)); }
 NDK_EXPORT int bionic_getc(FILE *f) { return getc(F(f)); }
 NDK_EXPORT int bionic_getc_unlocked(FILE *f) { return getc_unlocked(F(f)); }
-NDK_EXPORT int bionic_getchar(void) { return getchar(); }
+NDK_EXPORT int bionic_getchar(void) { return fgetc(F(stdin)); }
 NDK_EXPORT int bionic_ungetc(int c, FILE *f) { return ungetc(c, F(f)); }
 NDK_EXPORT int bionic_fseek(FILE *f, long o, int w) { int r = fseek(F(f), o, w); FIXERR(r); return r; }
 NDK_EXPORT int bionic_fseeko(FILE *f, off_t o, int w) { int r = fseeko(F(f), o, w); FIXERR(r); return r; }
@@ -215,7 +215,7 @@ NDK_EXPORT int bionic_scanf(VA_PARAMS) {
     VA_START(v, 1);
     uint64_t p[23];
     pointers(&v, p, 23);
-    return vscanf((const char *)x0, (va_list)(void *)p);
+    return vfscanf(F(stdin), (const char *)x0, (va_list)(void *)p);
 }
 NDK_EXPORT int bionic_vsscanf(const char *s, const char *fmt, void *ap) {
     FROM_LIST(v, ap);

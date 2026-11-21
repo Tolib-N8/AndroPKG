@@ -251,6 +251,7 @@ file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c)
 add_library(andropkg_ndk SHARED ${_ndk_srcs}
   ${ANDROPKG_ROOT}/loader/src/elf_loader.c
   ${ANDROPKG_ROOT}/shim/src/syscall.c ${ANDROPKG_ROOT}/shim/src/tls.c ${ANDROPKG_ROOT}/shim/src/svc_entry.S
+  ${ANDROPKG_ROOT}/ndk-libs/exec_entry.S
   ${_ndkgen}/ndk_symbols.inc)
 set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_NAME_DIR "@rpath"
                       BUILD_RPATH "@loader_path" C_VISIBILITY_PRESET hidden)
