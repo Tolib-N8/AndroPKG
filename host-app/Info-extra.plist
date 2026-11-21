@@ -3,6 +3,10 @@
 <!-- Merged into the generated Info.plist: keys the INFOPLIST_KEY_* settings cannot express. -->
 <plist version="1.0">
 <dict>
+	<!-- Android shared storage (/storage/emulated/0) is Documents: "On My iPhone > AndroPkg" in
+	     the Files app. (Xcode does not generate this key from INFOPLIST_KEY_UIFileSharingEnabled.) -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<!-- Android music apps keep playing from a service while the app is in the background. -->
 	<key>UIBackgroundModes</key>
 	<array>
