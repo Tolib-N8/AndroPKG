@@ -9,6 +9,7 @@ import android.media.AudioTimestamp;
 import android.media.AudioTrack;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
+import android.media.SoundPool;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -33,7 +34,9 @@ public class MainActivity extends Activity {
     private MediaPlayer rawPlayer, filePlayer;
     private AudioTrack staticTrack;
     private MediaSession session;
-    private int stepsLeft = 4;  // raw+file chain, streaming track, static track, session command
+    private SoundPool pool;
+    private MediaPlayer oggPlayer;
+    private int stepsLeft = 6;  // raw+file chain, streaming, static, session command, soundpool, ogg
 
     private void stepDone() {
         if (--stepsLeft == 0 && System.getProperty("andropkg.test.autofinish") != null) finish();
@@ -67,6 +70,8 @@ public class MainActivity extends Activity {
         Log.i(TAG, "[media] session active controller=" + session.getController().getMetadata().getString(MediaMetadata.METADATA_KEY_TITLE));
 
         rawResource();
+        soundPool();
+        oggMediaPlayer();
         streamingTrack();
         staticTrack();
     }
@@ -86,6 +91,49 @@ public class MainActivity extends Activity {
         });
         mp.start();
         Log.i(TAG, "[media] raw playing=" + mp.isPlaying());
+    }
+
+    private void soundPool() {
+        pool = new SoundPool.Builder().setMaxStreams(4)
+                .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build()).build();
+        int[] loaded = {0};
+        pool.setOnLoadCompleteListener((sp, sampleId, status) -> {
+            Log.i(TAG, "[media] soundpool loaded " + sampleId + " status=" + status);
+            if (++loaded[0] == 2) {
+                int a = sp.play(1, 0f, 0f, 1, 0, 1f);
+                int c = sp.play(2, 0f, 0f, 1, 2, 1.5f);
+                Log.i(TAG, "[media] soundpool playing " + (a > 0) + " " + (c > 0));
+                stepDone();
+            }
+        });
+        pool.load(this, R.raw.tone, 1);
+        pool.load(this, R.raw.tone_vorbis, 1);
+    }
+
+    private void oggMediaPlayer() {
+        MediaPlayer mp = oggPlayer = MediaPlayer.create(this, R.raw.tone_opus);
+        if (mp == null) {
+            Log.e(TAG, "[media] opus MediaPlayer.create failed");
+            return;
+        }
+        Log.i(TAG, "[media] opus duration=" + (mp.getDuration() / 100) * 100);
+        mp.setVolume(0, 0);
+        mp.setOnCompletionListener(p -> {
+            Log.i(TAG, "[media] opus completed at " + (p.getCurrentPosition() / 100) * 100);
+            p.release();
+            stepDone();
+        });
+        mp.start();
+        try (android.content.res.AssetFileDescriptor afd = getResources().openRawResourceFd(R.raw.tone_vorbis)) {
+            MediaMetadataRetriever r = new MediaMetadataRetriever();
+            r.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+            long d = Long.parseLong(r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
+            Log.i(TAG, "[media] vorbis retriever duration=" + (d / 100) * 100 + " mime="
+                    + r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE));
+            r.release();
+        } catch (Exception e) {
+            Log.e(TAG, "[media] vorbis retriever failed", e);
+        }
     }
 
     private void fileSource() {
@@ -177,6 +225,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (session != null) session.release();
+        if (pool != null) pool.release();
         Log.i(TAG, "[media] done");
         super.onDestroy();
     }

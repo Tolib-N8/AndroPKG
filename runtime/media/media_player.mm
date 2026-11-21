@@ -6,6 +6,7 @@
 // The content type is sniffed from the first bytes, since Android files rarely carry a usable
 // extension. Events go back through MediaPlayer.postEventFromNative, like the real player's.
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
 #include <fcntl.h>
@@ -15,8 +16,15 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
 #include <vector>
 
+#include "decoder.h"
 #include "jni_defaults.h"
 
 namespace {
@@ -66,7 +74,7 @@ void ActivateAudioSession() {
 /// MIME type from the first bytes, or nil if AVFoundation cannot play it.
 NSString* SniffMime(const uint8_t* b, size_t n, bool* unsupported) {
   *unsupported = false;
-  if (n >= 4 && !memcmp(b, "OggS", 4)) { *unsupported = true; return nil; }  // Vorbis/Opus
+  if (n >= 4 && !memcmp(b, "OggS", 4)) return @"audio/ogg";  // Vorbis/Opus: PcmBackend, not AVPlayer
   if (n >= 4 && !memcmp(b, "fLaC", 4)) return @"audio/flac";
   if (n >= 12 && !memcmp(b, "RIFF", 4) && !memcmp(b + 8, "WAVE", 4)) return @"audio/wav";
   if (n >= 3 && !memcmp(b, "ID3", 3)) return @"audio/mpeg";
@@ -85,8 +93,193 @@ NSString* SniffMime(const uint8_t* b, size_t n, bool* unsupported) {
 }
 }  // namespace
 
+
+/// Playback of what AVPlayer can't play (Ogg Vorbis/Opus): a decoder feeding an AudioQueue.
+class PcmBackend {
+ public:
+  using Ended = std::function<void()>;
+  ~PcmBackend() {
+    if (queue_) AudioQueueDispose(queue_, true);
+  }
+
+  bool Open(const char* path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    dec_ = andropkg_media::OpenDecoder(fd, 0, -1);
+    close(fd);
+    if (!dec_) return false;
+    channels_ = std::min(dec_->channels(), 2);
+    AudioStreamBasicDescription f = {};
+    f.mSampleRate = dec_->rate();
+    f.mFormatID = kAudioFormatLinearPCM;
+    f.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+    f.mChannelsPerFrame = UInt32(channels_);
+    f.mBitsPerChannel = 32;
+    f.mBytesPerFrame = f.mBytesPerPacket = UInt32(4 * channels_);
+    f.mFramesPerPacket = 1;
+    if (AudioQueueNewOutput(&f, &PcmBackend::Callback, this, nullptr, nullptr, 0, &queue_) != noErr) return false;
+    buffer_frames_ = dec_->rate() / 10;  // 100 ms
+    scratch_.resize(size_t(buffer_frames_) * dec_->channels());
+    for (int i = 0; i < 3; i++) {
+      AudioQueueBufferRef b;
+      if (AudioQueueAllocateBuffer(queue_, UInt32(buffer_frames_ * 4 * channels_), &b) != noErr) return false;
+      all_.push_back(b);
+      free_.insert(b);
+    }
+    return true;
+  }
+
+  int64_t DurationMs() const { return dec_->frames() > 0 ? dec_->frames() * 1000 / dec_->rate() : -1; }
+  int64_t PositionMs() {
+    std::lock_guard<std::recursive_mutex> l(lock_);
+    return (base_ + played_) * 1000 / dec_->rate();
+  }
+  void SetVolume(float v) { AudioQueueSetParameter(queue_, kAudioQueueParam_Volume, v); }
+  void SetLooping(bool on) { looping_ = on; }
+  void OnEnded(Ended e) { ended_ = std::move(e); }
+
+  void Start() {
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      if (playing_) return;
+      if (finished_) RewindLocked();
+      playing_ = true;
+      PrimeLocked();
+    }
+    AudioQueueStart(queue_, nullptr);
+  }
+
+  void Pause() {
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      if (!playing_) return;
+      playing_ = false;
+    }
+    AudioQueuePause(queue_);
+  }
+
+  void Stop() {
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      playing_ = false;
+    }
+    Flush();
+    std::lock_guard<std::recursive_mutex> l(lock_);
+    RewindLocked();
+  }
+
+  void SeekMs(int64_t ms) {
+    bool was_playing;
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      was_playing = playing_;
+      playing_ = false;
+    }
+    Flush();
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      int64_t frame = std::max<int64_t>(0, ms * dec_->rate() / 1000);
+      if (dec_->frames() > 0) frame = std::min(frame, dec_->frames());
+      dec_->Seek(frame);
+      base_ = frame;
+      played_ = 0;
+      eos_ = finished_ = false;
+    }
+    if (was_playing) Start();
+  }
+
+  bool playing() const { return playing_; }
+
+ private:
+  /// Stops the queue at once; every buffer is ours again and stale callbacks are ignored.
+  void Flush() {
+    AudioQueueStop(queue_, true);
+    std::lock_guard<std::recursive_mutex> l(lock_);
+    gen_++;
+    free_.insert(all_.begin(), all_.end());
+    meta_.clear();
+  }
+
+  void RewindLocked() {
+    dec_->Seek(0);
+    base_ = played_ = 0;
+    eos_ = finished_ = false;
+  }
+
+  void PrimeLocked() {
+    std::vector<AudioQueueBufferRef> bufs(free_.begin(), free_.end());
+    for (auto b : bufs) FillLocked(b);
+  }
+
+  /// Decodes into `b` and enqueues it; false (buffer stays free) at the end of the stream.
+  bool FillLocked(AudioQueueBufferRef b) {
+    if (eos_) return false;
+    int n = dec_->Read(scratch_.data(), buffer_frames_);
+    if (n <= 0) {
+      eos_ = true;
+      return false;
+    }
+    float* out = static_cast<float*>(b->mAudioData);
+    int src = dec_->channels();
+    for (int i = 0; i < n; i++) {
+      for (int c = 0; c < channels_; c++) out[i * channels_ + c] = scratch_[size_t(i) * src + c];
+    }
+    b->mAudioDataByteSize = UInt32(n * 4 * channels_);
+    meta_[b] = {gen_, n};
+    free_.erase(b);
+    AudioQueueEnqueueBuffer(queue_, b, 0, nullptr);
+    return true;
+  }
+
+  static void Callback(void* self, AudioQueueRef, AudioQueueBufferRef b) {
+    static_cast<PcmBackend*>(self)->Played(b);
+  }
+
+  void Played(AudioQueueBufferRef b) {
+    Ended notify;
+    {
+      std::lock_guard<std::recursive_mutex> l(lock_);
+      auto it = meta_.find(b);
+      if (it == meta_.end() || it->second.first != gen_) return;  // flushed
+      played_ += it->second.second;
+      meta_.erase(it);
+      free_.insert(b);
+      if (!playing_) return;
+      FillLocked(b);
+      if (eos_ && meta_.empty()) {  // everything decoded has been heard
+        if (looping_) {
+          RewindLocked();
+          PrimeLocked();
+          return;
+        }
+        playing_ = false;
+        finished_ = true;
+        notify = ended_;
+      }
+    }
+    if (notify) {
+      AudioQueueStop(queue_, false);
+      notify();
+    }
+  }
+
+  std::unique_ptr<andropkg_media::PcmDecoder> dec_;
+  AudioQueueRef queue_ = nullptr;
+  std::vector<AudioQueueBufferRef> all_;
+  std::set<AudioQueueBufferRef> free_;
+  std::map<AudioQueueBufferRef, std::pair<int, int>> meta_;  // generation, frames
+  std::vector<float> scratch_;
+  std::recursive_mutex lock_;
+  int channels_ = 0, buffer_frames_ = 0, gen_ = 0;
+  int64_t base_ = 0, played_ = 0;
+  std::atomic<bool> playing_{false}, looping_{false};
+  bool eos_ = false, finished_ = false;
+  Ended ended_;
+};
+
 @interface AndropkgPlayer : NSObject {
  @public
+  std::shared_ptr<PcmBackend> pcm_;  // set instead of `player` for Ogg
   jobject weak_;  // global ref to the WeakReference<MediaPlayer>
 }
 @property(nonatomic, strong) NSURL* url;
@@ -130,6 +323,8 @@ NSString* SniffMime(const uint8_t* b, size_t n, bool* unsupported) {
 }
 
 - (void)teardown {
+  if (pcm_) pcm_->Stop();
+  pcm_.reset();
   if (_endObserver) [[NSNotificationCenter defaultCenter] removeObserver:_endObserver];
   _endObserver = nil;
   if (_timeObserver) [_player removeTimeObserver:_timeObserver];
@@ -146,6 +341,23 @@ NSString* SniffMime(const uint8_t* b, size_t n, bool* unsupported) {
 - (int)prepare {
   if (_unsupported) return kErrorUnsupported;
   if (!_url) return kErrorIo;
+  if ([_mime isEqualToString:@"audio/ogg"]) {
+    auto pcm = std::make_shared<PcmBackend>();
+    if (!pcm->Open(_url.fileSystemRepresentation)) return kErrorUnsupported;
+    pcm->SetVolume(_volume);
+    pcm->SetLooping(_looping);
+    __weak AndropkgPlayer* weakSelf = self;
+    pcm->OnEnded([weakSelf] {
+      AndropkgPlayer* me = weakSelf;
+      if (!me) return;
+      me.playing = NO;
+      me.ended = YES;
+      [me post:MEDIA_PLAYBACK_COMPLETE arg1:0 arg2:0];
+    });
+    _durationMs = pcm->DurationMs();
+    pcm_ = pcm;
+    return 0;
+  }
   NSMutableDictionary* opts = [NSMutableDictionary dictionary];
   if (_mime) {
     if (@available(iOS 17.0, macOS 14.0, *)) opts[AVURLAssetOverrideMIMETypeKey] = _mime;
@@ -200,6 +412,13 @@ NSString* SniffMime(const uint8_t* b, size_t n, bool* unsupported) {
 
 - (void)start {
   ActivateAudioSession();
+  if (pcm_) {
+    _ended = NO;
+    _playing = YES;
+    pcm_->Start();
+    [self post:MEDIA_STARTED arg1:0 arg2:0];
+    return;
+  }
   if (_ended) [_player seekToTime:kCMTimeZero];  // start() after completion replays
   _ended = NO;
   _playing = YES;
@@ -356,11 +575,17 @@ jint mp_prepareAsync(JNIEnv* env, jobject thiz, jobject) {
 
 void mp_start(JNIEnv* env, jobject thiz) {
   AndropkgPlayer* p = GetOrThrow(env, thiz);
-  if (p && p.player) [p start];
+  if (p && (p.player || p->pcm_)) [p start];
 }
 
 void mp_pause(JNIEnv* env, jobject thiz) {
   AndropkgPlayer* p = GetOrThrow(env, thiz);
+  if (p && p->pcm_) {
+    p->pcm_->Pause();
+    p.playing = NO;
+    [p post:MEDIA_PAUSED arg1:0 arg2:0];
+    return;
+  }
   if (!p || !p.player) return;
   [p.player pause];
   p.playing = NO;
@@ -369,6 +594,12 @@ void mp_pause(JNIEnv* env, jobject thiz) {
 
 void mp_stop(JNIEnv* env, jobject thiz) {
   AndropkgPlayer* p = GetOrThrow(env, thiz);
+  if (p && p->pcm_) {
+    p->pcm_->Stop();
+    p.playing = NO;
+    [p post:MEDIA_STOPPED arg1:0 arg2:0];
+    return;
+  }
   if (!p || !p.player) return;
   [p.player pause];
   [p.player seekToTime:kCMTimeZero];
@@ -378,6 +609,15 @@ void mp_stop(JNIEnv* env, jobject thiz) {
 
 void mp_seekTo(JNIEnv* env, jobject thiz, jlong ms, jint mode) {
   AndropkgPlayer* p = GetOrThrow(env, thiz);
+  if (p && p->pcm_) {
+    std::shared_ptr<PcmBackend> pcm = p->pcm_;
+    p.ended = NO;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      pcm->SeekMs(ms);
+      [p post:MEDIA_SEEK_COMPLETE arg1:0 arg2:0];
+    });
+    return;
+  }
   if (!p || !p.player) return;
   // SEEK_CLOSEST (3) is exact; the sync-frame modes may land anywhere nearby.
   CMTime tol = mode == 3 ? kCMTimeZero : CMTimeMakeWithSeconds(0.5, 1000);
@@ -395,6 +635,7 @@ jboolean mp_isPlaying(JNIEnv* env, jobject thiz) {
 
 jint mp_getCurrentPosition(JNIEnv* env, jobject thiz) {
   AndropkgPlayer* p = GetOrThrow(env, thiz);
+  if (p && p->pcm_) return jint(p->pcm_->PositionMs());
   if (!p || !p.player) return 0;
   CMTime t = p.player.currentTime;
   return CMTIME_IS_NUMERIC(t) ? jint(CMTimeGetSeconds(t) * 1000) : 0;
@@ -409,11 +650,15 @@ void mp_setVolume(JNIEnv* env, jobject thiz, jfloat l, jfloat r) {
   if (AndropkgPlayer* p = GetOrThrow(env, thiz)) {
     p.volume = std::max(l, r);
     p.player.volume = p.volume;
+    if (p->pcm_) p->pcm_->SetVolume(p.volume);
   }
 }
 
 void mp_setLooping(JNIEnv* env, jobject thiz, jboolean on) {
-  if (AndropkgPlayer* p = GetOrThrow(env, thiz)) p.looping = on;
+  if (AndropkgPlayer* p = GetOrThrow(env, thiz)) {
+    p.looping = on;
+    if (p->pcm_) p->pcm_->SetLooping(on);
+  }
 }
 
 jboolean mp_isLooping(JNIEnv* env, jobject thiz) {
@@ -491,6 +736,8 @@ const JNINativeMethod kMediaPlayer[] = {
 @property(nonatomic, strong) AVURLAsset* asset;
 @property(nonatomic, strong) NSString* mime;
 @property(nonatomic, strong) NSString* tempPath;
+@property(nonatomic) int64_t oggDurationMs;
+@property(nonatomic) int oggRate;
 @end
 @implementation AndropkgRetriever
 - (void)clear {
@@ -539,6 +786,19 @@ void mr_setDataSourceFd(JNIEnv* env, jobject thiz, jobject fdObj, jlong offset, 
   if (!r || !ResolveFd(env, fdObj, offset, length, &src)) return;
   [r clear];
   r.tempPath = src.tempPath;
+  if ([src.mime isEqualToString:@"audio/ogg"]) {  // AVFoundation can't read it: the decoder can
+    int fd = open(src.url.fileSystemRepresentation, O_RDONLY | O_CLOEXEC);
+    auto dec = fd >= 0 ? andropkg_media::OpenDecoder(fd, 0, -1) : nullptr;
+    if (fd >= 0) close(fd);
+    if (!dec) {
+      Throw(env, "java/lang/IllegalArgumentException", "unsupported format");
+      return;
+    }
+    r.mime = src.mime;
+    r.oggDurationMs = dec->frames() > 0 ? dec->frames() * 1000 / dec->rate() : -1;
+    r.oggRate = dec->rate();
+    return;
+  }
   if (src.unsupported) {
     Throw(env, "java/lang/IllegalArgumentException", "unsupported format");
     return;
@@ -593,6 +853,16 @@ NSString* PairOf(AVMetadataItem* item) {
 jstring mr_extract(JNIEnv* env, jobject thiz, jint key) {
   AndropkgRetriever* r = GetRetriever(env, thiz);
   AVURLAsset* a = r.asset;
+  if (!a && r.oggRate > 0) {
+    NSString* v = nil;
+    switch (key) {
+      case 9: v = r.oggDurationMs >= 0 ? [NSString stringWithFormat:@"%lld", (long long)r.oggDurationMs] : nil; break;
+      case 12: v = r.mime; break;
+      case 16: v = @"yes"; break;
+      case 38: v = [NSString stringWithFormat:@"%d", r.oggRate]; break;
+    }
+    return v ? env->NewStringUTF(v.UTF8String) : nullptr;
+  }
   if (!a) return nullptr;
   NSArray<AVMetadataItem*>* all = [a.commonMetadata arrayByAddingObjectsFromArray:a.metadata];
   NSArray<AVAssetTrack*>* audio = [a tracksWithMediaType:AVMediaTypeAudio];

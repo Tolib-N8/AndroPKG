@@ -44,6 +44,8 @@ external/sfntly        external/sfntly
 external/image_io      external/image_io
 external/modp_b64      external/modp_b64
 external/sqlite        external/sqlite
+external/tremolo       external/tremolo
+external/libopus       external/libopus
 external/vulkan-headers external/vulkan-headers
 hardware/libhardware   hardware/libhardware
 "

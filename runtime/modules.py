@@ -164,6 +164,11 @@ TARGETS = [
     dict(name="libsqlite", bp="libsqlite"),
     dict(name="libincfs-utils", bp="libincfs-utils"),
     # androidfw (and code including its headers) is C++20 (std::span).
+    # ---- Audio codecs AVFoundation lacks (Ogg Vorbis via Tremolo, Opus) ---------------
+    # (Tremolo's static mergesort is renamed in runtime/patches/external_tremolo.patch: Darwin's
+    # <stdlib.h> declares mergesort(3).)
+    dict(name="libvorbisidec", bp="libvorbisidec"),
+    dict(name="libopus", bp="libopus"),
     dict(name="libandroidfw", bp="libandroidfw", cpp_std="gnu++20",
          extra_includes=["frameworks/native/include"]),
     dict(name="libandroid_runtime", bp="libandroid_runtime", cpp_std="gnu++20",

@@ -76,12 +76,14 @@ for want in "network internet=true" "network callback available" "channel Channe
   grep -q "\[platform\] $want" "$log/platform.log" || fail "platform: $want" platform
 done
 echo "ok   platform checks"
-# Sound: MediaPlayer (raw resource, file + prepareAsync + seek), streaming/static AudioTrack, focus.
+# Sound: MediaPlayer (raw resource, file + prepareAsync + seek, Ogg Opus), SoundPool (WAV + Ogg
+# Vorbis), streaming/static AudioTrack, MediaMetadataRetriever, audio focus, MediaSession.
 ANDROPKG_TEST_SCRIPT="wait 500; mediacmd pause" run media "\[media\] done" $(apk media)
 for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file prepared" "file seek done at 300" \
     "retriever duration=600 mime=audio/wav audio=yes" \
     "file completed" "track played true timestamp=true" "static marker reached" \
-    "session active controller=Tone" "session onPause"; do
+    "session active controller=Tone" "session onPause" "soundpool loaded 2 status=0" "soundpool playing true true" \
+    "opus duration=600" "opus completed at 600" "vorbis retriever duration=600 mime=audio/ogg"; do
   grep -q "\[media\] $want" "$log/media.log" || fail "media: $want" media
 done
 echo "ok   media checks"

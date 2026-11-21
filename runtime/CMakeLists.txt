@@ -203,13 +203,21 @@ target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/inpu
 # Audio and media on Core Audio / AVFoundation (runtime/media, Objective-C++ with ARC; no AOSP
 # headers, so the Linux compat include setup does not apply to them).
 add_library(andropkg_audio OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/audio_track.mm)
-add_library(andropkg_media_player OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/media_player.mm)
-foreach(_t andropkg_audio andropkg_media_player)
+add_library(andropkg_media_player OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/media_player.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm)
+add_library(andropkg_soundpool OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/soundpool.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm)
+foreach(_t andropkg_audio andropkg_media_player andropkg_soundpool)
   target_compile_options(${_t} PRIVATE -fobjc-arc -std=gnu++17)
-  target_include_directories(${_t} PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+  target_include_directories(${_t} PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni
+                             ${ANDROPKG_AOSP}/external/tremolo/Tremolo ${ANDROPKG_AOSP}/external/libopus/include)
 endforeach()
-andropkg_jni_dylib(libmedia_jni andropkg_media_player)
-target_link_libraries(libmedia_jni_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework CoreMedia")
+# Each dylib carries its own copy of the Ogg decoders (Tremolo, libopus).
+andropkg_jni_dylib(libmedia_jni andropkg_media_player libvorbisidec libopus)
+target_link_libraries(libmedia_jni_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework CoreMedia"
+                      "-framework AudioToolbox")
+andropkg_jni_dylib(libsoundpool andropkg_soundpool libvorbisidec libopus)
+target_link_libraries(libsoundpool_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework AudioToolbox")
 
 andropkg_jni_dylib(libandroid_runtime andropkg_audio libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
@@ -241,5 +249,5 @@ if(ANDROPKG_PLATFORM STREQUAL "macos")
   target_compile_options(dalvikvm PRIVATE -std=gnu++17 -fno-rtti ${ANDROPKG_CXXFLAGS_libart})
   target_link_libraries(dalvikvm PRIVATE andropkg_art "-framework CoreFoundation")
   set_target_properties(dalvikvm PROPERTIES BUILD_RPATH "@loader_path")
-  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib)
+  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib libsoundpool_dylib)
 endif()
