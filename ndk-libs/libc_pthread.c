@@ -18,9 +18,15 @@
 
 #define LNX(r) ndk_errno_to_linux(r)
 
+// Bionic's mutex, cond and rwlock are int32_t arrays: 4-byte aligned. Each holds a pointer to
+// the Darwin object it stands for, accessed atomically — and arm64 atomics need natural
+// alignment. The pointer lives at the 8-byte-aligned address among bytes 4..15 (offset 4 or 8),
+// never over the first word (the static initializer's value).
+#define IMPL_SLOT(obj, T) ((_Atomic(T *) *)(((uintptr_t)(obj) + 4 + 7) & ~(uintptr_t)7))
+
 // ---- mutex ---------------------------------------------------------------------------------------
 
-typedef struct { int32_t value; int32_t pad; _Atomic(pthread_mutex_t *) impl; char rest[24]; } b_mutex;  // 40 bytes
+typedef struct { int32_t value; int32_t rest[9]; } b_mutex;  // 40 bytes; the pointer: IMPL_SLOT
 typedef long b_mutexattr;  // bits 0-1: type (NORMAL 0, RECURSIVE 1, ERRORCHECK 2), bit 4: pshared
 _Static_assert(sizeof(b_mutex) == 40, "bionic pthread_mutex_t");
 
@@ -29,7 +35,7 @@ static int darwin_type(int t) {
 }
 
 static pthread_mutex_t *mutex_impl(b_mutex *m) {
-    pthread_mutex_t *p = atomic_load_explicit(&m->impl, memory_order_acquire);
+    pthread_mutex_t *p = atomic_load_explicit(IMPL_SLOT(m, pthread_mutex_t), memory_order_acquire);
     if (p) return p;
     p = malloc(sizeof *p);
     pthread_mutexattr_t a;
@@ -39,7 +45,7 @@ static pthread_mutex_t *mutex_impl(b_mutex *m) {
     pthread_mutex_init(p, &a);
     pthread_mutexattr_destroy(&a);
     pthread_mutex_t *expected = NULL;
-    if (!atomic_compare_exchange_strong(&m->impl, &expected, p)) {
+    if (!atomic_compare_exchange_strong(IMPL_SLOT(m, pthread_mutex_t), &expected, p)) {
         pthread_mutex_destroy(p);
         free(p);
         p = expected;
@@ -54,7 +60,7 @@ NDK_EXPORT int bionic_pthread_mutex_init(b_mutex *m, const b_mutexattr *attr) {
     return 0;
 }
 NDK_EXPORT int bionic_pthread_mutex_destroy(b_mutex *m) {
-    pthread_mutex_t *p = atomic_exchange(&m->impl, NULL);
+    pthread_mutex_t *p = atomic_exchange(IMPL_SLOT(m, pthread_mutex_t), NULL);
     if (p) { pthread_mutex_destroy(p); free(p); }
     return 0;
 }
@@ -104,18 +110,18 @@ NDK_EXPORT int bionic_pthread_mutexattr_getprotocol(const b_mutexattr *a, int *p
 // ---- condition variables -------------------------------------------------------------------------
 
 typedef struct { pthread_cond_t c; clockid_t clock; } cond_impl;
-typedef struct { int32_t state; int32_t pad; _Atomic(cond_impl *) impl; char rest[32]; } b_cond;  // 48 bytes
+typedef struct { int32_t state; int32_t rest[11]; } b_cond;  // 48 bytes; the pointer: IMPL_SLOT
 typedef long b_condattr;  // bit 0: pshared; bits 1-3: clock (0 REALTIME, 1 MONOTONIC)
 _Static_assert(sizeof(b_cond) == 48, "bionic pthread_cond_t");
 
 static cond_impl *cond_get(b_cond *c) {
-    cond_impl *p = atomic_load_explicit(&c->impl, memory_order_acquire);
+    cond_impl *p = atomic_load_explicit(IMPL_SLOT(c, cond_impl), memory_order_acquire);
     if (p) return p;
     p = malloc(sizeof *p);
     pthread_cond_init(&p->c, NULL);
     p->clock = ((c->state >> 1) & 7) == 1 ? CLOCK_MONOTONIC : CLOCK_REALTIME;
     cond_impl *expected = NULL;
-    if (!atomic_compare_exchange_strong(&c->impl, &expected, p)) {
+    if (!atomic_compare_exchange_strong(IMPL_SLOT(c, cond_impl), &expected, p)) {
         pthread_cond_destroy(&p->c);
         free(p);
         p = expected;
@@ -130,7 +136,7 @@ NDK_EXPORT int bionic_pthread_cond_init(b_cond *c, const b_condattr *attr) {
     return 0;
 }
 NDK_EXPORT int bionic_pthread_cond_destroy(b_cond *c) {
-    cond_impl *p = atomic_exchange(&c->impl, NULL);
+    cond_impl *p = atomic_exchange(IMPL_SLOT(c, cond_impl), NULL);
     if (p) { pthread_cond_destroy(&p->c); free(p); }
     return 0;
 }
@@ -170,16 +176,16 @@ NDK_EXPORT int bionic_pthread_condattr_getpshared(const b_condattr *a, int *s) {
 
 // ---- rwlock ---------------------------------------------------------------------------------------
 
-typedef struct { int32_t state; int32_t pad; _Atomic(pthread_rwlock_t *) impl; char rest[40]; } b_rwlock;  // 56 bytes
+typedef struct { int32_t state; int32_t rest[13]; } b_rwlock;  // 56 bytes; the pointer: IMPL_SLOT
 _Static_assert(sizeof(b_rwlock) == 56, "bionic pthread_rwlock_t");
 
 static pthread_rwlock_t *rw_get(b_rwlock *l) {
-    pthread_rwlock_t *p = atomic_load_explicit(&l->impl, memory_order_acquire);
+    pthread_rwlock_t *p = atomic_load_explicit(IMPL_SLOT(l, pthread_rwlock_t), memory_order_acquire);
     if (p) return p;
     p = malloc(sizeof *p);
     pthread_rwlock_init(p, NULL);
     pthread_rwlock_t *expected = NULL;
-    if (!atomic_compare_exchange_strong(&l->impl, &expected, p)) {
+    if (!atomic_compare_exchange_strong(IMPL_SLOT(l, pthread_rwlock_t), &expected, p)) {
         pthread_rwlock_destroy(p);
         free(p);
         p = expected;
@@ -188,7 +194,7 @@ static pthread_rwlock_t *rw_get(b_rwlock *l) {
 }
 NDK_EXPORT int bionic_pthread_rwlock_init(b_rwlock *l, const long *attr) { (void)attr; memset(l, 0, sizeof *l); rw_get(l); return 0; }
 NDK_EXPORT int bionic_pthread_rwlock_destroy(b_rwlock *l) {
-    pthread_rwlock_t *p = atomic_exchange(&l->impl, NULL);
+    pthread_rwlock_t *p = atomic_exchange(IMPL_SLOT(l, pthread_rwlock_t), NULL);
     if (p) { pthread_rwlock_destroy(p); free(p); }
     return 0;
 }

@@ -15,7 +15,7 @@ index 1a13029..e75d25d 100644
  static const int BLOCKED_THREAD_SIGNAL = __SIGRTMIN + 2;
  #endif
 diff --git a/luni/src/main/native/libcore_io_Linux.cpp b/luni/src/main/native/libcore_io_Linux.cpp
-index 43a6b1a..c5e0945 100644
+index 43a6b1a..846ca72 100644
 --- a/luni/src/main/native/libcore_io_Linux.cpp
 +++ b/luni/src/main/native/libcore_io_Linux.cpp
 @@ -77,6 +77,12 @@
@@ -99,6 +99,22 @@ index 43a6b1a..c5e0945 100644
      return env->NewStringUTF(message);
  #endif
  }
+@@ -2716,6 +2757,15 @@ static jobject Linux_uname(JNIEnv* env, jobject) {
+     if (TEMP_FAILURE_RETRY(uname(&buf)) == -1) {
+         return NULL; // Can't happen.
+     }
++#if defined(__APPLE__)
++    // andropkg: apps see the kernel Android runs on (os.name/os.arch: java.nio.file's provider,
++    // ABI checks), not Darwin's.
++    strlcpy(buf.sysname, "Linux", sizeof(buf.sysname));
++    strlcpy(buf.release, "6.1.0-andropkg", sizeof(buf.release));
++    strlcpy(buf.version, "#1 SMP PREEMPT", sizeof(buf.version));
++    strlcpy(buf.machine, "aarch64", sizeof(buf.machine));
++    strlcpy(buf.nodename, "localhost", sizeof(buf.nodename));
++#endif
+     return makeStructUtsname(env, buf);
+ }
+ 
 diff --git a/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp b/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp
 index ded578a..66980b1 100644
 --- a/luni/src/main/native/libcore_util_NativeAllocationRegistry.cpp

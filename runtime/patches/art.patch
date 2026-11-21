@@ -314,6 +314,28 @@ index 2deb5ef..d6b3407 100644
      if (NativeBridgeIsSupported(path_arg)) {
        *needs_native_bridge = true;
        handle = NativeBridgeLoadLibrary(path_arg, RTLD_NOW);
+diff --git a/openjdkjvm/OpenjdkJvm.cc b/openjdkjvm/OpenjdkJvm.cc
+index da6fc85..f8e4da8 100644
+--- a/openjdkjvm/OpenjdkJvm.cc
++++ b/openjdkjvm/OpenjdkJvm.cc
+@@ -342,6 +342,17 @@ JNIEXPORT void JVM_GC(void) {
+ 
+ JNIEXPORT __attribute__((noreturn)) void JVM_Exit(jint status) {
+   LOG(INFO) << "System.exit called, status: " << status;
++#if defined(__APPLE__)
++  if (status != 0) {  // andropkg: who gave up (apps exit after errors they handle silently)
++    art::Thread* self = art::Thread::Current();
++    if (self != nullptr) {
++      art::ScopedObjectAccess soa(self);
++      std::ostringstream os;
++      self->DumpJavaStack(os);
++      LOG(INFO) << "System.exit(" << status << ") from:\n" << os.str();
++    }
++  }
++#endif
+   art::Runtime::Current()->CallExitHook(status);
+   // Unsafe to call exit() while threads may still be running. They would race
+   // with static destructors.
 diff --git a/runtime/arch/arm64/context_arm64.cc b/runtime/arch/arm64/context_arm64.cc
 index eca9ed7..31103fd 100644
 --- a/runtime/arch/arm64/context_arm64.cc

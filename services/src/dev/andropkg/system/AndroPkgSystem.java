@@ -47,6 +47,11 @@ public final class AndroPkgSystem {
         dataDir = args[1];
         launchActivity = args.length > 2 ? args[2] : null;
         startWatchdog(Thread.currentThread());
+        // As RuntimeInit.commonInit: uncaught exceptions are logged before the app's own
+        // handler (crash reporters often exit without saying why).
+        Hidden.callStatic(Thread.class, "setUncaughtExceptionPreHandler",
+                (Thread.UncaughtExceptionHandler) (t, e) -> Log.e("AndroidRuntime",
+                        "FATAL EXCEPTION: " + t.getName() + "\nProcess: " + appInfoName(), e));
         installServices();
         // As RuntimeInit.commonInit: the full MIME table (framework's mime.types), not libcore's
         // short built-in list (which lacks e.g. m4a, flac, webp).
@@ -56,8 +61,6 @@ public final class AndroPkgSystem {
         // Software rendering: windows draw through Surface.lockCanvas() into CPU buffers until
         // hwui's GPU pipeline (RenderThread over Metal) is ported.
         Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
-        // WebView without a WebView package: local content as styled text (WKWebView bridge later).
-        dev.andropkg.system.webview.TextWebView.install();
         parsePackage();
         TouchDebug.installWhenReady();
         Log.i(TAG, "starting " + appInfo.packageName + " (" + apkPath + ")");
@@ -65,6 +68,8 @@ public final class AndroPkgSystem {
         Hidden.callStatic(Hidden.cls("android.app.ActivityThread"), "main",
                 (Object) new String[] {"seq=1"});
     }
+
+    private static String appInfoName() { return appInfo != null ? appInfo.packageName : "?"; }
 
     /** -Dandropkg.watchdog=<seconds>: then log where the main thread is (hang diagnosis). */
     private static void startWatchdog(Thread main) {
@@ -89,9 +94,22 @@ public final class AndroPkgSystem {
     private static void parsePackage() {
         Class<?> ppClass = Hidden.cls("android.content.pm.PackageParser");
         Object parser = Hidden.newInstance(ppClass);
+        // A directory is a split package (base APK + config splits: ABI, density, languages),
+        // as an app bundle installs: PackageParser parses the cluster.
         parsedPackage = Hidden.call(parser, "parsePackage", new File(apkPath), 0);
         appInfo = (ApplicationInfo) Hidden.getField(parsedPackage, "applicationInfo");
-        appInfo.sourceDir = appInfo.publicSourceDir = apkPath;
+        if (new File(apkPath).isDirectory()) {
+            String base = (String) Hidden.getField(parsedPackage, "baseCodePath");
+            String[] splits = (String[]) Hidden.getField(parsedPackage, "splitCodePaths");
+            String[] names = (String[]) Hidden.getField(parsedPackage, "splitNames");
+            appInfo.sourceDir = appInfo.publicSourceDir = base;
+            appInfo.splitSourceDirs = appInfo.splitPublicSourceDirs = splits;
+            appInfo.splitNames = names;
+            Log.i(TAG, "split package: " + new File(base).getName() + " + " + (splits == null ? 0 : splits.length)
+                    + " splits " + java.util.Arrays.toString(names));
+        } else {
+            appInfo.sourceDir = appInfo.publicSourceDir = apkPath;
+        }
         appInfo.dataDir = dataDir;
         // As on a device: dataDir is the credential-protected dir (/data/user/0/<pkg>).
         Hidden.setField(appInfo, "credentialProtectedDataDir", dataDir);
@@ -255,6 +273,11 @@ public final class AndroPkgSystem {
                     config, compat, null /* services */, new Bundle() /* coreSettings */,
                     "unknown" /* buildSerial */, null, null, new long[0], null,
                     0L, 0L);
+            // WebView without a WebView package: local content as styled text (WKWebView bridge
+            // later). Installed once the application is bound: apps call
+            // WebView.setDataDirectorySuffix() in attachBaseContext, before WebView may initialize.
+            new android.os.Handler(android.os.Looper.getMainLooper())
+                    .post(dev.andropkg.system.webview.TextWebView::install);
             ActivityInfo info = activityInfo(launchActivity);
             Intent intent = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
                     .setComponent(new ComponentName(appInfo.packageName, info.name))

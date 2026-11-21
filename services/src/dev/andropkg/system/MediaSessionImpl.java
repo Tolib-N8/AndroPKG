@@ -121,6 +121,23 @@ final class MediaSessionImpl {
         public void setExtras(Bundle b) { extras = b; }
         public void setLaunchPendingIntent(Object pi) { launchIntent = pi; }
         public void setQueueTitle(CharSequence t) { queueTitle = t; }
+
+        // MediaSession.setQueue() streams the items through a binder of the session's own
+        // (several transactions for long queues), as MediaSessionRecord hands out.
+        volatile List<?> queue;
+        public android.os.IBinder getBinderForSetQueue() {
+            return (android.os.IBinder) Hidden.newInstance(Hidden.cls("android.media.session.ParcelableListBinder"),
+                    (java.util.function.Consumer<List<?>>) list -> setQueueItems(list));
+        }
+        public void resetQueue() { setQueueItems(null); }
+        private void setQueueItems(List<?> items) {
+            queue = items;
+            Object slice = items == null ? null : queueSlice(items);
+            for (Object cb : callbacks()) Hidden.call(cb, "onQueueChanged", slice);
+        }
+        Object queueSlice(List<?> items) {
+            return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), items);
+        }
         public void setRatingType(int t) { ratingType = t; }
 
         public void setMetadata(MediaMetadata m, long duration, String description) {
@@ -211,6 +228,7 @@ final class MediaSessionImpl {
             public MediaMetadata getMetadata() { return metadata; }
             public PlaybackState getPlaybackState() { return state; }
             public CharSequence getQueueTitle() { return queueTitle; }
+            public Object getQueue() { List<?> q = queue; return q == null ? null : queueSlice(q); }
             public int getRatingType() { return ratingType; }
 
             public void registerCallback(String pkg, Object cb) {
