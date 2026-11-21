@@ -36,6 +36,10 @@ uint64_t andropkg_tls_tsd_offset(void);
 /// Must run on every thread before it executes converted Android code.
 void **andropkg_tls_attach_thread(void);
 
+/// Converter trampoline slow path (shim/src/svc_entry.S): attaches the calling thread and
+/// returns its TP in x16, preserving every other register. Not callable from C.
+void andropkg_tp_slowpath(void);
+
 /// Current thread pointer, or NULL if the thread was never attached.
 void **andropkg_tls_current(void);
 

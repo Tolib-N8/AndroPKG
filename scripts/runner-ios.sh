@@ -21,6 +21,12 @@ for t in "$root"/tests/*/; do
 done
 "$root/scripts/build-java.sh" >/dev/null
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
+# Native code of every staged APK: converted + signed with the development identity, inside the
+# app bundle (android-root/native/<apk>/), where the host points nativeLibraryDir.
+for a in "$root/build/ios-stage/android-root/test/"*.apk; do
+  n=$(basename "$a" .apk)
+  "$root/scripts/prepare-native-libs.sh" "$a" "$root/build/ios-stage/android-root/native/$n" ios >/dev/null
+done
 (cd "$root/host-app" && xcodegen generate --quiet)
 if [ "${1:-}" = --apk ]; then
   # Tests finish on their own; ANDROPKG_INTERACTIVE=1 keeps the app on screen.

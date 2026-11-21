@@ -10,7 +10,8 @@ import CryptoKit
 ///     0x4000  __ELF_0..N  ...  ELF PT_LOAD segments at  0x4000 + p_vaddr  (relative layout
 ///                              preserved, so ADRP/GOT/PC-relative code keeps working)
 ///     ....    __APK_TRAMP r-x  one trampoline per rewritten instruction (svc #0, mrs/msr tpidr_el0)
-///     ....    __APK_DATA  rw-  [0] svc dispatcher, [1] TSD offset of the bionic TP (set by the loader)
+///     ....    __APK_DATA  rw-  [0] svc dispatcher, [1] TSD offset of the bionic TP,
+///                              [2] TP slow path (all set by the loader)
 ///     ....    __LINKEDIT  r--  (codesign appends the signature here)
 ///
 /// dyld only maps the segments and validates the signature; there are no Mach-O fixups or

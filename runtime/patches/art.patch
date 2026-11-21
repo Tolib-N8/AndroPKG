@@ -904,18 +904,158 @@ index 32ed430..7e3621e 100644
    if (component == nullptr) {
      AbortTransactionOrFail(self, "Unsafe.getArrayIndexScaleForComponentType with null component.");
      return;
+diff --git a/runtime/jni/java_vm_ext.cc b/runtime/jni/java_vm_ext.cc
+index 7ae6c99..aab9ef9 100644
+--- a/runtime/jni/java_vm_ext.cc
++++ b/runtime/jni/java_vm_ext.cc
+@@ -17,6 +17,8 @@
+ #include "java_vm_ext-inl.h"
+ 
+ #include <dlfcn.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <string_view>
+ 
+ #include "android-base/stringprintf.h"
+@@ -70,6 +72,43 @@ bool JavaVMExt::IsBadJniVersion(int version) {
+   return version != JNI_VERSION_1_2 && version != JNI_VERSION_1_4 && version != JNI_VERSION_1_6;
+ }
+ 
++#if defined(__APPLE__)
++// andropkg: Android arm64 ELF libraries (System.loadLibrary from an app) can't be dlopen()ed
++// by Darwin; libandropkg_ndk (ndk-libs/) links them. They are tracked like native-bridge
++// libraries — the same ABI, so "trampolines" are just the symbols.
++namespace {
++struct AndropkgNdk {
++  void* (*open)(const char* path, char** error) = nullptr;
++  void* (*sym)(void* handle, const char* name) = nullptr;
++  void (*close)(void* handle) = nullptr;
++};
++AndropkgNdk* GetAndropkgNdk() {
++  static AndropkgNdk* ndk = []() -> AndropkgNdk* {
++    void* h = dlopen("@rpath/libandropkg_ndk.dylib", RTLD_NOW | RTLD_GLOBAL);
++    if (h == nullptr) {
++      LOG(ERROR) << "andropkg: libandropkg_ndk.dylib: " << dlerror();
++      return nullptr;
++    }
++    auto* n = new AndropkgNdk;
++    n->open = reinterpret_cast<void* (*)(const char*, char**)>(dlsym(h, "andropkg_ndk_open"));
++    n->sym = reinterpret_cast<void* (*)(void*, const char*)>(dlsym(h, "andropkg_ndk_sym"));
++    n->close = reinterpret_cast<void (*)(void*)>(dlsym(h, "andropkg_ndk_close"));
++    return n->open && n->sym && n->close ? n : nullptr;
++  }();
++  return ndk;
++}
++bool IsAndroidElf(const char* path) {
++  if (path == nullptr) return false;
++  int fd = open(path, O_RDONLY | O_CLOEXEC);
++  if (fd < 0) return false;
++  unsigned char magic[4] = {};
++  bool elf = pread(fd, magic, 4, 0) == 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
++  close(fd);
++  return elf;
++}
++}  // namespace
++#endif
++
+ class SharedLibrary {
+  public:
+   SharedLibrary(JNIEnv* env, Thread* self, const std::string& path, void* handle,
+@@ -92,6 +131,12 @@ class SharedLibrary {
+       self->GetJniEnv()->DeleteWeakGlobalRef(class_loader_);
+     }
+ 
++#if defined(__APPLE__)
++    if (needs_native_bridge_) {  // andropkg: an Android ELF (see GetAndropkgNdk)
++      if (AndropkgNdk* ndk = GetAndropkgNdk()) ndk->close(handle_);
++      return;
++    }
++#endif
+     char* error_msg = nullptr;
+     if (!android::CloseNativeLibrary(handle_, needs_native_bridge_, &error_msg)) {
+       LOG(WARNING) << "Error while unloading native library \"" << path_ << "\": " << error_msg;
+@@ -180,8 +225,13 @@ class SharedLibrary {
+       REQUIRES(!Locks::mutator_lock_) {
+     CHECK(NeedsNativeBridge());
+ 
++#if defined(__APPLE__)
++    AndropkgNdk* ndk = GetAndropkgNdk();
++    return ndk != nullptr ? ndk->sym(handle_, symbol_name.c_str()) : nullptr;
++#else
+     uint32_t len = 0;
+     return android::NativeBridgeGetTrampoline(handle_, symbol_name.c_str(), shorty, len);
++#endif
+   }
+ 
+  private:
+@@ -1039,7 +1089,25 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
+   const char* path_str = path.empty() ? nullptr : path.c_str();
+   bool needs_native_bridge = false;
+   char* nativeloader_error_msg = nullptr;
+-  void* handle = android::OpenNativeLibrary(
++  void* handle = nullptr;
++#if defined(__APPLE__)
++  if (IsAndroidElf(path_str)) {
++    AndropkgNdk* ndk = GetAndropkgNdk();
++    if (ndk == nullptr) {
++      *error_msg = "andropkg: no NDK layer (libandropkg_ndk) to load " + path;
++      return false;
++    }
++    char* err = nullptr;
++    handle = ndk->open(path_str, &err);
++    if (handle == nullptr) {
++      *error_msg = err != nullptr ? err : "andropkg: cannot load " + path;
++      free(err);
++      return false;
++    }
++    needs_native_bridge = true;
++  } else
++#endif
++  handle = android::OpenNativeLibrary(
+       env,
+       runtime_->GetTargetSdkVersion(),
+       path_str,
 diff --git a/runtime/jni/jni_env_ext.cc b/runtime/jni/jni_env_ext.cc
-index bef0fd3..3377c35 100644
+index bef0fd3..365eb4c 100644
 --- a/runtime/jni/jni_env_ext.cc
 +++ b/runtime/jni/jni_env_ext.cc
-@@ -15,6 +15,7 @@
-  */
+@@ -16,6 +16,10 @@
  
  #include "jni_env_ext.h"
-+#include "jni/local_reference_table-inl.h"  // andropkg: needed without LTO/inlining
  
++#include "art_method-inl.h"
++#include "managed_stack.h"
++#include "jni/local_reference_table-inl.h"  // andropkg: needed without LTO/inlining
++
  #include <algorithm>
  #include <vector>
+ 
+@@ -331,3 +335,25 @@ void JNIEnvExt::ResetFunctionTable() {
+ }
+ 
+ }  // namespace art
++
++#if defined(__APPLE__)
++// andropkg: Android (AAPCS64) code needs its own entries for JNIEnv's variadic functions
++// (ndk-libs/jni_table.c); it installs a table built on ART's regular one.
++extern "C" __attribute__((visibility("default"))) const JNINativeInterface* andropkg_jni_base_table() {
++  return art::GetJniNativeInterface();
++}
++// The JNI entry point of the native method on top of the calling thread's managed stack (the
++// method whose native code is running now), or null: tells ndk-libs whose code made a JNI call.
++extern "C" __attribute__((visibility("default"))) const void* andropkg_jni_current_native_code() {
++  art::Thread* self = art::Thread::Current();
++  if (self == nullptr) return nullptr;
++  art::ArtMethod** frame = self->GetManagedStack()->GetTopQuickFrame();
++  if (frame == nullptr || *frame == nullptr) return nullptr;
++  art::ArtMethod* m = *frame;
++  return m->IsNative() ? m->GetEntryPointFromJni() : nullptr;
++}
++extern "C" __attribute__((visibility("default"))) void andropkg_jni_set_table_override(
++    const JNINativeInterface* table) {
++  art::JNIEnvExt::SetTableOverride(table);
++}
++#endif
 diff --git a/runtime/lock_word-inl.h b/runtime/lock_word-inl.h
 index 4a2a293..8e61bc0 100644
 --- a/runtime/lock_word-inl.h

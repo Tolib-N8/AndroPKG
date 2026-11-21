@@ -181,6 +181,8 @@ static void InstallSensors() {
   set_host(types.data(), static_cast<int>(types.size()), SensorToggle);
 }
 
+static std::vector<std::string> g_extra_vm_options;  // e.g. -Dandropkg.nativeLibraryDir=...
+
 static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
   NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
   NSString* data = [NSTemporaryDirectory() stringByAppendingPathComponent:@"android-data"];
@@ -220,6 +222,7 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
       "-Dandropkg.display.insetBottom=" + std::to_string(g_inset_bottom),
   };
   if (getenv("ANDROPKG_AUTOFINISH")) opts.push_back("-Dandropkg.test.autofinish=1");
+  for (const auto& o : g_extra_vm_options) opts.push_back(o);
   std::vector<JavaVMOption> vm_opts;
   for (auto& o : opts) vm_opts.push_back({const_cast<char*>(o.c_str()), nullptr});
   JavaVMInitArgs args = {JNI_VERSION_1_6, static_cast<jint>(vm_opts.size()), vm_opts.data(), JNI_FALSE};
@@ -304,6 +307,11 @@ static void* VMThread(void*) {
     NSString* data = [[support stringByAppendingPathComponent:@"andropkg/data/app"] stringByAppendingPathComponent:name];
     [NSFileManager.defaultManager createDirectoryAtPath:data withIntermediateDirectories:YES attributes:nil error:nil];
     main_args = {[root stringByAppendingPathComponent:@(apk)].fileSystemRepresentation, data.fileSystemRepresentation};
+    // Converted, signed native libraries of this APK (scripts/prepare-native-libs.sh).
+    NSString* native = [[root stringByAppendingPathComponent:@"native"] stringByAppendingPathComponent:name];
+    if ([NSFileManager.defaultManager fileExistsAtPath:native]) {
+      g_extra_vm_options.push_back(std::string("-Dandropkg.nativeLibraryDir=") + native.fileSystemRepresentation);
+    }
   } else {
     // ANDROPKG_DEX / ANDROPKG_MAIN select a plain-Java test (default: test/hello.dex, Hello).
     dex_rel = getenv("ANDROPKG_DEX") ?: "test/hello.dex";

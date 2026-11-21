@@ -1,0 +1,14 @@
+T AMidiDevice_fromJava
+T AMidiDevice_getDefaultProtocol
+T AMidiDevice_getNumInputPorts
+T AMidiDevice_getNumOutputPorts
+T AMidiDevice_getType
+T AMidiDevice_release
+T AMidiInputPort_close
+T AMidiInputPort_open
+T AMidiInputPort_send
+T AMidiInputPort_sendFlush
+T AMidiInputPort_sendWithTimestamp
+T AMidiOutputPort_close
+T AMidiOutputPort_open
+T AMidiOutputPort_receive

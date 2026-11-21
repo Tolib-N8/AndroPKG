@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <stdbool.h>
+
+#include "andropkg/elf.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,6 +17,9 @@ extern "C" {
 typedef void *(*apk_resolver_fn)(const char *name, void *ctx);
 
 typedef struct apk_image apk_image;
+
+/// Resolver that also sees the referencing image and the symbol (type, binding).
+typedef void *(*apk_resolver_ex_fn)(const apk_image *img, const char *name, const Elf64_Sym *sym, void *ctx);
 
 /// Mirrors WrapInfo in ElfWrap.swift (section __TEXT,__elfwrap).
 typedef struct {
@@ -29,6 +36,21 @@ typedef struct {
 /// Returns NULL on failure with a message in `err`.
 apk_image *apk_image_open(const char *wrapped_dylib_path, apk_resolver_fn resolver, void *ctx,
                           char *err, size_t errlen);
+
+/// Two-phase loading (what a linker with DT_NEEDED needs):
+/// dlopen()s and parses the wrapped image — no relocations yet.
+apk_image *apk_image_load(const char *wrapped_dylib_path, char *err, size_t errlen);
+/// Applies relocations, resolving undefined symbols through `resolver`.
+bool apk_image_link(apk_image *img, apk_resolver_ex_fn resolver, void *ctx, char *err, size_t errlen);
+void apk_image_run_init(const apk_image *img);
+void apk_image_run_fini(const apk_image *img);
+size_t apk_image_needed_count(const apk_image *img);
+const char *apk_image_needed(const apk_image *img, size_t i);
+const char *apk_image_path(const apk_image *img);
+const Elf64_Phdr *apk_image_phdr(const apk_image *img, int *phnum);
+const Elf64_Sym *apk_image_symtab(const apk_image *img);
+const char *apk_image_strtab(const apk_image *img);
+size_t apk_image_symcount(const apk_image *img);
 
 /// Looks up an exported (defined, global/weak) ELF dynamic symbol.
 void *apk_image_sym(const apk_image *img, const char *name);

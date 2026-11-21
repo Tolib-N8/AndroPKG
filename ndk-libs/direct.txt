@@ -1,0 +1,50 @@
+# Darwin functions an Android image may call directly: same name, identical ABI (arguments,
+# structures, return values), not variadic, no Linux-specific flag values, and errno only
+# within 1..34 (identical on Linux and Darwin, except EAGAIN=11 which none of these set).
+# Everything else goes through a bionic_<name> wrapper (ndk-libs/*.c) or traps.
+
+# string.h / strings.h
+memchr memcmp memcpy memmem memmove memset memccpy bcmp bcopy bzero explicit_bzero
+strcasecmp strcasestr strcat strchr strcmp strcoll strcpy strcspn strdup strlcat strlcpy strlen
+strncasecmp strncat strncmp strncpy strndup strnlen strpbrk strrchr strsep strspn strstr strtok
+strtok_r strxfrm stpcpy stpncpy index rindex ffs ffsl ffsll
+# ctype / wctype (int arguments, C locale semantics)
+isalnum isalpha isascii isblank iscntrl isdigit isgraph islower isprint ispunct isspace isupper
+isxdigit tolower toupper toascii iswalnum iswalpha iswblank iswcntrl iswdigit iswgraph iswlower
+iswprint iswpunct iswspace iswupper iswxdigit towlower towupper wctype iswctype wctrans towctrans
+# wchar.h (stateless)
+wcscat wcschr wcscmp wcscoll wcscpy wcscspn wcsdup wcslcat wcslcpy wcslen wcsncat wcsncmp
+wcsncpy wcsnlen wcspbrk wcsrchr wcsspn wcsstr wcstok wcsxfrm wmemchr wmemcmp wmemcpy wmemmove
+wmemset wcscasecmp wcsncasecmp wcwidth wcswidth btowc wctob
+# stdlib.h
+abs labs llabs imaxabs div ldiv lldiv imaxdiv atoi atol atoll atof strtol strtoul strtoll
+strtoull strtod strtof strtoimax strtoumax wcstol wcstoul wcstoll wcstoull wcstod wcstof
+qsort bsearch rand srand rand_r random srandom drand48 erand48 lrand48 nrand48 mrand48 jrand48
+srand48 seed48 lcong48 malloc calloc realloc free posix_memalign aligned_alloc valloc
+getenv setenv unsetenv putenv mkstemp mkstemps mkdtemp mktemp arc4random arc4random_buf
+arc4random_uniform l64a a64l
+# time.h (struct tm and time_t match)
+time difftime mktime timegm timelocal gmtime gmtime_r localtime localtime_r asctime asctime_r
+ctime ctime_r strftime strptime tzset clock
+# libm (non-long-double; fenv only where fenv_t/fexcept_t are not involved)
+acos acosf acosh acoshf asin asinf asinh asinhf atan atan2 atan2f atanf atanh atanhf cbrt cbrtf
+ceil ceilf copysign copysignf cos cosf cosh coshf erf erfc erfcf erff exp exp2 exp2f expf expm1
+expm1f fabs fabsf fdim fdimf floor floorf fma fmaf fmax fmaxf fmin fminf fmod fmodf frexp frexpf
+hypot hypotf ilogb ilogbf j0 j1 jn y0 y1 yn ldexp ldexpf lgamma lgammaf lgamma_r lgammaf_r
+llrint llrintf llround llroundf log log10 log10f log1p log1pf log2 log2f logb logbf logf lrint
+lrintf lround lroundf modf modff nan nanf nearbyint nearbyintf nextafter nextafterf pow powf
+remainder remainderf remquo remquof rint rintf round roundf scalb scalbln scalblnf scalbn scalbnf
+sin sinf sinh sinhf sqrt sqrtf tan tanf tanh tanhf tgamma tgammaf trunc truncf finite finitef
+signgam fegetround fesetround feclearexcept feraiseexcept fetestexcept
+cabs cabsf cacos cacosf cacosh cacoshf carg cargf casin casinf casinh casinhf catan catanf catanh
+catanhf ccos ccosf ccosh ccoshf cexp cexpf cimag cimagf clog clogf conj conjf cpow cpowf cproj
+cprojf creal crealf csin csinf csinh csinhf csqrt csqrtf ctan ctanf ctanh ctanhf
+# zlib (z_stream and friends have the same LP64 layout)
+adler32 adler32_combine compress compress2 compressBound crc32 crc32_combine deflate
+deflateBound deflateCopy deflateEnd deflateInit2_ deflateInit_ deflateParams deflateReset
+deflateSetDictionary inflate inflateCopy inflateEnd inflateInit2_ inflateInit_ inflateReset
+inflateReset2 inflateSetDictionary inflateSync uncompress uncompress2 zError zlibVersion
+deflatePending deflatePrime deflateTune inflateGetDictionary inflateMark inflatePrime
+get_crc_table gzbuffer gzclearerr gzclose gzclose_r gzclose_w gzdirect gzdopen gzeof gzerror
+gzflush gzfread gzfwrite gzgetc gzgets gzoffset gzopen gzputc gzputs gzread gzrewind gzseek
+gzsetparams gztell gzungetc gzwrite

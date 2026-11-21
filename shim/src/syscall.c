@@ -33,7 +33,15 @@ enum {
     NR_getgid = 176,
     NR_getegid = 177,
     NR_gettid = 178,
+    NR_futex = 98,
+    NR_getrandom = 278,
+    NR_membarrier = 283,
+    NR_getcpu = 168,
 };
+
+// runtime/compat/src/futex_darwin.cc (part of the andropkg runtime this library runs in).
+extern int andropkg_futex(volatile int *uaddr, int op, int val, const struct timespec *timeout,
+                          volatile int *uaddr2, int val3) __attribute__((weak));
 
 int andropkg_errno_to_linux(int e) {
     if (e > 0 && e <= 34) return e;  // EPERM..ERANGE are identical
@@ -136,6 +144,21 @@ long andropkg_syscall(long nr, long a0, long a1, long a2, long a3, long a4, long
         if (linux_clock_to_darwin(a0, &c) != 0) return -LNX_EINVAL;
         return ret(clock_gettime(c, (struct timespec *)a1));  // timespec layout matches on LP64
     }
+    case NR_futex: {
+        if (!andropkg_futex) return -LNX_ENOSYS;
+        int r = andropkg_futex((volatile int *)a0, (int)a1, (int)a2, (const struct timespec *)a3,
+                               (volatile int *)a4, (int)a5);
+        return r < 0 ? -andropkg_errno_to_linux(errno) : r;
+    }
+    case NR_getrandom:
+        arc4random_buf((void *)a0, (size_t)a1);
+        return a1;
+    case NR_membarrier:
+        return 0;
+    case NR_getcpu:
+        if (a0) *(unsigned *)a0 = 0;
+        if (a1) *(unsigned *)a1 = 0;
+        return 0;
     default:
         return -LNX_ENOSYS;
     }

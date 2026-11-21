@@ -239,6 +239,26 @@ else()
   target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework AppKit")
 endif()
 
+# ---- NDK layer: Android arm64 ELF libraries of apps (loader/, shim/, ndk-libs/) -------------
+# ART hands System.loadLibrary of an ELF to libandropkg_ndk (runtime/patches/art.patch).
+set(_ndkgen ${CMAKE_BINARY_DIR}/gen/ndk)
+file(GLOB _ndk_symbol_lists CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/symbols/*.txt)
+add_custom_command(OUTPUT ${_ndkgen}/ndk_symbols.inc ${_ndkgen}/ndk_traps.inc
+  COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen}
+  DEPENDS ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs/direct.txt ${_ndk_symbol_lists}
+  VERBATIM)
+file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c)
+add_library(andropkg_ndk SHARED ${_ndk_srcs}
+  ${ANDROPKG_ROOT}/loader/src/elf_loader.c
+  ${ANDROPKG_ROOT}/shim/src/syscall.c ${ANDROPKG_ROOT}/shim/src/tls.c ${ANDROPKG_ROOT}/shim/src/svc_entry.S
+  ${_ndkgen}/ndk_symbols.inc)
+set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_NAME_DIR "@rpath"
+                      BUILD_RPATH "@loader_path" C_VISIBILITY_PRESET hidden)
+target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_ROOT}/loader/include ${ANDROPKG_ROOT}/shim/include
+                           ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen} ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+target_compile_options(andropkg_ndk PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu11 -Wno-unused-parameter>)
+target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib z)
+
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")
   add_executable(dalvikvm ${ANDROPKG_AOSP}/art/dalvikvm/dalvikvm.cc ${CMAKE_CURRENT_SOURCE_DIR}/macos/dalvikvm_runloop.cc)
@@ -249,5 +269,5 @@ if(ANDROPKG_PLATFORM STREQUAL "macos")
   target_compile_options(dalvikvm PRIVATE -std=gnu++17 -fno-rtti ${ANDROPKG_CXXFLAGS_libart})
   target_link_libraries(dalvikvm PRIVATE andropkg_art "-framework CoreFoundation")
   set_target_properties(dalvikvm PROPERTIES BUILD_RPATH "@loader_path")
-  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib libsoundpool_dylib)
+  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib libsoundpool_dylib andropkg_ndk)
 endif()

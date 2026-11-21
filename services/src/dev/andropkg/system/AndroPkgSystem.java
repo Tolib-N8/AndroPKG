@@ -97,7 +97,10 @@ public final class AndroPkgSystem {
         Hidden.setField(appInfo, "credentialProtectedDataDir", dataDir);
         Hidden.setField(appInfo, "deviceProtectedDataDir", dataDir + "_de");
         new File(dataDir + "_de").mkdirs();
-        appInfo.nativeLibraryDir = dataDir + "/lib";
+        // Converted native libraries (scripts/prepare-native-libs.sh): <dataDir>/lib, or a
+        // signed location inside the iOS app bundle (-Dandropkg.nativeLibraryDir).
+        appInfo.nativeLibraryDir = System.getProperty("andropkg.nativeLibraryDir", dataDir + "/lib");
+        Hidden.setField(appInfo, "primaryCpuAbi", "arm64-v8a");
         appInfo.uid = Process.myUid();
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
         if (appInfo.metaData == null) appInfo.metaData = (android.os.Bundle) Hidden.getField(parsedPackage, "mAppMetaData");

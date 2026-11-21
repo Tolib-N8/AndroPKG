@@ -1,0 +1,3 @@
+T sync_file_info
+T sync_file_info_free
+T sync_merge

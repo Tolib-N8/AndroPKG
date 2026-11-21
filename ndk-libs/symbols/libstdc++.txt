@@ -1,0 +1,13 @@
+T __cxa_guard_abort
+T __cxa_guard_acquire
+T __cxa_guard_release
+T __cxa_pure_virtual
+W _ZdaPv
+W _ZdaPvRKSt9nothrow_t
+W _ZdlPv
+W _ZdlPvRKSt9nothrow_t
+W _Znam
+W _ZnamRKSt9nothrow_t
+W _Znwm
+W _ZnwmRKSt9nothrow_t
+B _ZSt7nothrow

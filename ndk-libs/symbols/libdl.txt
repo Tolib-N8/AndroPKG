@@ -1,0 +1,12 @@
+T __cfi_shadow_size
+T __cfi_slowpath
+T __cfi_slowpath_diag
+T android_dlopen_ext
+T android_get_application_target_sdk_version
+T dl_iterate_phdr
+T dladdr
+T dlclose
+T dlerror
+T dlopen
+T dlsym
+T dlvsym

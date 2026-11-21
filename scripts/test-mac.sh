@@ -87,5 +87,14 @@ for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file
   grep -q "\[media\] $want" "$log/media.log" || fail "media: $want" media
 done
 echo "ok   media checks"
+# NDK: Android arm64 ELF libraries (C + C++ on libc++_shared) through the converter + NDK layer.
+scripts/prepare-native-libs.sh build/apps/ndk.apk build/android-root/data/app/ndk/lib macos >/dev/null
+run ndk "\[ndk\] done" $(apk ndk)
+for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36" "threads: 10000" \
+    "files: stat=0 size=27 reg=1 entries>0=1 enoent=1" "cpp: static-init caught=\[too big: 5\] threads=15 seen=5 sum=15"; do
+  grep -q "\[ndk\] $want" "$log/ndk.log" || fail "ndk: $want" ndk
+done
+grep -q "unimplemented NDK function" "$log/ndk.log" && fail "ndk: unimplemented function called" ndk
+echo "ok   ndk checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)
