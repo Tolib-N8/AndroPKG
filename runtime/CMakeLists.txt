@@ -204,7 +204,7 @@ target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/inpu
 # headers, so the Linux compat include setup does not apply to them).
 add_library(andropkg_audio OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/audio_track.mm)
 add_library(andropkg_media_player OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/media_player.mm
-            ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm)
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm ${CMAKE_CURRENT_SOURCE_DIR}/media/media_codec.mm)
 add_library(andropkg_soundpool OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/soundpool.mm
             ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm)
 foreach(_t andropkg_audio andropkg_media_player andropkg_soundpool)

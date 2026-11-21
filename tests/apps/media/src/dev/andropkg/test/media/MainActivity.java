@@ -42,6 +42,90 @@ public class MainActivity extends Activity {
         if (--stepsLeft == 0 && System.getProperty("andropkg.test.autofinish") != null) finish();
     }
 
+    /** "mime rate x channels ok=<0.5-0.8 s of PCM> signal=<RMS above 0.03>". */
+    String decode(int res, boolean async) {
+        try (android.content.res.AssetFileDescriptor afd = getResources().openRawResourceFd(res)) {
+            android.media.MediaExtractor ex = new android.media.MediaExtractor();
+            ex.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+            android.media.MediaFormat fmt = ex.getTrackFormat(0);
+            String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+            ex.selectTrack(0);
+            android.media.MediaCodec codec = android.media.MediaCodec.createDecoderByType(mime);
+            final long[] frames = {0};
+            final double[] sum = {0};
+            final int[] outRate = {fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)};
+            final int[] outCh = {fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)};
+            java.util.function.BiConsumer<java.nio.ByteBuffer, android.media.MediaCodec.BufferInfo> take = (buf, info) -> {
+                buf.position(info.offset);
+                buf.limit(info.offset + info.size);
+                java.nio.ShortBuffer sb = buf.order(java.nio.ByteOrder.nativeOrder()).asShortBuffer();
+                frames[0] += sb.remaining() / outCh[0];
+                while (sb.hasRemaining()) { double v = sb.get() / 32768.0; sum[0] += v * v; }
+            };
+            if (async) {
+                java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+                final boolean[] inputDone = {false};
+                android.os.HandlerThread t = new android.os.HandlerThread("codec");
+                t.start();
+                codec.setCallback(new android.media.MediaCodec.Callback() {
+                    public void onInputBufferAvailable(android.media.MediaCodec c, int i) {
+                        if (inputDone[0]) return;
+                        java.nio.ByteBuffer in = c.getInputBuffer(i);
+                        int n = ex.readSampleData(in, 0);
+                        if (n < 0) { inputDone[0] = true; c.queueInputBuffer(i, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); }
+                        else { c.queueInputBuffer(i, 0, n, ex.getSampleTime(), 0); ex.advance(); }
+                    }
+                    public void onOutputBufferAvailable(android.media.MediaCodec c, int i, android.media.MediaCodec.BufferInfo info) {
+                        take.accept(c.getOutputBuffer(i), info);
+                        c.releaseOutputBuffer(i, false);
+                        if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) done.countDown();
+                    }
+                    public void onError(android.media.MediaCodec c, android.media.MediaCodec.CodecException e) { done.countDown(); }
+                    public void onOutputFormatChanged(android.media.MediaCodec c, android.media.MediaFormat f) {
+                        outRate[0] = f.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
+                        outCh[0] = f.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
+                    }
+                }, new android.os.Handler(t.getLooper()));
+                codec.configure(fmt, null, null, 0);
+                codec.start();
+                done.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                t.quitSafely();
+            } else {
+                codec.configure(fmt, null, null, 0);
+                codec.start();
+                android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+                boolean inEos = false;
+                for (int guard = 0; guard < 10000; guard++) {
+                    if (!inEos) {
+                        int i = codec.dequeueInputBuffer(10000);
+                        if (i >= 0) {
+                            int n = ex.readSampleData(codec.getInputBuffer(i), 0);
+                            if (n < 0) { codec.queueInputBuffer(i, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); inEos = true; }
+                            else { codec.queueInputBuffer(i, 0, n, ex.getSampleTime(), 0); ex.advance(); }
+                        }
+                    }
+                    int o = codec.dequeueOutputBuffer(info, 10000);
+                    if (o == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        outRate[0] = codec.getOutputFormat().getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
+                        outCh[0] = codec.getOutputFormat().getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
+                    } else if (o >= 0) {
+                        take.accept(codec.getOutputBuffer(o), info);
+                        codec.releaseOutputBuffer(o, false);
+                        if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break;
+                    }
+                }
+            }
+            codec.stop();
+            codec.release();
+            ex.release();
+            double secs = (double) frames[0] / outRate[0];
+            double rms = frames[0] > 0 ? Math.sqrt(sum[0] / (frames[0] * outCh[0])) : 0;
+            return mime + " " + outRate[0] + "x" + outCh[0] + " ok=" + (secs >= 0.5 && secs <= 0.8) + " signal=" + (rms > 0.03);
+        } catch (Exception e) {
+            return "error " + e;
+        }
+    }
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -67,6 +151,11 @@ public class MainActivity extends Activity {
         session.setPlaybackState(new PlaybackState.Builder().setState(PlaybackState.STATE_PLAYING, 0, 1f)
                 .setActions(PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_PAUSE).build());
         session.setActive(true);
+        // MediaExtractor + MediaCodec: each test file decoded to PCM (sync; Vorbis also async)
+        for (int[] f : new int[][] {{R.raw.tone_vorbis, 1}, {R.raw.tone_opus, 0}, {R.raw.tone_aac, 0},
+                {R.raw.tone_mp3, 0}, {R.raw.tone, 0}}) {
+            Log.i(TAG, "[media] codec " + decode(f[0], false) + (f[1] == 1 ? " async " + decode(f[0], true) : ""));
+        }
         // MediaRouter / MediaRouter2: the system route (apps create these at startup)
         android.media.MediaRouter router = (android.media.MediaRouter) getSystemService(MEDIA_ROUTER_SERVICE);
         android.media.MediaRouter2 router2 = android.media.MediaRouter2.getInstance(this);

@@ -284,9 +284,11 @@ static jstring net(JNIEnv* env, jclass cls) {
     send(cli, "ping", 4, MSG_NOSIGNAL);
     eventfd_write(efd, 5);
     int n = 0, seen = 0;
-    for (int tries = 0; tries < 10 && seen != 3; tries++) {
-        n = epoll_wait(ep, got, 4, 100);
+    // (the eventfd stays readable, so epoll_wait returns at once: wait for the socket by time)
+    for (int ms = 0; ms < 2000 && seen != 3; ms += 5) {
+        n = epoll_wait(ep, got, 4, 5);
         for (int i = 0; i < n; i++) seen |= (int)got[i].data.u64;
+        if (seen != 3) usleep(5000);
     }
     char buf[8] = {0};
     ssize_t rd = recv(acc, buf, sizeof buf - 1, 0);

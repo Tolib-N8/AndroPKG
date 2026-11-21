@@ -985,6 +985,10 @@ const JNINativeMethod kRetriever[] = {
 #undef M
 }  // namespace
 
+namespace andropkg_media {
+void RegisterCodecs(JNIEnv* env);  // media_codec.mm
+}
+
 extern "C" __attribute__((visibility("default"))) jint JNI_OnLoad(JavaVM* vm, void*) {
   gVm = vm;
   JNIEnv* env = nullptr;
@@ -1008,6 +1012,7 @@ extern "C" __attribute__((visibility("default"))) jint JNI_OnLoad(JavaVM* vm, vo
     andropkg_media::RegisterNativeDefaults(env, c);
   }
   andropkg_media::RegisterDeclared(env, "android/media/MediaPlayer", kMediaPlayer, sizeof kMediaPlayer / sizeof kMediaPlayer[0]);
+  andropkg_media::RegisterCodecs(env);  // MediaCodec, MediaCodecList, MediaExtractor (media_codec.mm)
   if (jclass mr = env->FindClass("android/media/MediaMetadataRetriever")) {
     gRetrieverClass = static_cast<jclass>(env->NewGlobalRef(mr));
     env->DeleteLocalRef(mr);
