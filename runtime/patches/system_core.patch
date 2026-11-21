@@ -1,3 +1,18 @@
+diff --git a/libcutils/ashmem-host.cpp b/libcutils/ashmem-host.cpp
+index 2ba1eb0..3969817 100644
+--- a/libcutils/ashmem-host.cpp
++++ b/libcutils/ashmem-host.cpp
+@@ -59,7 +59,9 @@ int ashmem_valid(int fd) {
+ 
+ int ashmem_create_region(const char* /*ignored*/, size_t size) {
+     char pattern[PATH_MAX];
+-    snprintf(pattern, sizeof(pattern), "/tmp/android-ashmem-%d-XXXXXXXXX", getpid());
++    // andropkg: $TMPDIR (iOS apps can't write /tmp).
++    const char* tmp = getenv("TMPDIR");
++    snprintf(pattern, sizeof(pattern), "%s/android-ashmem-%d-XXXXXXXXX", tmp && *tmp ? tmp : "/tmp", getpid());
+     int fd = mkstemp(pattern);
+     if (fd == -1) return -1;
+ 
 diff --git a/libutils/SystemClock.cpp b/libutils/SystemClock.cpp
 index 9c71141..6ce9f36 100644
 --- a/libutils/SystemClock.cpp

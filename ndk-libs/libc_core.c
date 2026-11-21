@@ -367,7 +367,69 @@ NDK_EXPORT char *bionic___gnu_basename(const char *path) {
 
 // ---- syscall(2): Linux numbers through the shim's dispatcher (also behind `svc #0`) ------------
 #include "andropkg/syscall.h"
+// Linux arm64 syscall numbers served by the NDK layer's translating wrappers (paths, flags,
+// structs): raw syscall() users (root checkers, crash reporters) get the same semantics.
+typedef long (*sysfn)(long, long, long, long, long, long);
+#define W(name) extern long bionic_##name();
+#define WRAPPERS(X) X(openat) X(fstat) X(fstatat) X(readlinkat) X(faccessat) X(unlinkat) X(mkdirat) \
+    X(renameat) X(lseek) X(pipe2) X(dup) X(dup3) X(ppoll) X(prctl) X(uname) X(nanosleep)                \
+    X(clock_nanosleep) X(kill) X(madvise) X(mmap) X(munmap) X(mprotect) X(sched_getaffinity) X(statfs) \
+    X(fstatfs) X(getrlimit) X(eventfd) X(epoll_create1) X(epoll_ctl) X(epoll_pwait) X(socket)           \
+    X(connect) X(sendto) X(recvfrom) X(sigaltstack) X(sigprocmask) X(ioctl) X(fcntl) X(sigaction)
+WRAPPERS(W)
+#undef W
+static sysfn syscall_wrapper(long nr) {
+    switch (nr) {
+    case 56: return (sysfn)bionic_openat;
+    case 80: return (sysfn)bionic_fstat;
+    case 79: return (sysfn)bionic_fstatat;
+    case 78: return (sysfn)bionic_readlinkat;
+    case 48: return (sysfn)bionic_faccessat;
+    case 35: return (sysfn)bionic_unlinkat;
+    case 34: return (sysfn)bionic_mkdirat;
+    case 38: return (sysfn)bionic_renameat;
+    case 62: return (sysfn)bionic_lseek;
+    case 59: return (sysfn)bionic_pipe2;
+    case 23: return (sysfn)bionic_dup;
+    case 24: return (sysfn)bionic_dup3;
+    case 73: return (sysfn)bionic_ppoll;
+    case 167: return (sysfn)bionic_prctl;
+    case 160: return (sysfn)bionic_uname;
+    case 101: return (sysfn)bionic_nanosleep;
+    case 115: return (sysfn)bionic_clock_nanosleep;
+    case 129: return (sysfn)bionic_kill;
+    case 233: return (sysfn)bionic_madvise;
+    case 222: return (sysfn)bionic_mmap;
+    case 215: return (sysfn)bionic_munmap;
+    case 226: return (sysfn)bionic_mprotect;
+    case 123: return (sysfn)bionic_sched_getaffinity;
+    case 43: return (sysfn)bionic_statfs;
+    case 44: return (sysfn)bionic_fstatfs;
+    case 163: return (sysfn)bionic_getrlimit;
+    case 19: return (sysfn)bionic_eventfd;  // eventfd2(initval, flags)
+    case 20: return (sysfn)bionic_epoll_create1;
+    case 21: return (sysfn)bionic_epoll_ctl;
+    case 22: return (sysfn)bionic_epoll_pwait;
+    case 198: return (sysfn)bionic_socket;
+    case 203: return (sysfn)bionic_connect;
+    case 206: return (sysfn)bionic_sendto;
+    case 207: return (sysfn)bionic_recvfrom;
+    case 132: return (sysfn)bionic_sigaltstack;
+    case 135: return (sysfn)bionic_sigprocmask;  // rt_sigprocmask(how, set, old, sigsetsize)
+    case 134: return (sysfn)bionic_sigaction;    // rt_sigaction(sig, act, old, sigsetsize)
+    case 29: return (sysfn)bionic_ioctl;
+    case 25: return (sysfn)bionic_fcntl;
+    }
+    return NULL;
+}
+
 NDK_EXPORT long bionic_syscall(long nr, long a0, long a1, long a2, long a3, long a4, long a5) {
+    sysfn f = syscall_wrapper(nr);
+    if (f) {  // (errno set by it)
+        long r = f(a0, a1, a2, a3, a4, a5);
+        bool wide = nr == 222 || nr == 62 || nr == 206 || nr == 207;  // mmap, lseek, sendto, recvfrom
+        return wide ? r : (long)(int)r;  // the others return int: the upper half is undefined
+    }
     long r = andropkg_syscall(nr, a0, a1, a2, a3, a4, a5);
     if (r < 0 && r > -4096) {
         if (r == -38) ndk_log(NDK_LOG_WARN, "syscall %ld is not emulated", nr);

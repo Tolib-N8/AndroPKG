@@ -315,10 +315,20 @@ index 2deb5ef..d6b3407 100644
        *needs_native_bridge = true;
        handle = NativeBridgeLoadLibrary(path_arg, RTLD_NOW);
 diff --git a/openjdkjvm/OpenjdkJvm.cc b/openjdkjvm/OpenjdkJvm.cc
-index da6fc85..f8e4da8 100644
+index da6fc85..4b3457f 100644
 --- a/openjdkjvm/OpenjdkJvm.cc
 +++ b/openjdkjvm/OpenjdkJvm.cc
-@@ -342,6 +342,17 @@ JNIEXPORT void JVM_GC(void) {
+@@ -62,6 +62,9 @@
+ #include "runtime.h"
+ #include "scoped_thread_state_change-inl.h"
+ #include "thread.h"
++#include "art_method-inl.h"
++#include "interpreter/shadow_frame-inl.h"
++#include "stack.h"
+ #include "thread_list.h"
+ #include "verify_object.h"
+ 
+@@ -342,6 +345,54 @@ JNIEXPORT void JVM_GC(void) {
  
  JNIEXPORT __attribute__((noreturn)) void JVM_Exit(jint status) {
    LOG(INFO) << "System.exit called, status: " << status;
@@ -326,10 +336,47 @@ index da6fc85..f8e4da8 100644
 +  if (status != 0) {  // andropkg: who gave up (apps exit after errors they handle silently)
 +    art::Thread* self = art::Thread::Current();
 +    if (self != nullptr) {
-+      art::ScopedObjectAccess soa(self);
-+      std::ostringstream os;
-+      self->DumpJavaStack(os);
-+      LOG(INFO) << "System.exit(" << status << ") from:\n" << os.str();
++      jobject throwable = nullptr;
++      {
++        art::ScopedObjectAccess soa(self);
++        std::ostringstream os;
++        self->DumpJavaStack(os);
++        LOG(INFO) << "System.exit(" << status << ") from:\n" << os.str();
++        // An uncaught-exception handler on the stack (crash reporters exit from there): its
++        // Throwable argument, the method's last register (interpreted frames).
++        struct Finder : public art::StackVisitor {
++          explicit Finder(art::Thread* t)
++              : art::StackVisitor(t, nullptr, art::StackVisitor::StackWalkKind::kIncludeInlinedFrames) {}
++          bool VisitFrame() override REQUIRES_SHARED(art::Locks::mutator_lock_) {
++            art::ArtMethod* m = GetMethod();
++            if (m == nullptr || m->IsNative() || m->IsRuntimeMethod()) return true;
++            if (strcmp(m->GetName(), "uncaughtException") != 0 ||
++                m->GetSignature().ToString() != "(Ljava/lang/Thread;Ljava/lang/Throwable;)V") {
++              return true;
++            }
++            art::ShadowFrame* sf = GetCurrentShadowFrame();
++            if (sf == nullptr) return true;
++            found = sf->GetVRegReference(sf->NumberOfVRegs() - 1);
++            return found == nullptr;
++          }
++          art::ObjPtr<art::mirror::Object> found = nullptr;
++        } finder(self);
++        finder.WalkStack();
++        if (finder.found != nullptr) throwable = soa.AddLocalReference<jobject>(finder.found);
++      }
++      if (throwable != nullptr) {
++        JNIEnv* env = self->GetJniEnv();
++        jclass log = env->FindClass("android/util/Log");
++        jmethodID m = log ? env->GetStaticMethodID(log, "getStackTraceString", "(Ljava/lang/Throwable;)Ljava/lang/String;")
++                          : nullptr;
++        jstring trace = m ? static_cast<jstring>(env->CallStaticObjectMethod(log, m, throwable)) : nullptr;
++        if (trace != nullptr) {
++          const char* chars = env->GetStringUTFChars(trace, nullptr);
++          LOG(INFO) << "System.exit(" << status << ") after uncaught " << chars;
++          env->ReleaseStringUTFChars(trace, chars);
++        }
++        env->ExceptionClear();
++      }
 +    }
 +  }
 +#endif
