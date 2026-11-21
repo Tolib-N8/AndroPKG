@@ -258,7 +258,8 @@ set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_N
 target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_ROOT}/loader/include ${ANDROPKG_ROOT}/shim/include
                            ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen} ${ANDROPKG_AOSP}/libnativehelper/include_jni)
 target_compile_options(andropkg_ndk PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu11 -Wno-unused-parameter>)
-target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib andropkg_gl z)
+target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib andropkg_gl z
+                      "-framework AudioToolbox")  # AAudio / OpenSL ES (aaudio.c)
 
 # ---- EGL + GLES (runtime/opengl): libandropkg_gl -----------------------------------------------
 # EGL 1.4 (egl.m: OpenGL ES/EAGL on iOS, OpenGL 2.1 as a GLES 2.0 stand-in on macOS) for NDK code

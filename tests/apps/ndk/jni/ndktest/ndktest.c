@@ -5,6 +5,9 @@
 #include <android/log.h>
 #include <android/looper.h>
 #include <setjmp.h>
+#include <SLES/OpenSLES.h>
+#include <SLES/OpenSLES_Android.h>
+#include <dlfcn.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -139,6 +142,112 @@ static jstring stackargs(JNIEnv* env, jclass cls, jlong a, jlong b, jint c, jint
     return (*env)->NewStringUTF(env, out);
 }
 
+// AAudio (libaaudio, looked up at run time: the test builds for API 24): a callback stream and a
+// blocking write stream, both silent.
+static _Atomic int g_aa_callbacks;
+static int32_t aa_cb(void* stream, void* user, void* audio, int32_t frames) {
+    memset(audio, 0, (size_t)frames * 2 * sizeof(float));
+    g_aa_callbacks++;
+    return 0;  // CONTINUE
+}
+static jstring aaudio(JNIEnv* env, jclass cls) {
+    void* h = dlopen("libaaudio.so", RTLD_NOW);
+    if (!h) return (*env)->NewStringUTF(env, "no libaaudio");
+#define F(ret, name, ...) ret (*name)(__VA_ARGS__) = dlsym(h, #name)
+    F(int32_t, AAudio_createStreamBuilder, void**);
+    F(void, AAudioStreamBuilder_setFormat, void*, int32_t);
+    F(void, AAudioStreamBuilder_setChannelCount, void*, int32_t);
+    F(void, AAudioStreamBuilder_setDataCallback, void*, void*, void*);
+    F(int32_t, AAudioStreamBuilder_openStream, void*, void**);
+    F(int32_t, AAudioStreamBuilder_delete, void*);
+    F(int32_t, AAudioStream_requestStart, void*);
+    F(int32_t, AAudioStream_requestStop, void*);
+    F(int32_t, AAudioStream_getState, void*);
+    F(int32_t, AAudioStream_getSampleRate, void*);
+    F(int64_t, AAudioStream_getFramesWritten, void*);
+    F(int32_t, AAudioStream_write, void*, const void*, int32_t, int64_t);
+    F(int32_t, AAudioStream_close, void*);
+    F(const char*, AAudio_convertStreamStateToText, int32_t);
+#undef F
+    void *b, *cbStream, *wStream;
+    AAudio_createStreamBuilder(&b);
+    AAudioStreamBuilder_setFormat(b, 2);  // FLOAT
+    AAudioStreamBuilder_setChannelCount(b, 2);
+    AAudioStreamBuilder_setDataCallback(b, (void*)aa_cb, NULL);
+    int32_t r1 = AAudioStreamBuilder_openStream(b, &cbStream);
+    int32_t r2 = AAudioStream_requestStart(cbStream);
+    usleep(300 * 1000);
+    AAudioStream_requestStop(cbStream);
+    const char* st = AAudio_convertStreamStateToText(AAudioStream_getState(cbStream));
+    int64_t cbWritten = AAudioStream_getFramesWritten(cbStream);
+    AAudioStream_close(cbStream);
+    AAudioStreamBuilder_setFormat(b, 1);  // I16
+    AAudioStreamBuilder_setDataCallback(b, NULL, NULL);
+    int32_t r3 = AAudioStreamBuilder_openStream(b, &wStream);
+    int32_t rate = AAudioStream_getSampleRate(wStream);
+    AAudioStream_requestStart(wStream);
+    static int16_t pcm[4800 * 2];
+    int32_t wrote = AAudioStream_write(wStream, pcm, 4800, 1000000000LL);
+    AAudioStream_close(wStream);
+    AAudioStreamBuilder_delete(b);
+    char out[160];
+    snprintf(out, sizeof out, "open=%d,%d start=%d callbacks>0=%d frames>0=%d state=%s rate=%d write=%d", r1, r3, r2,
+             g_aa_callbacks > 0, cbWritten > 0, st, rate, wrote);
+    return (*env)->NewStringUTF(env, out);
+}
+
+// OpenSL ES: engine, output mix, a buffer-queue PCM player (silent) whose callback re-enqueues.
+static _Atomic int g_sl_callbacks;
+static int16_t g_sl_buf[2][1024 * 2];
+static void sl_cb(SLAndroidSimpleBufferQueueItf bq, void* ctx) {
+    int n = ++g_sl_callbacks;
+    (*bq)->Enqueue(bq, g_sl_buf[n & 1], sizeof g_sl_buf[0]);
+}
+static jstring opensl(JNIEnv* env, jclass cls) {
+    SLObjectItf engineObj, mixObj, playerObj;
+    SLEngineItf engine;
+    SLresult r1 = slCreateEngine(&engineObj, 0, NULL, 0, NULL, NULL);
+    (*engineObj)->Realize(engineObj, SL_BOOLEAN_FALSE);
+    (*engineObj)->GetInterface(engineObj, SL_IID_ENGINE, &engine);
+    SLresult r2 = (*engine)->CreateOutputMix(engine, &mixObj, 0, NULL, NULL);
+    (*mixObj)->Realize(mixObj, SL_BOOLEAN_FALSE);
+    SLDataLocator_AndroidSimpleBufferQueue loc = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 2};
+    SLDataFormat_PCM fmt = {SL_DATAFORMAT_PCM, 2, SL_SAMPLINGRATE_44_1, SL_PCMSAMPLEFORMAT_FIXED_16,
+                            SL_PCMSAMPLEFORMAT_FIXED_16, SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT,
+                            SL_BYTEORDER_LITTLEENDIAN};
+    SLDataSource src = {&loc, &fmt};
+    SLDataLocator_OutputMix outLoc = {SL_DATALOCATOR_OUTPUTMIX, mixObj};
+    SLDataSink sink = {&outLoc, NULL};
+    const SLInterfaceID ids[] = {SL_IID_ANDROIDSIMPLEBUFFERQUEUE, SL_IID_VOLUME};
+    const SLboolean req[] = {SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE};
+    SLresult r3 = (*engine)->CreateAudioPlayer(engine, &playerObj, &src, &sink, 2, ids, req);
+    SLresult r4 = (*playerObj)->Realize(playerObj, SL_BOOLEAN_FALSE);
+    SLPlayItf play;
+    SLAndroidSimpleBufferQueueItf bq;
+    SLVolumeItf vol;
+    (*playerObj)->GetInterface(playerObj, SL_IID_PLAY, &play);
+    (*playerObj)->GetInterface(playerObj, SL_IID_ANDROIDSIMPLEBUFFERQUEUE, &bq);
+    (*playerObj)->GetInterface(playerObj, SL_IID_VOLUME, &vol);
+    (*bq)->RegisterCallback(bq, sl_cb, NULL);
+    (*vol)->SetVolumeLevel(vol, -300);
+    SLmillibel level = 0;
+    (*vol)->GetVolumeLevel(vol, &level);
+    (*bq)->Enqueue(bq, g_sl_buf[0], sizeof g_sl_buf[0]);
+    SLresult r5 = (*play)->SetPlayState(play, SL_PLAYSTATE_PLAYING);
+    usleep(300 * 1000);
+    (*play)->SetPlayState(play, SL_PLAYSTATE_STOPPED);
+    SLAndroidSimpleBufferQueueState st;
+    (*bq)->GetState(bq, &st);
+    SLresult r6 = (*engine)->CreateAudioRecorder(engine, &mixObj, &src, &sink, 0, NULL, NULL);
+    (*playerObj)->Destroy(playerObj);
+    (*mixObj)->Destroy(mixObj);
+    (*engineObj)->Destroy(engineObj);
+    char out[160];
+    snprintf(out, sizeof out, "results=%u%u%u%u%u callbacks>0=%d played>0=%d volume=%d recorder=%u", r1, r2, r3, r4, r5,
+             g_sl_callbacks > 0, st.index > 0, level, r6);
+    return (*env)->NewStringUTF(env, out);
+}
+
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
@@ -152,8 +261,10 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         {"directbuf", "()Ljava/nio/ByteBuffer;", (void*)directbuf},
         {"directcheck", "()Ljava/lang/String;", (void*)directcheck},
         {"stackargs", "(JJIIIIIIIIBSCFD)Ljava/lang/String;", (void*)stackargs},
+        {"aaudio", "()Ljava/lang/String;", (void*)aaudio},
+        {"opensl", "()Ljava/lang/String;", (void*)opensl},
     };
-    if ((*env)->RegisterNatives(env, c, methods, 8) != 0) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, c, methods, 10) != 0) return JNI_ERR;
     __android_log_print(ANDROID_LOG_INFO, TAG, "JNI_OnLoad: %d methods, pi=%.3f, %s", 4, 3.14159, "registered");
     return JNI_VERSION_1_6;
 }

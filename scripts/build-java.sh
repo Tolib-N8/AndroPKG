@@ -45,7 +45,7 @@ for app in "$root"/tests/apps/*/; do
       [ -f "$lib/GLUE" ] && extra="-I$NDK/sources/android/native_app_glue $NDK/sources/android/native_app_glue/android_native_app_glue.c -u ANativeActivity_onCreate"
       [ -f "$lib/GLES" ] && extra="$extra -lEGL -lGLESv2"
       "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 \
-        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) $extra -llog -landroid -ljnigraphics
+        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) $extra -llog -landroid -ljnigraphics -lOpenSLES
       [ -n "$cxx" ] && cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$w/lib/arm64-v8a/"
     done
     (cd "$w" && zip -q -r "$root/build/apps/$name.apk" lib)

@@ -94,6 +94,8 @@ for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36
     "files: stat=0 size=27 reg=1 entries>0=1 enoent=1" \
     "direct: cap=16 sum=136 written=11223344 setjmp=42 count=2" \
     "stackargs: 1 2 3 4 5 6 7 8 9 10 -11 12 65 1.5 2.5" \
+    "aaudio: open=0,0 start=0 callbacks>0=1 frames>0=1 state=STOPPED rate=48000 write=4800" \
+    "opensl: results=00000 callbacks>0=1 played>0=1 volume=-300 recorder=12" \
     "platform: asset=asset read by native code(25) density>0=1 looper=1 bitmap=4x3 fmt=1 pixel=ffff0000" "cpp: static-init caught=\[too big: 5\] threads=15 seen=5 sum=15" \
     "exec1: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3" \
     "exec2: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3"; do
