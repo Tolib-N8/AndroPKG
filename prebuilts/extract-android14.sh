@@ -44,4 +44,5 @@ docker run --rm -v "$work:/w" -v "$here:/tools:ro" debian:bookworm-slim sh -eu -
 
 python3 -I "$here/collect-bootclasspath.py" "$work" "$out"
 cp dl/arm64-v8a/build.prop "$out/build.prop"
+"$here/make-cacerts.sh"
 echo "done: $out"; du -sh "$out"/*

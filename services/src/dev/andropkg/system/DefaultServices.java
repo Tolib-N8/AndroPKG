@@ -20,7 +20,7 @@ final class DefaultServices {
         {"power", "android.os.IPowerManager"},
         {"uimode", "android.app.IUiModeManager"},
         {"alarm", "android.app.IAlarmManager"},
-        {"connectivity", "android.net.IConnectivityManager"},
+        {"appwidget", "com.android.internal.appwidget.IAppWidgetService"},
         {"network_management", "android.os.INetworkManagementService"},
         {"game", "android.app.IGameManagerService"},
         {"audio", "android.media.IAudioService"},

@@ -10,6 +10,17 @@
 
 namespace android {
 
+// android_util_Binder.h: wraps a java.io.FileDescriptor into a ParcelFileDescriptor (used by
+// AssetManager.openFd and friends).
+jobject newParcelFileDescriptor(JNIEnv* env, jobject fileDesc) {
+  jclass pfd = env->FindClass("android/os/ParcelFileDescriptor");
+  if (pfd == nullptr) return nullptr;
+  jmethodID ctor = env->GetMethodID(pfd, "<init>", "(Ljava/io/FileDescriptor;)V");
+  jobject r = env->NewObject(pfd, ctor, fileDesc);
+  env->DeleteLocalRef(pfd);
+  return r;
+}
+
 static jint Binder_getCallingPid(JNIEnv*, jclass) { return getpid(); }
 static jint Binder_getCallingUid(JNIEnv*, jclass) { return static_cast<jint>(getuid()); }
 static jboolean Binder_isDirectlyHandlingTransactionNative(JNIEnv*, jclass) { return JNI_FALSE; }

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Copies the files the runtime needs into <out>/android-root (real files, for an app bundle):
 # the full Android 14 BOOTCLASSPATH at its device paths (+ bootclasspath.txt), framework-res,
-# ICU + tzdata, and the test dex files.
+# ICU + tzdata, CA roots, and the test dex files.
 #   scripts/stage-android-root.sh <out-dir>
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +25,9 @@ mkdir -p "$out/system/usr/keychars" "$out/data"
 cp "$root/third_party/aosp/frameworks/base/data/keyboards/Virtual.kcm" "$out/system/usr/keychars/"
 cp "$pb/apex-etc/com.android.i18n/icu/"*.dat "$out/apex/com.android.i18n/etc/icu/"
 cp -R "$pb/apex-etc/com.android.tzdata/." "$out/apex/com.android.tzdata/etc/"
+[ -d "$pb/cacerts" ] || "$root/prebuilts/make-cacerts.sh" >/dev/null
+mkdir -p "$out/apex/com.android.conscrypt"
+cp -R "$pb/cacerts" "$out/apex/com.android.conscrypt/cacerts"
 cp "$root/build/services/services.dex" "$out/system/framework/andropkg-services.dex"
 for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
   [ -f "$a" ] && cp "$a" "$out/test/"

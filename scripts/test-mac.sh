@@ -69,5 +69,12 @@ for want in "service started n=7 id=1" "service destroyed" "bound: pong" "dynami
 done
 grep -q "toast: hello from components" "$log/components.log" || fail "components: toast" components
 echo "ok   components checks"
+# Platform services: connectivity, notification channels, asset fds, sensors, startActivities.
+ANDROPKG_TEST_SCRIPT="wait 300; accel 1,2,9.8" run platform "\[platform\] done" $(apk platform)
+for want in "network internet=true" "network callback available" "channel Channel one importance=2" \
+    "asset fd length=25" "accelerometer Accelerometer" "accel 1,2,10" "second created n=1" "second new intent n=2"; do
+  grep -q "\[platform\] $want" "$log/platform.log" || fail "platform: $want" platform
+done
+echo "ok   platform checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

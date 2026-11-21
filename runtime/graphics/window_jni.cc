@@ -803,6 +803,8 @@ void InjectTouch(int action, float x, float y) {
   } else if (gWindows.empty() && !gOrphanReceivers.empty()) {
     r = gOrphanReceivers.back();
   }
+  static const bool debug = getenv("ANDROPKG_DEBUG_INPUT") != nullptr;
+  if (debug) ALOGI("input: touch %d at %.0f,%.0f -> window %d%s", action, x, y, gTouchTarget, r ? "" : " (dropped)");
   if (r) r->Post(e);
   if (action == 1 || action == 3) gTouchTarget = -1;
 }
@@ -851,7 +853,8 @@ void SetImeListener(void (*listener)(int visible)) { gImeListener = listener; }
 //   ANDROPKG_TEST_BACK=1, ANDROPKG_TEST_BACKGROUND=1 — one action each;
 //   ANDROPKG_TEST_SCRIPT="cmd; cmd; ..." — a scenario, with commands
 //     wait MS | tap X,Y | swipe X1,Y1,X2,Y2 | type TEXT | del | enter | key CODE | back |
-//     bg | fg | shot PATH (the screen as shown now, as PNG) | log TEXT
+//     accel X,Y,Z | shake (accelerometer samples) | bg | fg |
+//     shot PATH (the screen as shown now, as PNG) | log TEXT
 
 void Tap(float x, float y) {
   InjectTouch(0, x, y);
@@ -867,6 +870,17 @@ void Swipe(float x, float y, float x2, float y2) {
     InjectTouch(2, x + (x2 - x) * i / kSteps, y + (y2 - y) * i / kSteps);
   }
   InjectTouch(1, x2, y2);
+}
+
+extern "C" void andropkg_sensor_push(int type, const float* values, int count);
+
+// Accelerometer samples at 50 Hz for `ms`; with `shake`, the x axis swings +-2.5 g.
+void PushAccel(float x, float y, float z, int ms, bool shake) {
+  for (int t = 0, i = 0; t < ms; t += 20, i++) {
+    float v[3] = {shake ? (i % 2 ? 25.f : -25.f) : x, y, z};
+    andropkg_sensor_push(1 /* TYPE_ACCELEROMETER */, v, 3);
+    usleep(20 * 1000);
+  }
 }
 
 void RunTestScript(std::string script) {
@@ -901,6 +915,10 @@ void RunTestScript(std::string script) {
       InjectKey(0, code);
       usleep(50 * 1000);
       InjectKey(1, code);
+    } else if (op == "accel" && sscanf(arg.c_str(), "%f,%f,%f", &x, &y, &x2) == 3) {
+      PushAccel(x, y, x2, 400, false);
+    } else if (op == "shake") {
+      PushAccel(0, 0, 9.81f, 800, true);
     } else if (op == "bg" || op == "fg") {
       SetHostVisible(op == "fg");
     } else if (op == "shot") {

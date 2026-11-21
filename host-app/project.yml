@@ -36,7 +36,7 @@ targets:
         ENABLE_DEBUG_DYLIB: NO
         HEADER_SEARCH_PATHS: "$(SRCROOT)/../third_party/aosp/libnativehelper/include_jni"
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
-        OTHER_LDFLAGS: "$(SRCROOT)/../build/runtime-ios/libart.dylib -framework UIKit -framework Foundation -framework CoreGraphics"
+        OTHER_LDFLAGS: "$(SRCROOT)/../build/runtime-ios/libart.dylib -framework UIKit -framework Foundation -framework CoreGraphics -framework CoreMotion"
     dependencies:
       # The andropkg runtime (ART + libcore natives), signed on embed. libart is linked; the
       # JNI libraries are dlopen()ed by ART ("libjavacore.so" -> @rpath/libjavacore.dylib).

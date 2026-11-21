@@ -18,8 +18,9 @@ mv "$out/classes.dex" "$out/services.dex"
 for app in "$root"/tests/apps/*/; do
   name=$(basename "$app"); w="$root/build/apps/$name"; rm -rf "$w"; mkdir -p "$w/classes" "$w/res"
   "$BT/aapt2" compile --dir "$app/res" -o "$w/res.zip"
+  assets=""; [ -d "$app/assets" ] && assets="-A $app/assets -0 bin"  # .bin stored: openFd-able
   "$BT/aapt2" link -I "$SDK" --manifest "$app/AndroidManifest.xml" -o "$w/base.apk" "$w/res.zip" \
-    --java "$w/gen" --min-sdk-version 24 --target-sdk-version 34
+    --java "$w/gen" --min-sdk-version 24 --target-sdk-version 34 $assets
   javac -cp "$SDK" -d "$w/classes" $(find "$app/src" "$w/gen" -name '*.java')
   d8 --output "$w" $(find "$w/classes" -name '*.class')
   cp "$w/base.apk" "$root/build/apps/$name.apk"

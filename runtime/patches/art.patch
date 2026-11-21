@@ -1050,7 +1050,7 @@ index 7e52a50..d82845f 100644
  // It turns out that most of the performance overhead comes from copying. Don't validate for now.
  // This defers finding stale ObjPtr objects until they are used.
 diff --git a/runtime/runtime.cc b/runtime/runtime.cc
-index 36d7d7e..ec8d7c1 100644
+index 36d7d7e..01b30b1 100644
 --- a/runtime/runtime.cc
 +++ b/runtime/runtime.cc
 @@ -2202,14 +2202,27 @@ void Runtime::InitNativeMethods() {
@@ -1081,6 +1081,22 @@ index 36d7d7e..ec8d7c1 100644
    }
    env->DeleteGlobalRef(java_lang_Object);
  
+@@ -2415,6 +2428,15 @@ uint64_t Runtime::GetStat(int kind) {
+ }
+ 
+ void Runtime::BlockSignals() {
++#if defined(__APPLE__)
++  // andropkg: the signal catcher sigwait()s for SIGQUIT/SIGUSR1 (and ~SignalCatcher wakes it
++  // with SIGQUIT). Darwin discards a signal whose disposition is SIG_IGN even while it is
++  // blocked, and shells start background jobs with SIGQUIT ignored: restore the default.
++  for (int sig : {SIGQUIT, SIGUSR1}) {
++    struct sigaction sa;
++    if (sigaction(sig, nullptr, &sa) == 0 && sa.sa_handler == SIG_IGN) signal(sig, SIG_DFL);
++  }
++#endif
+   SignalSet signals;
+   signals.Add(SIGPIPE);
+   // SIGQUIT is used to dump the runtime's state (including stack traces).
 diff --git a/runtime/runtime_common.cc b/runtime/runtime_common.cc
 index c4a695f..5498c18 100644
 --- a/runtime/runtime_common.cc

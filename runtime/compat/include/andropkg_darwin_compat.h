@@ -69,6 +69,18 @@ typedef sigset_t sigset64_t;
 #ifndef MADV_REMOVE
 #define MADV_REMOVE MADV_FREE
 #endif
+// Linux madvise(MADV_DONTNEED) on private anonymous memory drops the pages, so the next read
+// sees zeros; ART relies on that (freed large objects, RosAlloc runs, cleared spaces). Darwin's
+// MADV_DONTNEED is only a hint and keeps the contents, which hands out "fresh" objects with
+// stale lock words. andropkg_madvise (mman_darwin.c) zeroes such ranges first (MADV_ZERO).
+#ifdef __cplusplus
+extern "C" {
+#endif
+int andropkg_madvise(void* addr, size_t len, int advice);
+#ifdef __cplusplus
+}
+#endif
+#define madvise(addr, len, advice) andropkg_madvise((addr), (len), (advice))
 #endif  // __APPLE__
 
 #if defined(__APPLE__)

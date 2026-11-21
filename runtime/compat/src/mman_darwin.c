@@ -14,3 +14,14 @@ int fallocate(int fd, int mode, off_t offset, off_t len) {
   errno = ENOSYS;
   return -1;
 }
+
+// See andropkg_darwin_compat.h: Linux MADV_DONTNEED semantics (anonymous pages read back as
+// zeros). MADV_ZERO zeroes without faulting pages in. It refuses (EPERM) read-only and PROT_NONE
+// ranges; ART releases memory that way only while it is still writable (it protects after), so
+// those keep the plain hint.
+int andropkg_madvise(void* addr, size_t len, int advice) {
+  if (advice == MADV_DONTNEED) {
+    (madvise)(addr, len, MADV_ZERO);
+  }
+  return (madvise)(addr, len, advice);
+}

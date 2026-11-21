@@ -123,6 +123,7 @@ final class Hidden {
         if (type.isArray()) return Array.newInstance(type.getComponentType(), 0);
         if (type == List.class) return new ArrayList<>();
         if (type == Map.class) return new HashMap<>();
+        if (type.getName().equals("android.content.pm.ParceledListSlice")) return callStatic(type, "emptyList");
         return null;
     }
 }

@@ -1,5 +1,6 @@
 // andropkg runner (M1): boots ART + Android 14 libcore inside an iOS app and runs a dex's
 // main(). Output goes to stdout (devicectl --console) and to the screen.
+#import <CoreMotion/CoreMotion.h>
 #import <UIKit/UIKit.h>
 
 #include <dlfcn.h>
@@ -121,6 +122,65 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
   }
 }
 
+// ---- Sensors: CoreMotion -> android.hardware.SensorManager ----------------------------------
+// Started only while an app listens. iOS and Android share device axes (x right, y up, z out
+// of the screen); iOS reports acceleration in g along gravity, Android in m/s^2 against it.
+static CMMotionManager* g_motion;
+static NSOperationQueue* g_motion_queue;
+static void (*g_sensor_push)(int type, const float* values, int count);
+
+static void SensorToggle(int type, int enabled, int period_us) {
+  NSTimeInterval interval = MAX(period_us, 10000) / 1e6;  // SENSOR_DELAY_FASTEST (0) -> 100 Hz
+  dispatch_async(dispatch_get_main_queue(), ^{
+    switch (type) {
+      case 1:  // TYPE_ACCELEROMETER
+        if (!enabled) { [g_motion stopAccelerometerUpdates]; break; }
+        g_motion.accelerometerUpdateInterval = interval;
+        [g_motion startAccelerometerUpdatesToQueue:g_motion_queue withHandler:^(CMAccelerometerData* d, NSError*) {
+          if (!d) return;
+          const float g = 9.80665f;
+          float v[3] = {(float)-d.acceleration.x * g, (float)-d.acceleration.y * g, (float)-d.acceleration.z * g};
+          g_sensor_push(1, v, 3);
+        }];
+        break;
+      case 4:  // TYPE_GYROSCOPE (rad/s, same axes and sign)
+        if (!enabled) { [g_motion stopGyroUpdates]; break; }
+        g_motion.gyroUpdateInterval = interval;
+        [g_motion startGyroUpdatesToQueue:g_motion_queue withHandler:^(CMGyroData* d, NSError*) {
+          if (!d) return;
+          float v[3] = {(float)d.rotationRate.x, (float)d.rotationRate.y, (float)d.rotationRate.z};
+          g_sensor_push(4, v, 3);
+        }];
+        break;
+      case 2:  // TYPE_MAGNETIC_FIELD (microtesla)
+        if (!enabled) { [g_motion stopMagnetometerUpdates]; break; }
+        g_motion.magnetometerUpdateInterval = interval;
+        [g_motion startMagnetometerUpdatesToQueue:g_motion_queue withHandler:^(CMMagnetometerData* d, NSError*) {
+          if (!d) return;
+          float v[3] = {(float)d.magneticField.x, (float)d.magneticField.y, (float)d.magneticField.z};
+          g_sensor_push(2, v, 3);
+        }];
+        break;
+    }
+    Log([NSString stringWithFormat:@"sensor %d %@", type, enabled ? @"on" : @"off"]);
+  });
+}
+
+static void InstallSensors() {
+  using SetHost = void (*)(const int*, int, void (*)(int, int, int));
+  auto set_host = reinterpret_cast<SetHost>(dlsym(RTLD_DEFAULT, "andropkg_sensors_set_host"));
+  g_sensor_push = reinterpret_cast<void (*)(int, const float*, int)>(dlsym(RTLD_DEFAULT, "andropkg_sensor_push"));
+  if (!set_host || !g_sensor_push) return;
+  g_motion = [[CMMotionManager alloc] init];
+  g_motion_queue = [[NSOperationQueue alloc] init];
+  g_motion_queue.maxConcurrentOperationCount = 1;
+  std::vector<int> types;
+  if (g_motion.accelerometerAvailable) types.push_back(1);
+  if (g_motion.gyroAvailable) types.push_back(4);
+  if (g_motion.magnetometerAvailable) types.push_back(2);
+  set_host(types.data(), static_cast<int>(types.size()), SensorToggle);
+}
+
 static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
   NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
   NSString* data = [NSTemporaryDirectory() stringByAppendingPathComponent:@"android-data"];
@@ -194,6 +254,8 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
       });
     });
   }
+
+  InstallSensors();
 
   jclass cls = env->FindClass(main_class);
   jmethodID main = cls ? env->GetStaticMethodID(cls, "main", "([Ljava/lang/String;)V") : nullptr;

@@ -198,6 +198,7 @@ TARGETS = [
                "frameworks/base/core/jni/android_content_res_Configuration.cpp"],
          andropkg_srcs=[f"{ANDROPKG}/runtime/android_runtime/android_runtime_onload.cc",
                         f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc",
+                        f"{ANDROPKG}/runtime/android_runtime/sensor_jni.cc",
                         f"{ANDROPKG}/runtime/android_runtime/system_properties.cc",
                         f"{ANDROPKG}/runtime/android_runtime/process_stubs.cc",
                         f"{ANDROPKG}/runtime/android_runtime/framework_stubs.cc",

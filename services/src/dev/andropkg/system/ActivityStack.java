@@ -107,18 +107,54 @@ final class ActivityStack {
         return null;
     }
 
-    /** Starts `info` on top; returns ActivityManager.START_SUCCESS. */
+    /**
+     * Starts `info` per the intent flags and launch mode; returns ActivityManager.START_SUCCESS
+     * (or START_DELIVERED_TO_TOP when an existing instance got the intent via onNewIntent).
+     *   CLEAR_TASK (+NEW_TASK): the task is emptied first (TaskStackBuilder does this).
+     *   CLEAR_TOP / singleTask / singleInstance: an existing instance becomes the top; it gets
+     *     onNewIntent if it is single-top (flag or launchMode), else it is recreated.
+     *   SINGLE_TOP / singleTop: the top instance gets onNewIntent instead of a new copy.
+     */
     synchronized int start(ActivityInfo info, Intent intent, IBinder resultTo, String resultWho, int requestCode) {
         if (intent.getComponent() == null) {
             intent = new Intent(intent).setComponent(new ComponentName(info.packageName, info.name));
         }
+        int flags = intent.getFlags();
+        boolean singleTop = (flags & Intent.FLAG_ACTIVITY_SINGLE_TOP) != 0
+                || info.launchMode == ActivityInfo.LAUNCH_SINGLE_TOP;
+        boolean singleTask = info.launchMode == ActivityInfo.LAUNCH_SINGLE_TASK
+                || info.launchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE
+                || info.launchMode == 4 /* LAUNCH_SINGLE_INSTANCE_PER_TASK */;
+        List<Record> doomed = new ArrayList<>();
+        if ((flags & Intent.FLAG_ACTIVITY_CLEAR_TASK) != 0 && (flags & Intent.FLAG_ACTIVITY_NEW_TASK) != 0) {
+            doomed.addAll(stack);
+        } else if ((flags & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0 || singleTask) {
+            Record existing = null;
+            for (int i = stack.size() - 1; i >= 0 && existing == null; i--) {
+                if (stack.get(i).info.name.equals(info.name)) existing = stack.get(i);
+            }
+            if (existing != null) {
+                doomed.addAll(stack.subList(stack.indexOf(existing) + 1, stack.size()));
+                if (singleTop || singleTask) {
+                    clear(doomed, existing);
+                    deliverNewIntent(existing, intent);
+                    return 3;  // START_DELIVERED_TO_TOP
+                }
+                doomed.add(existing);
+            }
+        } else if (singleTop && top() != null && top().info.name.equals(info.name)) {
+            deliverNewIntent(top(), intent);
+            return 3;
+        }
         Record caller = resultTo != null ? find(resultTo) : null;
         Record r = new Record(info, intent, requestCode >= 0 ? caller : null, resultWho, requestCode);
         Record prev = top();
+        stack.removeAll(doomed);
         stack.add(r);
         alive.add(r.token);
-        Log.i(TAG, "start " + info.name + (prev != null ? " over " + prev.info.name : ""));
-        if (prev != null) AndroPkgSystem.schedule(prev.token, null, pauseItem(false));
+        Log.i(TAG, "start " + info.name + (prev != null ? " over " + prev.info.name : "")
+                + (doomed.isEmpty() ? "" : " (clearing " + doomed.size() + ")"));
+        if (prev != null) AndroPkgSystem.schedule(prev.token, null, pauseItem(doomed.contains(prev)));
         Configuration config = WindowManagerImpl.displayConfiguration(Resources.getSystem().getConfiguration());
         Object launch = Hidden.callStatic(Hidden.cls("android.app.servertransaction.LaunchActivityItem"),
                 "obtain", intent, System.identityHashCode(r), info, config, new Configuration(), 0 /* deviceId */,
@@ -126,8 +162,36 @@ final class ActivityStack {
                 true /* isForward */, null, new Binder() /* assistToken */,
                 AndroPkgSystem.activityClientController, new Binder() /* shareableActivityToken */, false, null);
         AndroPkgSystem.schedule(r.token, launch, resumeItem(true));
-        if (prev != null) AndroPkgSystem.schedule(prev.token, null, stopItem());
+        if (prev != null && !doomed.contains(prev)) AndroPkgSystem.schedule(prev.token, null, stopItem());
+        for (Record d : doomed) destroy(d);
         return 0;
+    }
+
+    /** Finishes `doomed` (the activities above `newTop`, top first) and resumes `newTop`. */
+    private void clear(List<Record> doomed, Record newTop) {
+        if (doomed.isEmpty()) return;
+        Record prev = top();
+        stack.removeAll(doomed);
+        Log.i(TAG, "clear " + doomed.size() + " above " + newTop.info.name);
+        AndroPkgSystem.schedule(prev.token, null, pauseItem(true));
+        AndroPkgSystem.schedule(newTop.token, null, resumeItem(false));
+        for (int i = doomed.size() - 1; i >= 0; i--) destroy(doomed.get(i));
+    }
+
+    private void destroy(Record r) {
+        r.finishing = true;
+        AndroPkgSystem.schedule(r.token, null,
+                Hidden.callStatic(Hidden.cls("android.app.servertransaction.DestroyActivityItem"), "obtain", true, 0));
+    }
+
+    /** onNewIntent for an existing activity (paused around the call if it is resumed). */
+    private void deliverNewIntent(Record r, Intent intent) {
+        Log.i(TAG, "new intent for " + r.info.name);
+        Object referrer = Hidden.newInstance(Hidden.cls("com.android.internal.content.ReferrerIntent"),
+                intent, AndroPkgSystem.appInfo.packageName);
+        Object item = Hidden.callStatic(Hidden.cls("android.app.servertransaction.NewIntentItem"), "obtain",
+                Collections.singletonList(referrer), true);
+        AndroPkgSystem.schedule(r.token, item, resumeItem(false));
     }
 
     /** Finishes `token`'s activity, delivering its result; true if it existed. */

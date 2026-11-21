@@ -26,6 +26,9 @@ if [ ! -d "$fs" ]; then
   mkdir -p "$fs/system/usr/keychars"
   ln -sfn "$root/third_party/aosp/frameworks/base/data/keyboards/Virtual.kcm" "$fs/system/usr/keychars/Virtual.kcm"
 fi
+# CA roots for TLS (Conscrypt reads /apex/com.android.conscrypt/cacerts).
+[ -d "$pb/cacerts" ] || "$root/prebuilts/make-cacerts.sh" >/dev/null
+[ -e "$fs/apex/com.android.conscrypt/cacerts" ] || ln -sfn "$pb/cacerts" "$fs/apex/com.android.conscrypt/cacerts" 2>/dev/null || true
 
 # Boot classpath: ANDROPKG_BCP=full -> the whole Android 14 BOOTCLASSPATH (framework etc.);
 # default -> the ART module + ICU only (plain Java programs).

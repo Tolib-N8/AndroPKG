@@ -154,6 +154,19 @@ index 7f3b32e..007ee7a 100644
  #else
      LOG(FATAL) << "fast property access supported only on device";
      __builtin_unreachable();  // Silence warning
+diff --git a/core/jni/android_util_AssetManager.cpp b/core/jni/android_util_AssetManager.cpp
+index fc53a76..29e0ab0 100644
+--- a/core/jni/android_util_AssetManager.cpp
++++ b/core/jni/android_util_AssetManager.cpp
+@@ -244,7 +244,7 @@ static jstring NativeGetOverlayablesToString(JNIEnv* env, jclass /*clazz*/, jlon
+   return env->NewStringUTF(result.c_str());
+ }
+ 
+-#ifdef __ANDROID__ // Layoutlib does not support parcel
++#if defined(__ANDROID__) || defined(ANDROPKG) // Layoutlib does not support parcel
+ static jobject ReturnParcelFileDescriptor(JNIEnv* env, std::unique_ptr<Asset> asset,
+                                           jlongArray out_offsets) {
+   off64_t start_offset, length;
 diff --git a/core/jni/android_view_KeyCharacterMap.cpp b/core/jni/android_view_KeyCharacterMap.cpp
 index 8fa03cf..200661f 100644
 --- a/core/jni/android_view_KeyCharacterMap.cpp

@@ -53,6 +53,7 @@ public final class AndroPkgSystem {
         // WebView without a WebView package: local content as styled text (WKWebView bridge later).
         dev.andropkg.system.webview.TextWebView.install();
         parsePackage();
+        TouchDebug.installWhenReady();
         Log.i(TAG, "starting " + appInfo.packageName + " (" + apkPath + ")");
         // Never returns: the app's main looper takes over this thread.
         Hidden.callStatic(Hidden.cls("android.app.ActivityThread"), "main",
@@ -172,6 +173,7 @@ public final class AndroPkgSystem {
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
         services.put("notification", LocalService.create("android.app.INotificationManager", new NotificationManagerImpl()));
         services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
+        services.put("connectivity", LocalService.create("android.net.IConnectivityManager", new ConnectivityManagerImpl()));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
         activityClientController =
@@ -347,6 +349,21 @@ public final class AndroPkgSystem {
                 return -92;  // ActivityManager.START_CLASS_NOT_FOUND -> ActivityNotFoundException
             }
             return stack.start(info, intent, resultTo, resultWho, requestCode);
+        }
+
+        // startActivities(IApplicationThread caller, String callingPackage, String callingFeatureId,
+        //     Intent[] intents, String[] resolvedTypes, IBinder resultTo, Bundle options, int userId):
+        // e.g. TaskStackBuilder (parent stack + target). Started in order, bottom first.
+        public int startActivities(Object caller, String callingPackage, String callingFeatureId, Intent[] intents,
+                String[] resolvedTypes, IBinder resultTo, Bundle options, int userId) {
+            for (Intent intent : intents) {
+                if (ActivityStack.resolve(intent) == null) {
+                    Log.w(TAG, "no activity for " + intent);
+                    return -92;
+                }
+            }
+            for (Intent intent : intents) stack.start(ActivityStack.resolve(intent), intent, resultTo, null, -1);
+            return 0;
         }
     }
 
