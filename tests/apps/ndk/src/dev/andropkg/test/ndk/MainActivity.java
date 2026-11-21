@@ -19,6 +19,7 @@ public class MainActivity extends Activity {
     static native int threads(int n);
     static native String files(String dir);
     static native String cpp(int n);
+    static native String platform(android.content.res.AssetManager am, android.graphics.Bitmap bmp);
 
     /** Called from native code through CallIntMethod(obj, mid, int, long, float, String). */
     int combine(int a, long b, float c, String s) {
@@ -37,6 +38,8 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[ndk] callback: " + callback(this));
             Log.i(TAG, "[ndk] threads: " + threads(4));
             Log.i(TAG, "[ndk] files: " + files(getFilesDir().getPath()));
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(4, 3, android.graphics.Bitmap.Config.ARGB_8888);
+            Log.i(TAG, "[ndk] platform: " + platform(getAssets(), bmp) + " pixel=" + Integer.toHexString(bmp.getPixel(2, 1)));
             System.loadLibrary("ndkcpp");
             Log.i(TAG, "[ndk] cpp: " + cpp(5));
             for (int run = 1; run <= 2; run++) Log.i(TAG, "[ndk] exec" + run + ": " + exec());

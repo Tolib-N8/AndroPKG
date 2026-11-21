@@ -5,7 +5,8 @@
 //      (structures, flag values, errno, AAPCS64 varargs) on top of Darwin;
 //   2. a Darwin function on the direct list (ndk-libs/direct.txt): same name, identical ABI
 //      (pure functions: string, ctype, math, ...);
-//   3. otherwise, if some NDK system library exports it (ndk-libs/symbols/*.txt), the image
+//   3. a libandroid/libjnigraphics/libnativewindow function the runtime implements (by name);
+//   4. otherwise, if some NDK system library exports it (ndk-libs/symbols/*.txt), the image
 //      gets a trap stub that names the missing function when called.
 #include <dlfcn.h>
 #include <pthread.h>
@@ -62,6 +63,9 @@ void *ndk_system_impl(const char *name) {
     void *p = dlsym(self_handle(), buf);
     if (p) return p;
     if (in_sorted(kDirectSymbols, sizeof kDirectSymbols / sizeof *kDirectSymbols, name)) return dlsym(RTLD_DEFAULT, name);
+    // libandroid / libjnigraphics / libnativewindow: implemented by the runtime itself
+    // (runtime/android_runtime/ndk_android.cc, AOSP's asset_manager.cpp, ...), same C ABI.
+    if (in_sorted(kPlatformSymbols, sizeof kPlatformSymbols / sizeof *kPlatformSymbols, name)) return dlsym(RTLD_DEFAULT, name);
     return NULL;
 }
 

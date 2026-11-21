@@ -344,6 +344,26 @@ index 2a6dc7b..e361929 100644
  
  status_t CursorWindow::clear() {
      if (mReadOnly) {
+diff --git a/libs/hwui/apex/android_bitmap.cpp b/libs/hwui/apex/android_bitmap.cpp
+index c442a7b..b494f1f 100644
+--- a/libs/hwui/apex/android_bitmap.cpp
++++ b/libs/hwui/apex/android_bitmap.cpp
+@@ -307,10 +307,15 @@ int ABitmap_compress(const AndroidBitmapInfo* info, ADataSpace dataSpace, const
+ }
+ 
+ AHardwareBuffer* ABitmap_getHardwareBuffer(ABitmap* bitmapHandle) {
++#if defined(__ANDROID__)
+     Bitmap* bitmap = TypeCast::toBitmap(bitmapHandle);
+     AHardwareBuffer* buffer = bitmap->hardwareBuffer();
+     if (buffer) {
+         AHardwareBuffer_acquire(buffer);
+     }
+     return buffer;
++#else
++    (void)bitmapHandle;  // andropkg: no hardware bitmaps (software rendering)
++    return nullptr;
++#endif
+ }
 diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
 index 78db54a..bb95c44 100644
 --- a/libs/hwui/jni/graphics_jni_helpers.h

@@ -1,5 +1,9 @@
 // Plain C NDK library: what a typical JNI library does with bionic.
+#include <android/asset_manager_jni.h>
+#include <android/bitmap.h>
+#include <android/configuration.h>
 #include <android/log.h>
+#include <android/looper.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -77,6 +81,30 @@ static jstring files(JNIEnv* env, jclass cls, jstring jdir) {
     return (*env)->NewStringUTF(env, out);
 }
 
+// libandroid / libjnigraphics: assets, configuration, looper, bitmap pixels.
+static jstring platform(JNIEnv* env, jclass cls, jobject jam, jobject bitmap) {
+    AAssetManager* am = AAssetManager_fromJava(env, jam);
+    AAsset* a = AAssetManager_open(am, "hello.txt", AASSET_MODE_BUFFER);
+    char text[64] = "";
+    int n = a ? AAsset_read(a, text, sizeof text - 1) : -1;
+    if (a) AAsset_close(a);
+    AConfiguration* cfg = AConfiguration_new();
+    AConfiguration_fromAssetManager(cfg, am);
+    int density = AConfiguration_getDensity(cfg);
+    AConfiguration_delete(cfg);
+    AndroidBitmapInfo info;
+    AndroidBitmap_getInfo(env, bitmap, &info);
+    uint32_t* px;
+    int locked = AndroidBitmap_lockPixels(env, bitmap, (void**)&px);
+    for (uint32_t y = 0; locked == 0 && y < info.height; y++)
+        for (uint32_t x = 0; x < info.width; x++) px[y * (info.stride / 4) + x] = 0xFF0000FF;  // ABGR: red
+    if (locked == 0) AndroidBitmap_unlockPixels(env, bitmap);
+    char out[256];
+    snprintf(out, sizeof out, "asset=%s(%d) density>0=%d looper=%d bitmap=%ux%u fmt=%d", text, n, density > 0,
+             ALooper_forThread() != NULL, info.width, info.height, info.format);
+    return (*env)->NewStringUTF(env, out);
+}
+
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
@@ -86,8 +114,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         {"callback", "(Ldev/andropkg/test/ndk/MainActivity;)I", (void*)callback},
         {"threads", "(I)I", (void*)threads},
         {"files", "(Ljava/lang/String;)Ljava/lang/String;", (void*)files},
+        {"platform", "(Landroid/content/res/AssetManager;Landroid/graphics/Bitmap;)Ljava/lang/String;", (void*)platform},
     };
-    if ((*env)->RegisterNatives(env, c, methods, 4) != 0) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, c, methods, 5) != 0) return JNI_ERR;
     __android_log_print(ANDROID_LOG_INFO, TAG, "JNI_OnLoad: %d methods, pi=%.3f, %s", 4, 3.14159, "registered");
     return JNI_VERSION_1_6;
 }

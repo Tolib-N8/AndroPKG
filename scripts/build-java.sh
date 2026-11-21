@@ -40,7 +40,7 @@ for app in "$root"/tests/apps/*/; do
       kind="-shared -Wl,-soname,lib$lname.so"
       [ -f "$lib/EXECUTABLE" ] && kind="-pie"  # an executable the app runs (shipped as lib<x>.so)
       "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 \
-        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) -llog
+        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) -llog -landroid -ljnigraphics
       [ -n "$cxx" ] && cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$w/lib/arm64-v8a/"
     done
     (cd "$w" && zip -q -r "$root/build/apps/$name.apk" lib)
