@@ -387,15 +387,24 @@ public final class AndroPkgSystem {
             return stack.finish(token, resultCode, data);
         }
 
+        // navigateUpTo(IBinder token, Intent destIntent, String resolvedType, int resultCode, Intent resultData)
+        public boolean navigateUpTo(IBinder token, Intent dest, String resolvedType, int resultCode, Intent data) {
+            return stack.navigateUpTo(token, dest, resultCode, data);
+        }
+
         public int getTaskForActivity(IBinder token, boolean onlyRoot) {
             return !onlyRoot || stack.isRoot(token) ? 1 /* the app's one task */ : -1;
         }
 
-        // onBackPressed(IBinder token, IRequestFinishCallback callback): BACK on a task's root
-        // activity. Android 12+ moves the task back instead of finishing it; on iOS the app
-        // simply stays. Tests: -Dandropkg.back.finishesRoot=1 finishes it (pre-12 behavior).
+        // onBackPressed(IBinder token, IRequestFinishCallback callback): Activity.onBackPressed
+        // asks the system (Android 13+), for every activity. Above the root: finish it (via the
+        // callback, i.e. finishAfterTransition). On the task's root, Android 12+ moves the task
+        // back instead of finishing it; on iOS the app simply stays.
+        // Tests: -Dandropkg.back.finishesRoot=1 finishes the root too (pre-12 behavior).
         public void onBackPressed(IBinder token, Object callback) {
-            if (System.getProperty("andropkg.back.finishesRoot") != null) Hidden.call(callback, "requestFinish");
+            if (!stack.isRoot(token) || System.getProperty("andropkg.back.finishesRoot") != null) {
+                Hidden.call(callback, "requestFinish");
+            }
         }
 
         public void activityDestroyed(IBinder token) {

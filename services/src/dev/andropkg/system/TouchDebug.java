@@ -64,6 +64,12 @@ final class TouchDebug {
             w.setCallback((Window.Callback) Proxy.newProxyInstance(Window.Callback.class.getClassLoader(),
                     new Class<?>[] {Window.Callback.class}, (proxy, m, args) -> {
                         Object r = m.invoke(cb, args);
+                        if (m.getName().equals("dispatchKeyEvent")) {
+                            Log.i(TAG, activity.getLocalClassName() + " key " + args[0] + " handled=" + r);
+                        }
+                        if (m.getName().equals("onMenuItemSelected")) {
+                            Log.i(TAG, activity.getLocalClassName() + " menu item " + args[1] + " handled=" + r);
+                        }
                         if (m.getName().equals("dispatchTouchEvent")) {
                             MotionEvent e = (MotionEvent) args[0];
                             if (e.getActionMasked() != MotionEvent.ACTION_MOVE) {

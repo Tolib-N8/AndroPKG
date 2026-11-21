@@ -219,6 +219,37 @@ final class ActivityStack {
         return true;
     }
 
+    /**
+     * Up navigation (Activity.navigateUpTo): finishes `token`'s activity and everything above
+     * the nearest instance of `dest` below it; that parent gets onNewIntent if it is single-top
+     * (or the intent says CLEAR_TOP), and the result. Without such a parent only `token` goes.
+     */
+    synchronized boolean navigateUpTo(IBinder token, Intent dest, int resultCode, Intent resultData) {
+        Record r = find(token);
+        if (r == null) return false;
+        int start = stack.indexOf(r);
+        int parentIndex = start - 1;
+        Record parent = null;
+        ComponentName c = dest != null ? dest.getComponent() : null;
+        if (c != null) {
+            for (int i = start - 1; i >= 0; i--) {
+                if (stack.get(i).info.name.equals(c.getClassName())) {
+                    parent = stack.get(i);
+                    parentIndex = i;
+                    break;
+                }
+            }
+        }
+        List<Record> doomed = new ArrayList<>(stack.subList(parentIndex + 1, stack.size()));
+        Log.i(TAG, "navigate up from " + r.info.name + (parent != null ? " to " + parent.info.name : ""));
+        if (parent == null) return finish(token, resultCode, resultData);
+        clear(doomed, parent);
+        boolean singleTop = parent.info.launchMode != ActivityInfo.LAUNCH_MULTIPLE
+                || (dest.getFlags() & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0;
+        if (singleTop) deliverNewIntent(parent, dest);
+        return true;
+    }
+
     synchronized void destroyed(IBinder token) {
         Record r = find(token);
         if (r != null) stack.remove(r);
