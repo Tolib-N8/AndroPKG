@@ -123,6 +123,8 @@ public final class AndroPkgSystem {
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
         if (appInfo.metaData == null) appInfo.metaData = (android.os.Bundle) Hidden.getField(parsedPackage, "mAppMetaData");
         new File(dataDir).mkdirs();
+        // keystore2's key blobs: next to the app's data, outside it (as /data/misc/keystore).
+        AndroidKeyStore.install(new File(dataDir + "_keystore"));
 
         packageInfo = new PackageInfo();
         packageInfo.packageName = appInfo.packageName;

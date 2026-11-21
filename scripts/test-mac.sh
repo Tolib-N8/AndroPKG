@@ -50,7 +50,7 @@ ANDROPKG_DEBUG_IME=1 ANDROPKG_TEST_TAP=400,680 ANDROPKG_TEST_TYPE="typed" \
   run ime "ime: keyboard shown" $(apk widgets)
 # SQLite (CursorWindow), SharedPreferences, files, HTTP over loopback (okhttp + sockets).
 run storage "\[storage\] done" $(apk storage)
-for want in "sqlite 1 rows: alpha;гамма;" "prefs name=andropkg" "http 200 body=hello"; do
+for want in "sqlite 1 rows: alpha;гамма;" "prefs name=andropkg" "http 200 body=hello" "roundtrip=true ec=true"; do
   grep -q "$want" "$log/storage.log" || fail "storage: $want" storage
 done
 echo "ok   storage checks"

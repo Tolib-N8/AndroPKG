@@ -19,6 +19,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 
 /** M3 test: SQLite, SharedPreferences, files, and HTTP over loopback (okhttp + sockets). */
 public class MainActivity extends Activity {
@@ -41,6 +42,7 @@ public class MainActivity extends Activity {
             sqlite();
             prefs();
             files();
+            keystore();
             new Thread(MainActivity::http).start();
         } catch (Exception e) {
             log("FAILED " + e);
@@ -77,6 +79,50 @@ public class MainActivity extends Activity {
             out.write("файл ok".getBytes(StandardCharsets.UTF_8));
         }
         log("file " + f.length() + " bytes, cache dir exists=" + getCacheDir().isDirectory());
+    }
+
+    /** AndroidKeyStore: an AES key that survives restarts (apps encrypt credentials with it). */
+    void keystore() {
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            boolean existed = ks.containsAlias("test-key");
+            if (!existed) {
+                javax.crypto.KeyGenerator g = javax.crypto.KeyGenerator.getInstance("AES", "AndroidKeyStore");
+                g.init(new android.security.keystore.KeyGenParameterSpec.Builder("test-key",
+                        android.security.keystore.KeyProperties.PURPOSE_ENCRYPT
+                                | android.security.keystore.KeyProperties.PURPOSE_DECRYPT)
+                        .setBlockModes("GCM").setEncryptionPaddings("NoPadding").build());
+                g.generateKey();
+            }
+            javax.crypto.SecretKey key = (javax.crypto.SecretKey) ks.getKey("test-key", null);
+            javax.crypto.Cipher c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(javax.crypto.Cipher.ENCRYPT_MODE, key);
+            byte[] iv = c.getIV();
+            byte[] ct = c.doFinal("secret".getBytes(StandardCharsets.UTF_8));
+            javax.crypto.Cipher d = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            d.init(javax.crypto.Cipher.DECRYPT_MODE, key, new javax.crypto.spec.GCMParameterSpec(128, iv));
+            String back = new String(d.doFinal(ct), StandardCharsets.UTF_8);
+            if (!ks.containsAlias("test-ec")) {
+                java.security.KeyPairGenerator kg = java.security.KeyPairGenerator.getInstance("EC", "AndroidKeyStore");
+                kg.initialize(new android.security.keystore.KeyGenParameterSpec.Builder("test-ec",
+                        android.security.keystore.KeyProperties.PURPOSE_SIGN).setDigests("SHA-256").build());
+                kg.generateKeyPair();
+            }
+            KeyStore.PrivateKeyEntry pe = (KeyStore.PrivateKeyEntry) ks.getEntry("test-ec", null);
+            java.security.Signature sg = java.security.Signature.getInstance("SHA256withECDSA");
+            sg.initSign(pe.getPrivateKey());
+            sg.update(ct);
+            byte[] sig = sg.sign();
+            sg.initVerify(pe.getCertificate());
+            sg.update(ct);
+            boolean verified = sg.verify(sig);
+            log("keystore existed=" + existed + " roundtrip=" + back.equals("secret") + " ec=" + verified
+                    + " aliases=" + java.util.Collections.list(ks.aliases()).size());
+        } catch (Throwable e) {
+            log("keystore FAILED " + e);
+            e.printStackTrace();
+        }
     }
 
     static void http() {
