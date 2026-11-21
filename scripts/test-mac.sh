@@ -76,5 +76,14 @@ for want in "network internet=true" "network callback available" "channel Channe
   grep -q "\[platform\] $want" "$log/platform.log" || fail "platform: $want" platform
 done
 echo "ok   platform checks"
+# Sound: MediaPlayer (raw resource, file + prepareAsync + seek), streaming/static AudioTrack, focus.
+ANDROPKG_TEST_SCRIPT="wait 500; mediacmd pause" run media "\[media\] done" $(apk media)
+for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file prepared" "file seek done at 300" \
+    "retriever duration=600 mime=audio/wav audio=yes" \
+    "file completed" "track played true timestamp=true" "static marker reached" \
+    "session active controller=Tone" "session onPause"; do
+  grep -q "\[media\] $want" "$log/media.log" || fail "media: $want" media
+done
+echo "ok   media checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

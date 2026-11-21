@@ -1,6 +1,10 @@
 // andropkg: framework natives whose subsystem doesn't exist in a single iOS process. Each
 // answers the way a device without that feature would.
+#include <errno.h>
+#include <fcntl.h>
 #include <jni.h>
+#include <sys/event.h>
+#include <unistd.h>
 
 #include "jni_util.h"
 
@@ -41,6 +45,73 @@ const JNINativeMethod kActivityThread[] = {
     M("nInitZygoteChildHeapProfiling", "()V", ge_V),
 };
 
+// android.os.FileObserver: inotify on Linux, kqueue vnode events here. kqueue reports changes
+// to a watched file or directory but not which entry changed, so events carry a null path.
+int fo_init(JNIEnv*, jobject) { return kqueue(); }
+
+void fo_observe(JNIEnv* env, jobject thiz, jint kq) {
+  jclass c = env->GetObjectClass(thiz);
+  jmethodID onEvent = env->GetMethodID(c, "onEvent", "(IIILjava/lang/String;)V");
+  env->DeleteLocalRef(c);
+  struct kevent ev[16];
+  for (;;) {
+    int n = kevent(kq, nullptr, 0, ev, 16, nullptr);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      return;
+    }
+    for (int i = 0; i < n; i++) {
+      unsigned f = ev[i].fflags;
+      int mask = 0;
+      if (f & (NOTE_WRITE | NOTE_EXTEND)) mask |= 0x2;  // MODIFY
+      if (f & NOTE_ATTRIB) mask |= 0x4;                 // ATTRIB
+      if (f & NOTE_DELETE) mask |= 0x400;               // DELETE_SELF
+      if (f & NOTE_RENAME) mask |= 0x800;               // MOVE_SELF
+      if (mask == 0) continue;
+      env->CallVoidMethod(thiz, onEvent, static_cast<jint>(ev[i].ident), mask, 0, nullptr);
+      if (env->ExceptionCheck()) env->ExceptionClear();
+    }
+  }
+}
+
+void fo_startWatching(JNIEnv* env, jobject, jint kq, jobjectArray paths, jint, jintArray wfds) {
+  for (jsize i = 0, n = env->GetArrayLength(paths); i < n; i++) {
+    jint wfd = -1;
+    if (auto js = static_cast<jstring>(env->GetObjectArrayElement(paths, i))) {
+      const char* p = env->GetStringUTFChars(js, nullptr);
+      wfd = open(p, O_EVTONLY | O_CLOEXEC);
+      env->ReleaseStringUTFChars(js, p);
+      env->DeleteLocalRef(js);
+    }
+    if (wfd >= 0) {
+      struct kevent ev;
+      EV_SET(&ev, wfd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
+             NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE | NOTE_RENAME, 0, nullptr);
+      if (kevent(kq, &ev, 1, nullptr, 0, nullptr) != 0) {
+        close(wfd);
+        wfd = -1;
+      }
+    }
+    env->SetIntArrayRegion(wfds, i, 1, &wfd);
+  }
+}
+
+void fo_stopWatching(JNIEnv* env, jobject, jint, jintArray wfds) {
+  jsize n = env->GetArrayLength(wfds);
+  for (jsize i = 0; i < n; i++) {
+    jint wfd;
+    env->GetIntArrayRegion(wfds, i, 1, &wfd);
+    if (wfd >= 0) close(wfd);  // closing the fd removes its kevent
+  }
+}
+
+const JNINativeMethod kFileObserverThread[] = {
+    M("init", "()I", fo_init),
+    M("observe", "(I)V", fo_observe),
+    M("startWatching", "(I[Ljava/lang/String;I[I)V", fo_startWatching),
+    M("stopWatching", "(I[I)V", fo_stopWatching),
+};
+
 }  // namespace
 
 namespace android {
@@ -48,6 +119,8 @@ int register_andropkg_framework_stubs(JNIEnv* env) {
   andropkg::RegisterIfDeclared(env, "android/os/GraphicsEnvironment", kGraphicsEnvironment,
                                N(kGraphicsEnvironment));
   andropkg::RegisterIfDeclared(env, "android/app/ActivityThread", kActivityThread, N(kActivityThread));
+  andropkg::RegisterIfDeclared(env, "android/os/FileObserver$ObserverThread", kFileObserverThread,
+                               N(kFileObserverThread));
   return 0;
 }
 }  // namespace android

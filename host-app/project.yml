@@ -21,6 +21,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(ANDROPKG_BUNDLE_PREFIX).spikes
         PRODUCT_NAME: AndroPkgRunner
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Info-extra.plist
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: AndroPkg
@@ -65,6 +66,10 @@ targets:
         codeSign: true
         link: false
       - framework: ../build/runtime-ios/libstats_jni.dylib
+        embed: true
+        codeSign: true
+        link: false
+      - framework: ../build/runtime-ios/libmedia_jni.dylib
         embed: true
         codeSign: true
         link: false

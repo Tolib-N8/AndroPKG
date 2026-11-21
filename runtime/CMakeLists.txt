@@ -6,7 +6,7 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   # os_sync_wait_on_address (futex emulation) needs iOS 17.4 / macOS 14.4.
   set(CMAKE_OSX_DEPLOYMENT_TARGET 14.4 CACHE STRING "")
 endif()
-project(andropkg_runtime C CXX ASM)
+project(andropkg_runtime C CXX ASM OBJCXX)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(ANDROPKG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -200,7 +200,18 @@ add_custom_target(input_labels DEPENDS ${_labels})
 add_dependencies(libinput input_labels)
 target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/input-labels)
 
-andropkg_jni_dylib(libandroid_runtime libandroid_runtime libandroidfw libincfs-utils libutils libcutils
+# Audio and media on Core Audio / AVFoundation (runtime/media, Objective-C++ with ARC; no AOSP
+# headers, so the Linux compat include setup does not apply to them).
+add_library(andropkg_audio OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/audio_track.mm)
+add_library(andropkg_media_player OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/media_player.mm)
+foreach(_t andropkg_audio andropkg_media_player)
+  target_compile_options(${_t} PRIVATE -fobjc-arc -std=gnu++17)
+  target_include_directories(${_t} PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+endforeach()
+andropkg_jni_dylib(libmedia_jni andropkg_media_player)
+target_link_libraries(libmedia_jni_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework CoreMedia")
+
+andropkg_jni_dylib(libandroid_runtime andropkg_audio libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
     libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput
     libsqlite libsqlite3_android)
@@ -211,14 +222,24 @@ else()
   set(_uti_fw "-framework CoreServices")
 endif()
 target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundation" "-framework CoreGraphics"
-                      "-framework CoreText" "-framework ImageIO" ${_uti_fw})
+                      "-framework CoreText" "-framework ImageIO" ${_uti_fw}
+                      "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation"
+                      "-framework MediaPlayer")
+if(ANDROPKG_PLATFORM STREQUAL "ios")
+  target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit")
+else()
+  target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework AppKit")
+endif()
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")
-  add_executable(dalvikvm ${ANDROPKG_AOSP}/art/dalvikvm/dalvikvm.cc)
+  add_executable(dalvikvm ${ANDROPKG_AOSP}/art/dalvikvm/dalvikvm.cc ${CMAKE_CURRENT_SOURCE_DIR}/macos/dalvikvm_runloop.cc)
+  # dalvikvm.cc's main() becomes the VM thread's entry; ours keeps the main run loop going.
+  set_source_files_properties(${ANDROPKG_AOSP}/art/dalvikvm/dalvikvm.cc PROPERTIES
+                              COMPILE_DEFINITIONS "main=andropkg_dalvikvm_main_cxx")
   target_include_directories(dalvikvm PRIVATE ${ANDROPKG_INCLUDES_libart} ${ANDROPKG_AOSP}/libnativehelper/include_platform ${ANDROPKG_AOSP}/libnativehelper/header_only_include ${ANDROPKG_AOSP}/libnativehelper/include)
   target_compile_options(dalvikvm PRIVATE -std=gnu++17 -fno-rtti ${ANDROPKG_CXXFLAGS_libart})
-  target_link_libraries(dalvikvm PRIVATE andropkg_art)
+  target_link_libraries(dalvikvm PRIVATE andropkg_art "-framework CoreFoundation")
   set_target_properties(dalvikvm PROPERTIES BUILD_RPATH "@loader_path")
-  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib)
+  add_dependencies(dalvikvm libjavacore_dylib libopenjdk_dylib libicu_jni_dylib libmedia_jni_dylib)
 endif()

@@ -58,7 +58,16 @@ final class LocalService {
                         if (name.equals("toString")) return "andropkg:" + shortName;
                     }
                     Method m = find(impl.getClass(), name, arity);
-                    if (m != null) return Hidden.invoke(m, impl, args == null ? new Object[0] : args);
+                    if (m != null) {
+                        // Checked exceptions the AIDL method declares (FileNotFoundException from
+                        // IContentProvider.openFile, ...) reach the caller as themselves.
+                        try {
+                            m.setAccessible(true);
+                            return m.invoke(impl, args == null ? new Object[0] : args);
+                        } catch (java.lang.reflect.InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    }
                     // An implementation can take any signature of a method as (Object[] args).
                     Method any = findVarargs(impl.getClass(), name);
                     if (any != null) return Hidden.invoke(any, impl, (Object) (args == null ? new Object[0] : args));

@@ -721,8 +721,11 @@ void wm_removeWindow(JNIEnv*, jclass, jint id) {
 }
 
 std::atomic<bool> gWmNativesRegistered{false};
+extern "C" void andropkg_media_bind_services(JNIEnv* env);  // runtime/media/audio_track.mm
+
 void EnsureWmNatives(JNIEnv* env) {
   if (gWmNativesRegistered.load()) return;
+  andropkg_media_bind_services(env);  // MediaSession -> host Now Playing
   jclass c = LoadServicesClass(env, "dev.andropkg.system.WindowManagerImpl");
   if (c == nullptr) return;  // not running under andropkg's services
   static const JNINativeMethod kMethods[] = {
@@ -853,7 +856,8 @@ void SetImeListener(void (*listener)(int visible)) { gImeListener = listener; }
 //   ANDROPKG_TEST_BACK=1, ANDROPKG_TEST_BACKGROUND=1 — one action each;
 //   ANDROPKG_TEST_SCRIPT="cmd; cmd; ..." — a scenario, with commands
 //     wait MS | tap X,Y | swipe X1,Y1,X2,Y2 | type TEXT | del | enter | key CODE | back |
-//     accel X,Y,Z | shake (accelerometer samples) | bg | fg |
+//     accel X,Y,Z | shake (accelerometer samples) | mediacmd play|pause|toggle|next|previous|seek MS |
+//     bg | fg |
 //     shot PATH (the screen as shown now, as PNG) | log TEXT
 
 void Tap(float x, float y) {
@@ -873,6 +877,7 @@ void Swipe(float x, float y, float x2, float y2) {
 }
 
 extern "C" void andropkg_sensor_push(int type, const float* values, int count);
+extern "C" void andropkg_media_command(const char* cmd, long long arg);
 
 // Accelerometer samples at 50 Hz for `ms`; with `shake`, the x axis swings +-2.5 g.
 void PushAccel(float x, float y, float z, int ms, bool shake) {
@@ -917,6 +922,10 @@ void RunTestScript(std::string script) {
       InjectKey(1, code);
     } else if (op == "accel" && sscanf(arg.c_str(), "%f,%f,%f", &x, &y, &x2) == 3) {
       PushAccel(x, y, x2, 400, false);
+    } else if (op == "mediacmd") {
+      size_t sp2 = arg.find(' ');
+      std::string c = arg.substr(0, sp2);
+      andropkg_media_command(c.c_str(), sp2 == std::string::npos ? 0 : atoll(arg.c_str() + sp2 + 1));
     } else if (op == "shake") {
       PushAccel(0, 0, 9.81f, 800, true);
     } else if (op == "bg" || op == "fg") {

@@ -40,6 +40,7 @@ public final class AndroPkgSystem {
     static Object appThread;         // android.app.IApplicationThread
     static IInterface activityClientController;
     static final ActivityStack stack = new ActivityStack();
+    static final MediaSessionImpl mediaSessions = new MediaSessionImpl();
 
     public static void main(String[] args) throws Exception {
         apkPath = args[0];
@@ -47,6 +48,11 @@ public final class AndroPkgSystem {
         launchActivity = args.length > 2 ? args[2] : null;
         startWatchdog(Thread.currentThread());
         installServices();
+        // As RuntimeInit.commonInit: the full MIME table (framework's mime.types), not libcore's
+        // short built-in list (which lacks e.g. m4a, flac, webp).
+        Class<?> factory = Hidden.cls("android.content.type.DefaultMimeMapFactory");
+        Hidden.callStatic(Hidden.cls("libcore.content.type.MimeMap"), "setDefaultSupplier",
+                (java.util.function.Supplier<Object>) () -> Hidden.callStatic(factory, "create"));
         // Software rendering: windows draw through Surface.lockCanvas() into CPU buffers until
         // hwui's GPU pipeline (RenderThread over Metal) is ported.
         Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
@@ -174,6 +180,8 @@ public final class AndroPkgSystem {
         services.put("notification", LocalService.create("android.app.INotificationManager", new NotificationManagerImpl()));
         services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
         services.put("connectivity", LocalService.create("android.net.IConnectivityManager", new ConnectivityManagerImpl()));
+        services.put("audio", LocalService.create("android.media.IAudioService", new AudioServiceImpl()));
+        services.put("media_session", LocalService.create("android.media.session.ISessionManager", mediaSessions));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
         activityClientController =
@@ -211,6 +219,8 @@ public final class AndroPkgSystem {
     static final class ActivityManagerImpl {
         private final SettingsProvider settings = new SettingsProvider();
         private Object settingsHolder;
+        private final MediaStoreProvider mediaStore = new MediaStoreProvider();
+        private Object mediaStoreHolder;
 
         // getContentProvider(IApplicationThread, String callingPackage, String name, int userId,
         //                    boolean stable): only platform providers live outside the app.
@@ -219,6 +229,10 @@ public final class AndroPkgSystem {
             if (SettingsProvider.AUTHORITY.equals(name)) {
                 if (settingsHolder == null) settingsHolder = settings.holder();
                 return settingsHolder;
+            }
+            if (MediaStoreProvider.AUTHORITY.equals(name)) {
+                if (mediaStoreHolder == null) mediaStoreHolder = mediaStore.holder();
+                return mediaStoreHolder;
             }
             Log.w(TAG, "content provider \"" + name + "\" not provided");
             return null;

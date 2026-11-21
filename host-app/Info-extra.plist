@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the generated Info.plist: keys the INFOPLIST_KEY_* settings cannot express. -->
+<plist version="1.0">
+<dict>
+	<!-- Android music apps keep playing from a service while the app is in the background. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!-- MediaPlayer streams plain-http radio and podcasts (AVFoundation is subject to ATS). -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInMedia</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
