@@ -428,7 +428,9 @@ class PcmBackend {
 @end
 
 namespace {
+void EnsurePlayerIds(JNIEnv* env);
 AndropkgPlayer* Get(JNIEnv* env, jobject thiz) {
+  EnsurePlayerIds(env);
   return (__bridge AndropkgPlayer*)reinterpret_cast<void*>(env->GetLongField(thiz, gNativeContext));
 }
 
@@ -444,7 +446,17 @@ AndropkgPlayer* GetOrThrow(JNIEnv* env, jobject thiz) {
 
 void mp_init(JNIEnv*, jclass) {}
 
+// Field/method IDs are looked up on first use, not in JNI_OnLoad: GetFieldID/GetMethodID
+// initialize the class, and MediaPlayer's static initializer loads this very library (another
+// media class may be the one loading it).
+void EnsurePlayerIds(JNIEnv* env) {
+  if (gNativeContext) return;
+  gNativeContext = env->GetFieldID(gMediaPlayerClass, "mNativeContext", "J");
+  gPostEvent = env->GetStaticMethodID(gMediaPlayerClass, "postEventFromNative", "(Ljava/lang/Object;IIILjava/lang/Object;)V");
+}
+
 void mp_setup(JNIEnv* env, jobject thiz, jobject weak, jobject /*attribution*/, jint /*session*/) {
+  EnsurePlayerIds(env);
   AndropkgPlayer* p = [[AndropkgPlayer alloc] init];
   p->weak_ = env->NewGlobalRef(weak);
   env->SetLongField(thiz, gNativeContext, reinterpret_cast<jlong>((__bridge_retained void*)p));
@@ -751,13 +763,16 @@ const JNINativeMethod kMediaPlayer[] = {
 @end
 
 namespace {
-jfieldID gRetrieverContext;  // MediaMetadataRetriever.mNativeContext
+jfieldID gRetrieverContext;  // MediaMetadataRetriever.mNativeContext (looked up in native_setup)
+jclass gRetrieverClass;
 
 AndropkgRetriever* GetRetriever(JNIEnv* env, jobject thiz) {
+  if (!gRetrieverContext) gRetrieverContext = env->GetFieldID(gRetrieverClass, "mNativeContext", "J");
   return (__bridge AndropkgRetriever*)reinterpret_cast<void*>(env->GetLongField(thiz, gRetrieverContext));
 }
 
 void mr_setup(JNIEnv* env, jobject thiz) {
+  if (!gRetrieverContext) gRetrieverContext = env->GetFieldID(gRetrieverClass, "mNativeContext", "J");
   AndropkgRetriever* r = [[AndropkgRetriever alloc] init];
   env->SetLongField(thiz, gRetrieverContext, reinterpret_cast<jlong>((__bridge_retained void*)r));
 }
@@ -980,8 +995,6 @@ extern "C" __attribute__((visibility("default"))) jint JNI_OnLoad(JavaVM* vm, vo
     return JNI_VERSION_1_6;
   }
   gMediaPlayerClass = static_cast<jclass>(env->NewGlobalRef(mp));
-  gNativeContext = env->GetFieldID(mp, "mNativeContext", "J");
-  gPostEvent = env->GetStaticMethodID(mp, "postEventFromNative", "(Ljava/lang/Object;IIILjava/lang/Object;)V");
   env->DeleteLocalRef(mp);
   // Everything else libmedia_jni would register (recorder, codecs, extractor, ...) answers
   // like a device without that component until it is implemented.
@@ -996,7 +1009,7 @@ extern "C" __attribute__((visibility("default"))) jint JNI_OnLoad(JavaVM* vm, vo
   }
   andropkg_media::RegisterDeclared(env, "android/media/MediaPlayer", kMediaPlayer, sizeof kMediaPlayer / sizeof kMediaPlayer[0]);
   if (jclass mr = env->FindClass("android/media/MediaMetadataRetriever")) {
-    gRetrieverContext = env->GetFieldID(mr, "mNativeContext", "J");
+    gRetrieverClass = static_cast<jclass>(env->NewGlobalRef(mr));
     env->DeleteLocalRef(mr);
     andropkg_media::RegisterDeclared(env, "android/media/MediaMetadataRetriever", kRetriever,
                                      sizeof kRetriever / sizeof kRetriever[0]);
