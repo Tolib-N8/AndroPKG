@@ -68,6 +68,10 @@ bool ndk_is_android_pc(uintptr_t pc) {
 /// For ART's generic JNI trampoline: native code in an Android image takes its stack arguments
 /// in AAPCS64 8-byte slots (Darwin packs them).
 NDK_EXPORT bool andropkg_ndk_is_android_code(const void *code) { return ndk_is_android_pc((uintptr_t)code); }
+extern void andropkg_art_set_android_code_check(bool (*fn)(const void *));
+__attribute__((constructor)) static void register_android_code_check(void) {
+    andropkg_art_set_android_code_check(andropkg_ndk_is_android_code);
+}
 
 static const char *base_name(const char *p) {
     const char *s = strrchr(p, '/');

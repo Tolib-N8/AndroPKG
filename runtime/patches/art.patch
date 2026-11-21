@@ -551,15 +551,14 @@ index 7b3d849..fa865cf 100644
      case gc::kAllocatorTypeDlMalloc: {
        SetQuickAllocEntryPoints_dlmalloc(qpoints, entry_points_instrumented);
 diff --git a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
-index 7e96f29..23225fc 100644
+index 7e96f29..da2d4de 100644
 --- a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
 +++ b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
-@@ -58,8 +58,48 @@
+@@ -58,8 +58,47 @@
  #include "var_handles.h"
  #include "well_known_classes.h"
  
 +#if defined(__APPLE__)
-+#include <dlfcn.h>
 +#include <atomic>
 +#include "jni/java_vm_ext.h"
 +#include "jni/jni_env_ext.h"
@@ -583,19 +582,19 @@ index 7e96f29..23225fc 100644
 +// andropkg: a native method's stack arguments are laid out for its ABI — packed (Apple arm64)
 +// for Darwin code, 8-byte slots (AAPCS64) for code in an Android image (libandropkg_ndk).
 +static thread_local bool gAndropkgAapcsJniCall = false;
++// Set by libandropkg_ndk when it loads (only it loads Android code): until then, no native method
++// is Android code and the check costs nothing.
++static std::atomic<bool (*)(const void*)> gAndropkgIsAndroidCode{nullptr};
 +static bool AndropkgIsAndroidCode(const void* code) {
-+  static std::atomic<bool (*)(const void*)> is_android{nullptr};
-+  bool (*fn)(const void*) = is_android.load(std::memory_order_acquire);
-+  if (fn == nullptr) {
-+    // Not loaded yet: no Android code exists (libandropkg_ndk loads Android ELF libraries).
-+    void* h = dlopen("@rpath/libandropkg_ndk.dylib", RTLD_NOW | RTLD_NOLOAD);
-+    if (h == nullptr) return false;
-+    fn = reinterpret_cast<bool (*)(const void*)>(dlsym(h, "andropkg_ndk_is_android_code"));
-+    if (fn == nullptr) return false;
-+    is_android.store(fn, std::memory_order_release);
-+  }
-+  return fn(code);
++  bool (*fn)(const void*) = gAndropkgIsAndroidCode.load(std::memory_order_acquire);
++  return fn != nullptr && fn(code);
 +}
++}  // namespace art
++extern "C" __attribute__((visibility("default"))) void andropkg_art_set_android_code_check(
++    bool (*fn)(const void*)) {
++  art::gAndropkgIsAndroidCode.store(fn, std::memory_order_release);
++}
++namespace art {
 +#else
 +#define ANDROPKG_DECODE_QUICK_REF(x) do {} while (false)
 +#endif
@@ -603,7 +602,7 @@ index 7e96f29..23225fc 100644
  extern "C" NO_RETURN void artDeoptimizeFromCompiledCode(DeoptimizationKind kind, Thread* self);
  extern "C" NO_RETURN void artDeoptimize(Thread* self, bool skip_method_exit_callbacks);
  
-@@ -809,6 +849,7 @@ void BuildQuickArgumentVisitor::Visit() {
+@@ -809,6 +848,7 @@ void BuildQuickArgumentVisitor::Visit() {
  extern "C" uint64_t artQuickProxyInvokeHandler(
      ArtMethod* proxy_method, mirror::Object* receiver, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -611,7 +610,7 @@ index 7e96f29..23225fc 100644
    DCHECK(proxy_method->IsProxyMethod()) << proxy_method->PrettyMethod();
    DCHECK(receiver->GetClass()->IsProxyClass()) << proxy_method->PrettyMethod();
    // Ensure we don't get thread suspension until the object arguments are safely in jobjects.
-@@ -1118,6 +1159,7 @@ static void DumpB74410240DebugData(ArtMethod** sp) REQUIRES_SHARED(Locks::mutato
+@@ -1118,6 +1158,7 @@ static void DumpB74410240DebugData(ArtMethod** sp) REQUIRES_SHARED(Locks::mutato
  extern "C" const void* artQuickResolutionTrampoline(
      ArtMethod* called, mirror::Object* receiver, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -619,7 +618,7 @@ index 7e96f29..23225fc 100644
    // The resolution trampoline stashes the resolved method into the callee-save frame to transport
    // it. Thus, when exiting, the stack cannot be verified (as the resolved method most likely
    // does not have the same stack layout as the callee-save method).
-@@ -1436,7 +1478,8 @@ template<class T> class BuildNativeCallFrameStateMachine {
+@@ -1436,7 +1477,8 @@ template<class T> class BuildNativeCallFrameStateMachine {
      return gpr_index_ > 0;
    }
  
@@ -629,7 +628,7 @@ index 7e96f29..23225fc 100644
      if (HaveIntGpr()) {
        gpr_index_--;
        if (kMultiGPRegistersWidened) {
-@@ -1449,9 +1492,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
+@@ -1449,9 +1491,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
        stack_entries_++;
        if (kMultiGPRegistersWidened) {
          DCHECK_EQ(sizeof(uintptr_t), sizeof(int64_t));
@@ -641,7 +640,7 @@ index 7e96f29..23225fc 100644
        }
        gpr_index_ = 0;
      }
-@@ -1527,7 +1570,7 @@ template<class T> class BuildNativeCallFrameStateMachine {
+@@ -1527,7 +1569,7 @@ template<class T> class BuildNativeCallFrameStateMachine {
          }
        } else {
          stack_entries_++;
@@ -650,7 +649,7 @@ index 7e96f29..23225fc 100644
          fpr_index_ = 0;
        }
      }
-@@ -1579,6 +1622,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
+@@ -1579,6 +1621,9 @@ template<class T> class BuildNativeCallFrameStateMachine {
    }
  
    uint32_t GetStackEntries() const {
@@ -660,7 +659,7 @@ index 7e96f29..23225fc 100644
      return stack_entries_;
    }
  
-@@ -1600,10 +1646,24 @@ template<class T> class BuildNativeCallFrameStateMachine {
+@@ -1600,10 +1645,24 @@ template<class T> class BuildNativeCallFrameStateMachine {
    void PushFpr8(uint64_t val) {
      delegate_->PushFpr8(val);
    }
@@ -686,7 +685,7 @@ index 7e96f29..23225fc 100644
    uint32_t gpr_index_;      // Number of free GPRs
    uint32_t fpr_index_;      // Number of free FPRs
    uint32_t stack_entries_;  // Stack entries are in multiples of 32b, as floats are usually not
-@@ -1651,8 +1711,12 @@ class ComputeNativeCallFrameSize {
+@@ -1651,8 +1710,12 @@ class ComputeNativeCallFrameSize {
            break;
          case Primitive::kPrimBoolean:
          case Primitive::kPrimByte:
@@ -699,7 +698,7 @@ index 7e96f29..23225fc 100644
          case Primitive::kPrimInt:
            sm.AdvanceInt(0);
            break;
-@@ -1690,6 +1754,8 @@ class ComputeNativeCallFrameSize {
+@@ -1690,6 +1753,8 @@ class ComputeNativeCallFrameSize {
      // counting is already done in the superclass
    }
  
@@ -708,7 +707,7 @@ index 7e96f29..23225fc 100644
   protected:
    uint32_t num_stack_entries_;
  };
-@@ -1798,6 +1864,11 @@ class FillNativeCall {
+@@ -1798,6 +1863,11 @@ class FillNativeCall {
      cur_stack_arg_++;
    }
  
@@ -720,7 +719,7 @@ index 7e96f29..23225fc 100644
   private:
    uintptr_t* cur_gpr_reg_;
    uint32_t* cur_fpr_reg_;
-@@ -1918,10 +1989,16 @@ void BuildGenericJniFrameVisitor::Visit() {
+@@ -1918,10 +1988,16 @@ void BuildGenericJniFrameVisitor::Visit() {
        current_vreg_ += 1u;
        break;
      case Primitive::kPrimBoolean:  // Fall-through.
@@ -740,7 +739,7 @@ index 7e96f29..23225fc 100644
        sm_.AdvanceInt(*reinterpret_cast<jint*>(GetParamAddress()));
        current_vreg_ += 1u;
        break;
-@@ -1964,6 +2041,22 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
+@@ -1964,6 +2040,22 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
    bool fast_native = called->IsFastNative();
    bool normal_native = !critical_native && !fast_native;
  
@@ -763,7 +762,7 @@ index 7e96f29..23225fc 100644
    // Run the visitor and update sp.
    BuildGenericJniFrameVisitor visitor(self,
                                        called->IsStatic(),
-@@ -1976,6 +2069,9 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
+@@ -1976,6 +2068,9 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
      ScopedAssertNoThreadSuspension sants(__FUNCTION__);
      visitor.VisitArguments();
    }
@@ -773,7 +772,7 @@ index 7e96f29..23225fc 100644
  
    // Fix up managed-stack things in Thread. After this we can walk the stack.
    self->SetTopOfStackGenericJniTagged(managed_sp);
-@@ -2164,12 +2260,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
+@@ -2164,12 +2259,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
  extern "C" TwoWordReturn artInvokeInterfaceTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -788,7 +787,7 @@ index 7e96f29..23225fc 100644
    return artInvokeCommon<kDirect>(method_idx, this_object, self, sp);
  }
  
-@@ -2178,6 +2276,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2178,6 +2275,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
      mirror::Object* this_object ATTRIBUTE_UNUSED,
      Thread* self,
      ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -796,7 +795,7 @@ index 7e96f29..23225fc 100644
    // For static, this_object is not required and may be random garbage. Don't pass it down so that
    // it doesn't cause ObjPtr alignment failure check.
    return artInvokeCommon<kStatic>(method_idx, nullptr, self, sp);
-@@ -2186,12 +2285,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2186,12 +2284,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
  extern "C" TwoWordReturn artInvokeSuperTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -811,7 +810,7 @@ index 7e96f29..23225fc 100644
    return artInvokeCommon<kVirtual>(method_idx, this_object, self, sp);
  }
  
-@@ -2202,6 +2303,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
+@@ -2202,6 +2302,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
                                                        Thread* self,
                                                        ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
