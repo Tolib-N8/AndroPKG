@@ -82,7 +82,7 @@ ANDROPKG_TEST_SCRIPT="wait 500; mediacmd pause" run media "\[media\] done" $(apk
 for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file prepared" "file seek done at 300" \
     "retriever duration=600 mime=audio/wav audio=yes" \
     "file completed" "track played true timestamp=true" "static marker reached" \
-    "session active controller=Tone" "session onPause" "soundpool loaded 2 status=0" "soundpool playing true true" \
+    "router selected=true router2 routes=1 system=true" "session active controller=Tone" "session onPause" "soundpool loaded 2 status=0" "soundpool playing true true" \
     "opus duration=600" "opus completed at 600" "vorbis retriever duration=600 mime=audio/ogg"; do
   grep -q "\[media\] $want" "$log/media.log" || fail "media: $want" media
 done

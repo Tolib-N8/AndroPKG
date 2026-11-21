@@ -212,6 +212,9 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   }
   std::vector<std::string> opts = {
       "-Xbootclasspath:" + bcp, "-Xbootclasspath-locations:" + bcp, "-Xusejit:false", "-Xint",
+      // A phone's heap configuration (dalvik.vm.heapgrowthlimit / heapsize).
+      "-Xms8m", "-Xmx512m", "-XX:HeapGrowthLimit=256m", "-XX:HeapTargetUtilization=0.75",
+      "-XX:HeapMinFree=2m", "-XX:HeapMaxFree=8m",
       std::string("-Djava.class.path=") + dex_path.fileSystemRepresentation,
       // andropkg's system services are the platform: they may use @hide APIs.
       "-Xhidden-api-policy:disabled",

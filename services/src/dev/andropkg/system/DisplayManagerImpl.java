@@ -26,6 +26,12 @@ final class DisplayManagerImpl {
         }
     }
 
+    // No Wi-Fi displays (Miracast): the status a device without the feature reports (MediaRouter
+    // reads it when it's created).
+    public Object getWifiDisplayStatus() {
+        return Hidden.newInstance(Hidden.cls("android.hardware.display.WifiDisplayStatus"));
+    }
+
     public Object getDisplayInfo(int displayId) {
         if (displayId != Display.DEFAULT_DISPLAY) return null;
         Object info = Hidden.newInstance(Hidden.cls("android.view.DisplayInfo"));

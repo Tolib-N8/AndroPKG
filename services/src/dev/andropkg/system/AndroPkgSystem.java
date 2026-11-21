@@ -203,6 +203,7 @@ public final class AndroPkgSystem {
         services.put("connectivity", LocalService.create("android.net.IConnectivityManager", new ConnectivityManagerImpl()));
         services.put("audio", LocalService.create("android.media.IAudioService", new AudioServiceImpl()));
         services.put("media_session", LocalService.create("android.media.session.ISessionManager", mediaSessions));
+        services.put("media_router", LocalService.create("android.media.IMediaRouterService", new MediaRouterImpl()));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
         activityClientController =

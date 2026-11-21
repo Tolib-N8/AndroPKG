@@ -67,6 +67,12 @@ public class MainActivity extends Activity {
         session.setPlaybackState(new PlaybackState.Builder().setState(PlaybackState.STATE_PLAYING, 0, 1f)
                 .setActions(PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_PAUSE).build());
         session.setActive(true);
+        // MediaRouter / MediaRouter2: the system route (apps create these at startup)
+        android.media.MediaRouter router = (android.media.MediaRouter) getSystemService(MEDIA_ROUTER_SERVICE);
+        android.media.MediaRouter2 router2 = android.media.MediaRouter2.getInstance(this);
+        Log.i(TAG, "[media] router selected=" + (router.getSelectedRoute(android.media.MediaRouter.ROUTE_TYPE_LIVE_AUDIO) != null)
+                + " router2 routes=" + router2.getSystemController().getSelectedRoutes().size()
+                + " system=" + router2.getSystemController().getSelectedRoutes().get(0).isSystemRoute());
         Log.i(TAG, "[media] session active controller=" + session.getController().getMetadata().getString(MediaMetadata.METADATA_KEY_TITLE));
 
         rawResource();

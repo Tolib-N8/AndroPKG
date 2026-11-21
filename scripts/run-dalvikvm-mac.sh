@@ -48,4 +48,5 @@ export ANDROID_ROOT="$fs/system" ANDROID_ART_ROOT="$fs/apex/com.android.art" \
        ANDROID_I18N_ROOT="$fs/apex/com.android.i18n" ANDROID_TZDATA_ROOT="$fs/apex/com.android.tzdata" \
        ANDROID_DATA="$fs/data" ANDROPKG_ANDROID_ROOT="$fs"
 exec "$bin/dalvikvm" -Xbootclasspath:"$bcp" -Xbootclasspath-locations:"$bcp" \
-  -Xusejit:false -Xint "$@"
+  -Xusejit:false -Xint -Xms8m -Xmx512m -XX:HeapGrowthLimit=256m -XX:HeapTargetUtilization=0.75 \
+  -XX:HeapMinFree=2m -XX:HeapMaxFree=8m "$@"
