@@ -50,6 +50,11 @@ int ndk_errno_to_darwin(int linux_errno);
 /// After a failed Darwin call: rewrites errno (shared storage) into the Linux value.
 void ndk_fix_errno(void);
 
+// ---- virtual kernel files (libc_extra.c) ---------------------------------------------------
+const char *ndk_virtual_file(const char *path, char *buf, size_t n);
+int ndk_virtual_fd(const char *content);
+int ndk_signal_to_darwin(int linux_signal);
+
 // ---- AAPCS64 varargs (va.c) ----------------------------------------------------------------
 /// The arguments of an AAPCS64 variadic call: register save areas + stack.
 typedef struct {

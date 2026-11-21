@@ -37,7 +37,16 @@ static inline FILE *F(FILE *f) {
 
 #define FIXERR(cond) do { if (cond) ndk_fix_errno(); } while (0)
 
-NDK_EXPORT FILE *bionic_fopen(const char *p, const char *m) { FILE *f = fopen(p, m); FIXERR(!f); return f; }
+extern const char *andropkg_translate_path(const char *path, char *buf, size_t len) __attribute__((weak));
+NDK_EXPORT FILE *bionic_fopen(const char *p, const char *m) {
+    char vbuf[16384], pb[1024];
+    const char *v = p ? ndk_virtual_file(p, vbuf, sizeof vbuf) : NULL;
+    if (v) return fdopen(ndk_virtual_fd(v), "r");
+    if (p && andropkg_translate_path) p = andropkg_translate_path(p, pb, sizeof pb);
+    FILE *f = fopen(p, m);
+    FIXERR(!f);
+    return f;
+}
 NDK_EXPORT FILE *bionic_fopen64(const char *p, const char *m) { return bionic_fopen(p, m); }
 NDK_EXPORT FILE *bionic_fdopen(int fd, const char *m) { FILE *f = fdopen(fd, m); FIXERR(!f); return f; }
 NDK_EXPORT FILE *bionic_freopen(const char *p, const char *m, FILE *f) { FILE *r = freopen(p, m, F(f)); FIXERR(!r); return r; }

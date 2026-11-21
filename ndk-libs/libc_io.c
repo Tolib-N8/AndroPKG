@@ -78,12 +78,16 @@ static int at_flags(int f) {
 // ---- open / close / read / write ---------------------------------------------------------------
 
 NDK_EXPORT int bionic_open(const char *path, int flags, int mode) {
+    char vbuf[16384];
+    const char *v = path ? ndk_virtual_file(path, vbuf, sizeof vbuf) : NULL;
+    if (v) return ndk_virtual_fd(v);
     PATH(path);
     RET(open(t_path, open_flags(flags), mode));
 }
 NDK_EXPORT int bionic_open64(const char *path, int flags, int mode) { return bionic_open(path, flags, mode); }
 NDK_EXPORT int bionic___open_2(const char *path, int flags) { return bionic_open(path, flags, 0); }
 NDK_EXPORT int bionic_openat(int dirfd, const char *path, int flags, int mode) {
+    if (path && path[0] == '/') return bionic_open(path, flags, mode);
     PATH(path);
     RET(openat(at_fd(dirfd), t_path, open_flags(flags), mode));
 }

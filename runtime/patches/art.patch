@@ -231,6 +231,28 @@ index ac854df..d38da76 100644
    return munmap(start, len);
  }
  
+diff --git a/libartbase/base/time_utils.cc b/libartbase/base/time_utils.cc
+index aeb7fa2..7f1c6b5 100644
+--- a/libartbase/base/time_utils.cc
++++ b/libartbase/base/time_utils.cc
+@@ -193,7 +193,7 @@ uint64_t NanoTime() {
+ }
+ 
+ uint64_t ThreadCpuNanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__APPLE__)  // andropkg: Darwin has CLOCK_THREAD_CPUTIME_ID
+   timespec now;
+   clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
+@@ -204,7 +204,7 @@ uint64_t ThreadCpuNanoTime() {
+ }
+ 
+ uint64_t ProcessCpuNanoTime() {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__APPLE__)
+   timespec now;
+   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now);
+   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
 diff --git a/libartbase/base/utils.cc b/libartbase/base/utils.cc
 index e114e4d..505738e 100644
 --- a/libartbase/base/utils.cc
