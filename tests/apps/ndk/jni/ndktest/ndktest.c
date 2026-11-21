@@ -4,6 +4,7 @@
 #include <android/configuration.h>
 #include <android/log.h>
 #include <android/looper.h>
+#include <setjmp.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -105,6 +106,39 @@ static jstring platform(JNIEnv* env, jclass cls, jobject jam, jobject bitmap) {
     return (*env)->NewStringUTF(env, out);
 }
 
+// Direct buffers made by native code, read and written by Java (libGDX pixmaps); setjmp/longjmp.
+static unsigned char g_direct[16];
+static jobject directbuf(JNIEnv* env, jclass cls) {
+    for (int i = 0; i < 16; i++) g_direct[i] = (unsigned char)(i + 1);
+    return (*env)->NewDirectByteBuffer(env, g_direct, sizeof g_direct);
+}
+static jmp_buf g_jmp;
+static int g_depth;
+static void jump_from_deep(int n) {
+    if (n == 0) longjmp(g_jmp, 42);
+    jump_from_deep(n - 1);
+    g_depth++;  // never reached
+}
+static jstring directcheck(JNIEnv* env, jclass cls) {
+    volatile int count = 0;
+    int r = setjmp(g_jmp);
+    count++;
+    if (r == 0) jump_from_deep(5);
+    char out[128];
+    snprintf(out, sizeof out, "written=%02x%02x%02x%02x setjmp=%d count=%d", g_direct[0], g_direct[1], g_direct[2],
+             g_direct[3], r, count);
+    return (*env)->NewStringUTF(env, out);
+}
+
+// Stack arguments from ART (generic JNI): AAPCS64 8-byte slots for Android code.
+static jstring stackargs(JNIEnv* env, jclass cls, jlong a, jlong b, jint c, jint d, jint e, jint f, jint g, jint h,
+                         jint i, jint j, jbyte k, jshort l, jchar m, jfloat n, jdouble o) {
+    char out[160];
+    snprintf(out, sizeof out, "%lld %lld %d %d %d %d %d %d %d %d %d %d %d %.1f %.1f", (long long)a, (long long)b, c,
+             d, e, f, g, h, i, j, k, l, m, n, o);
+    return (*env)->NewStringUTF(env, out);
+}
+
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
@@ -115,8 +149,11 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         {"threads", "(I)I", (void*)threads},
         {"files", "(Ljava/lang/String;)Ljava/lang/String;", (void*)files},
         {"platform", "(Landroid/content/res/AssetManager;Landroid/graphics/Bitmap;)Ljava/lang/String;", (void*)platform},
+        {"directbuf", "()Ljava/nio/ByteBuffer;", (void*)directbuf},
+        {"directcheck", "()Ljava/lang/String;", (void*)directcheck},
+        {"stackargs", "(JJIIIIIIIIBSCFD)Ljava/lang/String;", (void*)stackargs},
     };
-    if ((*env)->RegisterNatives(env, c, methods, 5) != 0) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, c, methods, 8) != 0) return JNI_ERR;
     __android_log_print(ANDROID_LOG_INFO, TAG, "JNI_OnLoad: %d methods, pi=%.3f, %s", 4, 3.14159, "registered");
     return JNI_VERSION_1_6;
 }

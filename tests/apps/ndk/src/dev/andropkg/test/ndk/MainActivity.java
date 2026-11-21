@@ -19,6 +19,10 @@ public class MainActivity extends Activity {
     static native int threads(int n);
     static native String files(String dir);
     static native String cpp(int n);
+    static native java.nio.ByteBuffer directbuf();
+    static native String directcheck();
+    static native String stackargs(long a, long b, int c, int d, int e, int f, int g, int h, int i, int j, byte k,
+            short l, char m, float n, double o);
     static native String platform(android.content.res.AssetManager am, android.graphics.Bitmap bmp);
 
     /** Called from native code through CallIntMethod(obj, mid, int, long, float, String). */
@@ -39,6 +43,16 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[ndk] threads: " + threads(4));
             Log.i(TAG, "[ndk] files: " + files(getFilesDir().getPath()));
             android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(4, 3, android.graphics.Bitmap.Config.ARGB_8888);
+            java.nio.ByteBuffer bb = directbuf();
+            byte[] got = new byte[16];
+            bb.get(got);
+            int sum = 0;
+            for (byte x : got) sum += x;
+            bb.clear();
+            bb.asIntBuffer().put(new int[] {0x11223344});  // big-endian view: bytes 11 22 33 44
+            Log.i(TAG, "[ndk] stackargs: " + stackargs(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, (byte) -11, (short) 12, 'A',
+                    1.5f, 2.5));
+            Log.i(TAG, "[ndk] direct: cap=" + bb.capacity() + " sum=" + sum + " " + directcheck());
             Log.i(TAG, "[ndk] platform: " + platform(getAssets(), bmp) + " pixel=" + Integer.toHexString(bmp.getPixel(2, 1)));
             System.loadLibrary("ndkcpp");
             Log.i(TAG, "[ndk] cpp: " + cpp(5));
