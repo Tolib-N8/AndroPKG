@@ -6,7 +6,7 @@ set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 pb="$root/prebuilts/out/android-14"
 fs="$root/build/android-root"
-bin="$root/build/runtime-macos"
+bin="${ANDROPKG_RUNTIME_DIR:-$root/build/runtime-macos}"
 [ -d "$pb/bootclasspath" ] || { echo "run prebuilts/extract-android14.sh first"; exit 1; }
 
 if [ ! -d "$fs" ]; then

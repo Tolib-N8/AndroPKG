@@ -185,8 +185,16 @@ static std::vector<std::string> g_extra_vm_options;  // e.g. -Dandropkg.nativeLi
 
 static int RunDex(NSString* dex_path, const char* main_class, const std::vector<std::string>& main_args) {
   NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
-  NSString* data = [NSTemporaryDirectory() stringByAppendingPathComponent:@"android-data"];
+  // /data lives in Library/Application Support: tmp/ is purged by iOS (logins, databases lost).
+  NSString* support =
+      NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+  [NSFileManager.defaultManager createDirectoryAtPath:support withIntermediateDirectories:YES attributes:nil error:nil];
+  NSString* data = [support stringByAppendingPathComponent:@"android-data"];
+  NSString* old_data = [NSTemporaryDirectory() stringByAppendingPathComponent:@"android-data"];
+  if (access(data.fileSystemRepresentation, F_OK) != 0 && access(old_data.fileSystemRepresentation, F_OK) == 0)
+    rename(old_data.fileSystemRepresentation, data.fileSystemRepresentation);
   mkdir(data.fileSystemRepresentation, 0700);
+  [[NSURL fileURLWithPath:data] setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
   mkdir([data stringByAppendingPathComponent:@"dalvik-cache"].fileSystemRepresentation, 0700);
 
   auto path = [&](NSString* rel) { return std::string([root stringByAppendingPathComponent:rel].fileSystemRepresentation); };
