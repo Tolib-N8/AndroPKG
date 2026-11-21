@@ -285,7 +285,15 @@ static void* VMThread(void*) {
   std::vector<std::string> main_args;
   const char* dex_rel;
   const char* main_class;
-  if (const char* apk = getenv("ANDROPKG_APK")) {
+  // The APK to run: ANDROPKG_APK (scripts/runner-ios.sh), else the last one run that way, so
+  // tapping the home-screen icon opens that Android app.
+  NSString* lastApk = [NSUserDefaults.standardUserDefaults stringForKey:@"andropkg.lastApk"];
+  if (const char* env_apk = getenv("ANDROPKG_APK")) {
+    [NSUserDefaults.standardUserDefaults setObject:@(env_apk) forKey:@"andropkg.lastApk"];
+    lastApk = @(env_apk);
+  }
+  bool plain_java = getenv("ANDROPKG_DEX") || getenv("ANDROPKG_MAIN");
+  if (const char* apk = (lastApk && !plain_java) ? lastApk.UTF8String : nullptr) {
     // An Android app: andropkg's system services boot ActivityThread for the APK.
     dex_rel = "system/framework/andropkg-services.dex";
     main_class = "dev/andropkg/system/AndroPkgSystem";
