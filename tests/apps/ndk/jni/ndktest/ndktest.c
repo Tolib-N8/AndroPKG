@@ -5,6 +5,13 @@
 #include <android/log.h>
 #include <android/looper.h>
 #include <setjmp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
 #include <dlfcn.h>
@@ -248,6 +255,61 @@ static jstring opensl(JNIEnv* env, jclass cls) {
     return (*env)->NewStringUTF(env, out);
 }
 
+// Sockets (Linux ABI: sockaddrs, options, flags), getaddrinfo, epoll + eventfd.
+static jstring net(JNIEnv* env, jclass cls) {
+    int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    int one = 1;
+    int r1 = setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int r2 = bind(srv, (struct sockaddr*)&a, sizeof a);
+    listen(srv, 4);
+    socklen_t al = sizeof a;
+    getsockname(srv, (struct sockaddr*)&a, &al);
+    int cli = socket(AF_INET, SOCK_STREAM, 0);
+    int r3 = connect(cli, (struct sockaddr*)&a, sizeof a);
+    struct sockaddr_in peer;
+    socklen_t pl = sizeof peer;
+    int acc = accept4(srv, (struct sockaddr*)&peer, &pl, SOCK_NONBLOCK);
+    setsockopt(cli, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    int ep = epoll_create1(EPOLL_CLOEXEC);
+    int efd = eventfd(0, EFD_NONBLOCK);
+    struct epoll_event ev = {.events = EPOLLIN, .data.u64 = 1};
+    epoll_ctl(ep, EPOLL_CTL_ADD, acc, &ev);
+    ev.data.u64 = 2;
+    epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev);
+    struct epoll_event got[4];
+    int none = epoll_wait(ep, got, 4, 0);
+    send(cli, "ping", 4, MSG_NOSIGNAL);
+    eventfd_write(efd, 5);
+    int n = 0, seen = 0;
+    for (int tries = 0; tries < 10 && seen != 3; tries++) {
+        n = epoll_wait(ep, got, 4, 100);
+        for (int i = 0; i < n; i++) seen |= (int)got[i].data.u64;
+    }
+    char buf[8] = {0};
+    ssize_t rd = recv(acc, buf, sizeof buf - 1, 0);
+    eventfd_t v = 0;
+    eventfd_read(efd, &v);
+    int err = 0;
+    socklen_t el = sizeof err;
+    getsockopt(cli, SOL_SOCKET, SO_ERROR, &err, &el);
+    struct addrinfo hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM, .ai_flags = AI_NUMERICHOST};
+    struct addrinfo* res = NULL;
+    int gai = getaddrinfo("127.0.0.1", "443", &hints, &res);
+    char ip[64] = "";
+    if (gai == 0) inet_ntop(res->ai_family, &((struct sockaddr_in*)res->ai_addr)->sin_addr, ip, sizeof ip);
+    int gport = gai == 0 ? ntohs(((struct sockaddr_in*)res->ai_addr)->sin_port) : 0;
+    int fam = gai == 0 ? res->ai_family : -1;
+    if (res) freeaddrinfo(res);
+    close(cli); close(acc); close(srv); close(ep); close(efd);
+    char out[200];
+    snprintf(out, sizeof out, "opt=%d bind=%d connect=%d accept>0=%d peer=%d idle=%d events=%d recv=%s/%zd eventfd=%llu so_error=%d gai=%d %s:%d fam=%d",
+             r1, r2, r3, acc > 0, peer.sin_family, none, seen, buf, rd, (unsigned long long)v, err, gai, ip, gport, fam);
+    return (*env)->NewStringUTF(env, out);
+}
+
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
@@ -263,8 +325,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         {"stackargs", "(JJIIIIIIIIBSCFD)Ljava/lang/String;", (void*)stackargs},
         {"aaudio", "()Ljava/lang/String;", (void*)aaudio},
         {"opensl", "()Ljava/lang/String;", (void*)opensl},
+        {"net", "()Ljava/lang/String;", (void*)net},
     };
-    if ((*env)->RegisterNatives(env, c, methods, 10) != 0) return JNI_ERR;
+    if ((*env)->RegisterNatives(env, c, methods, 11) != 0) return JNI_ERR;
     __android_log_print(ANDROID_LOG_INFO, TAG, "JNI_OnLoad: %d methods, pi=%.3f, %s", 4, 3.14159, "registered");
     return JNI_VERSION_1_6;
 }

@@ -226,6 +226,105 @@ static const int kLinuxToDarwinSig[65] = {
     [27] = SIGPROF, [28] = SIGWINCH, [29] = SIGIO, [31] = SIGSYS,
 };
 int ndk_signal_to_darwin(int s) { return s > 0 && s < 65 ? kLinuxToDarwinSig[s] : 0; }
+static int signal_to_linux(int ds) {
+    for (int s = 1; s < 65; s++)
+        if (kLinuxToDarwinSig[s] == ds) return s;
+    return 0;
+}
+
+// ---- sigaction ------------------------------------------------------------------------------------
+// bionic (LP64): { int sa_flags; handler; sigset_t sa_mask (64-bit); void (*sa_restorer)(void); }.
+typedef struct {
+    int flags;
+    void *handler;
+    uint64_t mask;
+    void *restorer;
+} l_sigaction;
+enum { L_SA_SIGINFO = 4, L_SA_ONSTACK = 0x08000000, L_SA_RESTART = 0x10000000, L_SA_NODEFER = 0x40000000,
+       L_SA_RESETHAND = 0x80000000, L_SA_NOCLDSTOP = 1, L_SA_NOCLDWAIT = 2 };
+
+// The app's handlers, by Linux signal number. Crash signals (SEGV, BUS, ILL, FPE, ABRT, TRAP, SYS)
+// stay with ART, whose handlers must run first (its fault handling, crash dumps): an app's
+// handler for them (crash reporters) is recorded but not installed.
+static l_sigaction g_app_actions[65];
+static pthread_mutex_t g_sig_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool is_crash_signal(int s) { return s == 4 || s == 5 || s == 6 || s == 7 || s == 8 || s == 11 || s == 31; }
+
+// Darwin delivers; the app's handler gets the Linux number, a Linux siginfo (signo, code) and a
+// zeroed ucontext (handlers for these signals don't use it).
+static void signal_trampoline(int ds, siginfo_t *info, void *uc) {
+    int s = signal_to_linux(ds);
+    if (s <= 0) return;
+    l_sigaction a = g_app_actions[s];
+    if (a.handler == NULL || a.handler == (void *)1) return;
+    if (a.flags & L_SA_SIGINFO) {
+        uint8_t linfo[128] = {0};
+        int32_t *w = (int32_t *)linfo;
+        w[0] = s;                           // si_signo
+        w[1] = 0;                           // si_errno
+        w[2] = info ? info->si_code : 0;    // si_code
+        if (info) {
+            w[4] = info->si_pid;            // si_pid
+            w[5] = (int32_t)info->si_uid;   // si_uid
+        }
+        static __thread uint8_t luc[1024];
+        memset(luc, 0, sizeof luc);
+        ((void (*)(int, void *, void *))a.handler)(s, linfo, luc);
+    } else {
+        ((void (*)(int))a.handler)(s);
+    }
+}
+
+NDK_EXPORT int bionic_sigaction(int sig, const l_sigaction *act, l_sigaction *old) {
+    int ds = ndk_signal_to_darwin(sig);
+    if (ds == 0 || sig == 9 || sig == 19) {
+        errno = 22;  // EINVAL (SIGKILL, SIGSTOP, unknown)
+        return -1;
+    }
+    pthread_mutex_lock(&g_sig_lock);
+    if (old) *old = g_app_actions[sig];
+    if (act) {
+        g_app_actions[sig] = *act;
+        if (!is_crash_signal(sig)) {
+            struct sigaction d = {0};
+            if (act->handler == NULL || act->handler == (void *)1) {
+                d.sa_handler = act->handler == NULL ? SIG_DFL : SIG_IGN;
+            } else {
+                d.sa_sigaction = signal_trampoline;
+                d.sa_flags = SA_SIGINFO;
+            }
+            if (act->flags & L_SA_RESTART) d.sa_flags |= SA_RESTART;
+            if (act->flags & L_SA_NODEFER) d.sa_flags |= SA_NODEFER;
+            if (act->flags & L_SA_RESETHAND) d.sa_flags |= SA_RESETHAND;
+            if (act->flags & L_SA_NOCLDSTOP) d.sa_flags |= SA_NOCLDSTOP;
+            if (act->flags & L_SA_NOCLDWAIT) d.sa_flags |= SA_NOCLDWAIT;
+            for (int s = 1; s < 65; s++)
+                if ((act->mask >> (s - 1)) & 1 && ndk_signal_to_darwin(s)) sigaddset(&d.sa_mask, ndk_signal_to_darwin(s));
+            sigaction(ds, &d, NULL);
+        }
+    }
+    pthread_mutex_unlock(&g_sig_lock);
+    return 0;
+}
+NDK_EXPORT int bionic_sigaction64(int sig, const l_sigaction *act, l_sigaction *old) { return bionic_sigaction(sig, act, old); }
+
+NDK_EXPORT void *bionic_signal(int sig, void *handler) {
+    l_sigaction a = {L_SA_RESTART, handler, 0, NULL}, old;
+    return bionic_sigaction(sig, &a, &old) == 0 ? old.handler : (void *)-1;  // SIG_ERR
+}
+NDK_EXPORT void *bionic_bsd_signal(int sig, void *handler) { return bionic_signal(sig, handler); }
+
+// sigaltstack: only for the crash handlers, which aren't installed — recorded, reported back.
+// bionic stack_t: { void *ss_sp; int ss_flags; size_t ss_size; }.
+typedef struct { void *sp; int flags; size_t size; } l_stack;
+static __thread l_stack t_altstack = {NULL, 2 /* SS_DISABLE */, 0};
+NDK_EXPORT int bionic_sigaltstack(const l_stack *ss, l_stack *old) {
+    if (old) *old = t_altstack;
+    if (ss) t_altstack = *ss;
+    return 0;
+}
+
 
 NDK_EXPORT int bionic_sigemptyset(uint64_t *set) { *set = 0; return 0; }
 NDK_EXPORT int bionic_sigfillset(uint64_t *set) { *set = ~0ULL; return 0; }

@@ -94,10 +94,22 @@ NDK_EXPORT int bionic_openat(int dirfd, const char *path, int flags, int mode) {
 NDK_EXPORT int bionic_openat64(int dirfd, const char *path, int flags, int mode) { return bionic_openat(dirfd, path, flags, mode); }
 NDK_EXPORT int bionic___openat_2(int dirfd, const char *path, int flags) { return bionic_openat(dirfd, path, flags, 0); }
 NDK_EXPORT int bionic_creat(const char *path, int mode) { return bionic_open(path, L_O_CREAT | 1 /* O_WRONLY */ | L_O_TRUNC, mode); }
-NDK_EXPORT int bionic_close(int fd) { RET(close(ndk_proc_fd(fd))); }
-NDK_EXPORT ssize_t bionic_read(int fd, void *b, size_t n) { RET(read(ndk_proc_fd(fd), b, n)); }
+NDK_EXPORT int bionic_close(int fd) {
+    ndk_eventfd_close(fd);
+    ndk_epoll_close(fd);
+    RET(close(ndk_proc_fd(fd)));
+}
+NDK_EXPORT ssize_t bionic_read(int fd, void *b, size_t n) {
+    ssize_t r;
+    if (ndk_eventfd_read(fd, b, n, &r)) return r;
+    RET(read(ndk_proc_fd(fd), b, n));
+}
 NDK_EXPORT ssize_t bionic___read_chk(int fd, void *b, size_t n, size_t blen) { (void)blen; return bionic_read(fd, b, n); }
-NDK_EXPORT ssize_t bionic_write(int fd, const void *b, size_t n) { RET(write(ndk_proc_fd(fd), b, n)); }
+NDK_EXPORT ssize_t bionic_write(int fd, const void *b, size_t n) {
+    ssize_t r;
+    if (ndk_eventfd_write(fd, b, n, &r)) return r;
+    RET(write(ndk_proc_fd(fd), b, n));
+}
 NDK_EXPORT ssize_t bionic_pread(int fd, void *b, size_t n, off_t o) { RET(pread(fd, b, n, o)); }
 NDK_EXPORT ssize_t bionic_pread64(int fd, void *b, size_t n, off_t o) { RET(pread(fd, b, n, o)); }
 NDK_EXPORT ssize_t bionic___pread_chk(int fd, void *b, size_t n, off_t o, size_t blen) { (void)blen; return bionic_pread(fd, b, n, o); }
@@ -142,8 +154,15 @@ NDK_EXPORT int bionic_fcntl(int fd, int cmd, uintptr_t arg) {
         case 1030: RET(fcntl(fd, F_DUPFD_CLOEXEC, (int)arg));
         case 1: RET(fcntl(fd, F_GETFD));
         case 2: RET(fcntl(fd, F_SETFD, (int)arg));
-        case 3: { int r = fcntl(fd, F_GETFL); if (r < 0) { ndk_fix_errno(); return r; } return linux_open_flags(r); }
-        case 4: RET(fcntl(fd, F_SETFL, open_flags((int)arg) & (O_APPEND | O_NONBLOCK | O_ASYNC)));
+        case 3: {
+            int r = fcntl(fd, F_GETFL), ef;
+            if (r < 0) { ndk_fix_errno(); return r; }
+            if (ndk_eventfd_nonblock(fd, -1, &ef)) return (linux_open_flags(r) & ~0x800) | ef;
+            return linux_open_flags(r);
+        }
+        case 4:
+            if (ndk_eventfd_nonblock(fd, ((int)arg & 0x800) != 0, NULL)) return 0;
+            RET(fcntl(fd, F_SETFL, open_flags((int)arg) & (O_APPEND | O_NONBLOCK | O_ASYNC)));
         case 5: case 6: case 7: {  // F_GETLK, F_SETLK, F_SETLKW
             struct l_flock *lf = (struct l_flock *)arg;
             struct flock df = {.l_start = lf->l_start, .l_len = lf->l_len, .l_pid = lf->l_pid,

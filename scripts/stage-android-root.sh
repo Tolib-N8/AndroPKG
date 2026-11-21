@@ -32,6 +32,11 @@ cp "$root/build/services/services.dex" "$out/system/framework/andropkg-services.
 for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
   [ -f "$a" ] && cp "$a" "$out/test/"
 done
+# Split packages (scripts/unpack-bundle.sh): directories with a base.apk.
+for d in "$root"/build/apps-ext/*/; do
+  [ -f "$d/base.apk" ] || continue
+  n=$(basename "$d"); rm -rf "$out/test/$n"; mkdir -p "$out/test/$n"; cp "$d"*.apk "$out/test/$n/"
+done
 for t in "$root"/build/tests/*/classes.dex; do
   cp "$t" "$out/test/$(basename "$(dirname "$t")").dex"
 done

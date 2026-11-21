@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "andropkg/loader.h"
 
@@ -77,6 +78,13 @@ void ndk_fix_errno(void);
 const char *ndk_virtual_file(const char *path, char *buf, size_t n);
 int ndk_virtual_fd(const char *content);
 int ndk_signal_to_darwin(int linux_signal);
+
+// ---- eventfd / epoll (libc_net.c): hooks for read/write/close/fcntl -----------------------
+bool ndk_eventfd_read(int fd, void *buf, size_t n, ssize_t *ret);
+bool ndk_eventfd_write(int fd, const void *buf, size_t n, ssize_t *ret);
+bool ndk_eventfd_nonblock(int fd, int set, int *flags);
+void ndk_eventfd_close(int fd);
+void ndk_epoll_close(int fd);
 
 // ---- AAPCS64 varargs (va.c) ----------------------------------------------------------------
 /// The arguments of an AAPCS64 variadic call: register save areas + stack.

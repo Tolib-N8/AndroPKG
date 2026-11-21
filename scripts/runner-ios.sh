@@ -2,7 +2,8 @@
 # Builds the iOS runtime + runner app, installs it on a connected iPhone and runs Hello.dex.
 #   scripts/runner-ios.sh [MainClass [dex-under-android-root]]   (default: Hello test/hello.dex)
 #   scripts/runner-ios.sh --apk <name>        runs build/apps/<name>.apk (or build/apps-ext/<name>.apk,
-#                                             third-party APKs) as an Android app
+#                                             third-party APKs, or build/apps-ext/<name>/, a split
+#                                             package from scripts/unpack-bundle.sh) as an Android app
 #   ANDROPKG_DEVICE=<udid> to pick a device
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,14 +24,17 @@ done
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 # Native code of every staged APK: converted + signed with the development identity, inside the
 # app bundle (android-root/native/<apk>/), where the host points nativeLibraryDir.
-for a in "$root/build/ios-stage/android-root/test/"*.apk; do
+for a in "$root/build/ios-stage/android-root/test/"*.apk "$root/build/ios-stage/android-root/test/"*/; do
+  [ -e "$a" ] || continue
   n=$(basename "$a" .apk)
-  "$root/scripts/prepare-native-libs.sh" "$a" "$root/build/ios-stage/android-root/native/$n" ios >/dev/null
+  "$root/scripts/prepare-native-libs.sh" "${a%/}" "$root/build/ios-stage/android-root/native/$n" ios >/dev/null
 done
 (cd "$root/host-app" && xcodegen generate --quiet)
 if [ "${1:-}" = --apk ]; then
   # Tests finish on their own; ANDROPKG_INTERACTIVE=1 keeps the app on screen.
-  envs="\"ANDROPKG_APK\": \"test/$2.apk\""
+  apk="test/$2.apk"  # (a split package is a directory)
+  [ -d "$root/build/ios-stage/android-root/test/$2" ] && apk="test/$2"
+  envs="\"ANDROPKG_APK\": \"$apk\""
   [ -n "${ANDROPKG_INTERACTIVE:-}" ] || envs="$envs, \"ANDROPKG_AUTOFINISH\": \"1\""
   # Test hooks (ANDROPKG_TEST_TAP=x,y in window pixels, _TYPE, _SWIPE, _BACK, _BACKGROUND)
   # are passed through to the app.
