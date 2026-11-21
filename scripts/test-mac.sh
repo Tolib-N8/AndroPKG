@@ -99,5 +99,23 @@ for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36
 done
 grep -q "unimplemented NDK function" "$log/ndk.log" && fail "ndk: unimplemented function called" ndk
 echo "ok   ndk checks"
+# NativeActivity (android_native_app_glue): ANativeWindow software frames (RGB_565, scaled), AInputQueue.
+scripts/prepare-native-libs.sh build/apps/nativeact.apk build/android-root/data/app/nativeact/lib macos >/dev/null
+ANDROPKG_TEST_TAP=200,300 run nativeact "\[nat\] exit" $(apk nativeact)
+for want in "android_main sdk=34 internal=yes" "window 1080x2400 -> buffer 160x120" "first frame 160x120 fmt=4" \
+    "touch 200,300 pointers=1" "destroy"; do
+  grep -q "\[nat\] $want" "$log/nativeact.log" || fail "nativeact: $want" nativeact
+done
+grep -q "unimplemented NDK function" "$log/nativeact.log" && fail "nativeact: unimplemented function called" nativeact
+echo "ok   nativeact checks"
+# EGL + GLES 2.0 (macOS: OpenGL 2.1 stand-in): shaders, client arrays, framebuffer 0 readback, 60 Hz pacing.
+scripts/prepare-native-libs.sh build/apps/gles.apk build/android-root/data/app/gles/lib macos >/dev/null
+ANDROPKG_TEST_SCRIPT="wait 3000; tap 540,1200" run gles "\[gl\] exit" $(apk gles)
+for want in "egl 1.4 configs=1 surface 1080x2400" "program linked=1" "center=ff8000 corner=0000ff error=0x0" \
+    "fps=(5[5-9]|6[0-5])"; do
+  grep -qE "\[gl\] $want" "$log/gles.log" || fail "gles: $want" gles
+done
+grep -q "unimplemented NDK function" "$log/gles.log" && fail "gles: unimplemented function called" gles
+echo "ok   gles checks"
 # Host lifecycle: iOS background/foreground pauses+stops and restarts+resumes the activity.
 ANDROPKG_TEST_BACKGROUND=1 run background "HelloTest.*onRestart" $(apk hello)

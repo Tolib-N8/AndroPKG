@@ -65,6 +65,8 @@ extern int register_andropkg_parcel(JNIEnv* env);
 extern int register_andropkg_window(JNIEnv* env);
 extern int register_andropkg_sensors(JNIEnv* env);
 extern int register_andropkg_audio(JNIEnv* env);
+extern int register_android_view_InputQueue(JNIEnv* env);
+extern int register_andropkg_native_activity(JNIEnv* env);
 extern int register_android_content_res_ApkAssets(JNIEnv* env);
 extern int register_android_content_AssetManager(JNIEnv* env);
 extern int register_android_content_StringBlock(JNIEnv* env);
@@ -137,6 +139,8 @@ static const RegJni kRegistrations[] = {
     {"window system (andropkg)", register_andropkg_window},
     {"sensors (andropkg)", register_andropkg_sensors},
     {"audio (andropkg)", register_andropkg_audio},
+    {"InputQueue", register_android_view_InputQueue},
+    {"NativeActivity (andropkg)", register_andropkg_native_activity},
 };
 
 }  // namespace android

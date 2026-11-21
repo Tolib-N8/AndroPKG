@@ -25,10 +25,12 @@ for app in "$root"/tests/apps/*/; do
   assets=""; [ -d "$app/assets" ] && assets="-A $app/assets -0 bin"  # .bin stored: openFd-able
   "$BT/aapt2" link -I "$SDK" --manifest "$app/AndroidManifest.xml" -o "$w/base.apk" "$w/res.zip" \
     --java "$w/gen" --min-sdk-version 24 --target-sdk-version 34 $assets
-  javac -cp "$SDK" -d "$w/classes" $(find "$app/src" "$w/gen" -name '*.java')
-  d8 --output "$w" $(find "$w/classes" -name '*.class')
   cp "$w/base.apk" "$root/build/apps/$name.apk"
-  (cd "$w" && zip -q -j "$root/build/apps/$name.apk" classes.dex)
+  if [ -d "$app/src" ]; then  # (a NativeActivity app may have no code: android:hasCode="false")
+    javac -cp "$SDK" -d "$w/classes" $(find "$app/src" "$w/gen" -name '*.java')
+    d8 --output "$w" $(find "$w/classes" -name '*.class')
+    (cd "$w" && zip -q -j "$root/build/apps/$name.apk" classes.dex)
+  fi
   # jni/<lib>/*.c|*.cpp -> lib/arm64-v8a/lib<lib>.so (real NDK toolchain, 16 KB pages).
   if [ -d "$app/jni" ]; then
     [ -n "$NDK" ] || { echo "build-java: $name needs the Android NDK (set ANDROID_NDK)"; exit 1; }
@@ -39,8 +41,11 @@ for app in "$root"/tests/apps/*/; do
       cc="$NDK_BIN/aarch64-linux-android24-clang"; [ -n "$cxx" ] && cc="$NDK_BIN/aarch64-linux-android24-clang++"
       kind="-shared -Wl,-soname,lib$lname.so"
       [ -f "$lib/EXECUTABLE" ] && kind="-pie"  # an executable the app runs (shipped as lib<x>.so)
+      extra=""  # GLUE marker: an android_native_app_glue NativeActivity; GLES marker: EGL/GLES 2+
+      [ -f "$lib/GLUE" ] && extra="-I$NDK/sources/android/native_app_glue $NDK/sources/android/native_app_glue/android_native_app_glue.c -u ANativeActivity_onCreate"
+      [ -f "$lib/GLES" ] && extra="$extra -lEGL -lGLESv2"
       "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 \
-        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) -llog -landroid -ljnigraphics
+        -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) $extra -llog -landroid -ljnigraphics
       [ -n "$cxx" ] && cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$w/lib/arm64-v8a/"
     done
     (cd "$w" && zip -q -r "$root/build/apps/$name.apk" lib)

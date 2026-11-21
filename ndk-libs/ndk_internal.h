@@ -56,6 +56,8 @@ void *ndk_system_impl(const char *name);
 bool ndk_system_known(const char *name);
 /// True if `soname` names an NDK system library (libc.so, libGLESv2.so, ...).
 bool ndk_is_system_lib(const char *soname);
+/// A GL entry point of the platform's OpenGL (ES) by its GLES name (egl.m), or NULL.
+void *ndk_gl_proc(const char *name);
 /// A stub that logs "<name> is not implemented" when called and returns 0.
 void *ndk_trap_stub(const char *name);
 

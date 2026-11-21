@@ -66,6 +66,8 @@ void *ndk_system_impl(const char *name) {
     // libandroid / libjnigraphics / libnativewindow: implemented by the runtime itself
     // (runtime/android_runtime/ndk_android.cc, AOSP's asset_manager.cpp, ...), same C ABI.
     if (in_sorted(kPlatformSymbols, sizeof kPlatformSymbols / sizeof *kPlatformSymbols, name)) return dlsym(RTLD_DEFAULT, name);
+    // libGLES*: the platform's GL (egl.m), where the ABI allows a direct call.
+    if (in_sorted(kGlSymbols, sizeof kGlSymbols / sizeof *kGlSymbols, name)) return ndk_gl_proc(name);
     return NULL;
 }
 

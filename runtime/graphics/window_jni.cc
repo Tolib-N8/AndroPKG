@@ -277,6 +277,132 @@ void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
   PostFrame(s);
 }
 
+// ---- NDK ANativeWindow (libandroid / libnativewindow) -------------------------------------
+// An ANativeWindow is the WindowSurface behind a Surface: native code locks a buffer, draws, and
+// posts it like Surface.lockCanvas does. A buffer geometry other than the window's (emulators:
+// 256x240...) is scaled to the window on post; RGB_565 is converted.
+
+struct NdkWindowState {
+  int w = 0, h = 0, format = 0;  // setBuffersGeometry (0 = window's)
+  std::vector<uint8_t> buf;      // the app's buffer when it differs from the window's pixels
+  bool locked = false;
+};
+std::mutex gNdkWinLock;
+std::map<WindowSurface*, NdkWindowState> gNdkWin;
+jfieldID gSurfaceNativeObject;
+
+#define NDK_EXPORT extern "C" __attribute__((visibility("default")))
+constexpr int kFmtRGBA8888 = 1, kFmtRGBX8888 = 2, kFmtRGB565 = 4;
+
+NDK_EXPORT ANativeWindow* ANativeWindow_fromSurface(JNIEnv* env, jobject surface) {
+  if (surface == nullptr) return nullptr;
+  if (!gSurfaceNativeObject) {
+    jclass c = env->GetObjectClass(surface);
+    gSurfaceNativeObject = env->GetFieldID(c, "mNativeObject", "J");
+    env->DeleteLocalRef(c);
+  }
+  return reinterpret_cast<ANativeWindow*>(env->GetLongField(surface, gSurfaceNativeObject));
+}
+NDK_EXPORT jobject ANativeWindow_toSurface(JNIEnv* env, ANativeWindow* w) {
+  return env->NewObject(gJni.surfaceClass, gJni.surfaceCtor, reinterpret_cast<jlong>(w));
+}
+NDK_EXPORT void ANativeWindow_acquire(ANativeWindow*) {}  // lives as long as its window
+NDK_EXPORT void ANativeWindow_release(ANativeWindow*) {}
+NDK_EXPORT int32_t ANativeWindow_getWidth(ANativeWindow* w) {
+  auto* s = reinterpret_cast<WindowSurface*>(w);
+  std::lock_guard<std::mutex> g(gNdkWinLock);
+  const NdkWindowState& st = gNdkWin[s];
+  return st.w ? st.w : s->width;
+}
+NDK_EXPORT int32_t ANativeWindow_getHeight(ANativeWindow* w) {
+  auto* s = reinterpret_cast<WindowSurface*>(w);
+  std::lock_guard<std::mutex> g(gNdkWinLock);
+  const NdkWindowState& st = gNdkWin[s];
+  return st.h ? st.h : s->height;
+}
+NDK_EXPORT int32_t ANativeWindow_getFormat(ANativeWindow* w) {
+  std::lock_guard<std::mutex> g(gNdkWinLock);
+  int f = gNdkWin[reinterpret_cast<WindowSurface*>(w)].format;
+  return f ? f : kFmtRGBA8888;
+}
+NDK_EXPORT int32_t ANativeWindow_setBuffersGeometry(ANativeWindow* w, int32_t width, int32_t height, int32_t format) {
+  std::lock_guard<std::mutex> g(gNdkWinLock);
+  NdkWindowState& st = gNdkWin[reinterpret_cast<WindowSurface*>(w)];
+  st.w = width;
+  st.h = height;
+  if (format) st.format = format;
+  return 0;
+}
+NDK_EXPORT int32_t ANativeWindow_setBuffersTransform(ANativeWindow*, int32_t) { return 0; }
+NDK_EXPORT int32_t ANativeWindow_setBuffersDataSpace(ANativeWindow*, int32_t) { return 0; }
+NDK_EXPORT int32_t ANativeWindow_getBuffersDataSpace(ANativeWindow*) { return 0; }
+NDK_EXPORT int32_t ANativeWindow_setFrameRate(ANativeWindow*, float, int8_t) { return 0; }
+NDK_EXPORT int32_t ANativeWindow_setFrameRateWithChangeStrategy(ANativeWindow*, float, int8_t, int8_t) { return 0; }
+NDK_EXPORT void ANativeWindow_tryAllocateBuffers(ANativeWindow*) {}
+
+NDK_EXPORT int32_t ANativeWindow_lock(ANativeWindow* w, ANativeWindow_Buffer* out, ARect* dirty) {
+  auto* s = reinterpret_cast<WindowSurface*>(w);
+  if (s == nullptr || s->width <= 0 || s->height <= 0) return -22;  // BAD_VALUE
+  s->lock.lock();
+  std::lock_guard<std::mutex> g(gNdkWinLock);
+  NdkWindowState& st = gNdkWin[s];
+  int bw = st.w ? st.w : s->width, bh = st.h ? st.h : s->height;
+  int fmt = st.format ? st.format : kFmtRGBA8888;
+  size_t n = static_cast<size_t>(s->width) * s->height;
+  if (s->pixels.size() != n) s->pixels.assign(n, 0);
+  s->drawnW = s->width;
+  s->drawnH = s->height;
+  if (bw == s->width && bh == s->height && fmt != kFmtRGB565) {
+    st.buf.clear();
+    out->bits = s->pixels.data();
+  } else {
+    st.buf.resize(static_cast<size_t>(bw) * bh * (fmt == kFmtRGB565 ? 2 : 4));
+    out->bits = st.buf.data();
+  }
+  out->width = bw;
+  out->height = bh;
+  out->stride = bw;
+  out->format = fmt;
+  if (dirty) *dirty = ARect{0, 0, bw, bh};
+  st.locked = true;
+  return 0;
+}
+
+NDK_EXPORT int32_t ANativeWindow_unlockAndPost(ANativeWindow* w) {
+  auto* s = reinterpret_cast<WindowSurface*>(w);
+  {
+    std::lock_guard<std::mutex> g(gNdkWinLock);
+    NdkWindowState& st = gNdkWin[s];
+    if (!st.locked) return -22;
+    st.locked = false;
+    if (!st.buf.empty()) {  // scale (nearest) and convert into the window's pixels
+      int bw = st.w ? st.w : s->width, bh = st.h ? st.h : s->height;
+      bool rgb565 = st.format == kFmtRGB565;
+      for (int y = 0; y < s->height; y++) {
+        int sy = y * bh / s->height;
+        uint32_t* dst = &s->pixels[static_cast<size_t>(y) * s->width];
+        for (int x = 0; x < s->width; x++) {
+          int sx = x * bw / s->width;
+          if (rgb565) {
+            uint16_t p = reinterpret_cast<const uint16_t*>(st.buf.data())[static_cast<size_t>(sy) * bw + sx];
+            uint32_t r = (p >> 11) & 0x1f, gg = (p >> 5) & 0x3f, b = p & 0x1f;
+            dst[x] = 0xFF000000u | (b << 3 | b >> 2) << 16 | (gg << 2 | gg >> 4) << 8 | (r << 3 | r >> 2);
+          } else {
+            dst[x] = reinterpret_cast<const uint32_t*>(st.buf.data())[static_cast<size_t>(sy) * bw + sx];
+          }
+        }
+      }
+    }
+    if (st.format == kFmtRGBX8888) {
+      for (uint32_t& p : s->pixels) p |= 0xFF000000u;
+    }
+  }
+  s->frames++;
+  s->lock.unlock();
+  PostFrame(s);
+  return 0;
+}
+
 // ---- vsync (Choreographer) ---------------------------------------------------------------
 
 constexpr nsecs_t kVsyncPeriod = 1000000000LL / 60;

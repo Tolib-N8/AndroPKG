@@ -6,7 +6,7 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
   # os_sync_wait_on_address (futex emulation) needs iOS 17.4 / macOS 14.4.
   set(CMAKE_OSX_DEPLOYMENT_TARGET 14.4 CACHE STRING "")
 endif()
-project(andropkg_runtime C CXX ASM OBJCXX)
+project(andropkg_runtime C CXX ASM OBJC OBJCXX)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(ANDROPKG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -247,7 +247,7 @@ add_custom_command(OUTPUT ${_ndkgen}/ndk_symbols.inc ${_ndkgen}/ndk_traps.inc
   COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen}
   DEPENDS ${ANDROPKG_TOOLS}/gen_ndk_symbols.py ${ANDROPKG_ROOT}/ndk-libs/direct.txt ${_ndk_symbol_lists}
   VERBATIM)
-file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c)
+file(GLOB _ndk_srcs CONFIGURE_DEPENDS ${ANDROPKG_ROOT}/ndk-libs/*.c ${ANDROPKG_ROOT}/ndk-libs/*.m)
 add_library(andropkg_ndk SHARED ${_ndk_srcs}
   ${ANDROPKG_ROOT}/loader/src/elf_loader.c
   ${ANDROPKG_ROOT}/shim/src/syscall.c ${ANDROPKG_ROOT}/shim/src/tls.c ${ANDROPKG_ROOT}/shim/src/svc_entry.S
@@ -258,7 +258,15 @@ set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_N
 target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_ROOT}/loader/include ${ANDROPKG_ROOT}/shim/include
                            ${ANDROPKG_ROOT}/ndk-libs ${_ndkgen} ${ANDROPKG_AOSP}/libnativehelper/include_jni)
 target_compile_options(andropkg_ndk PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu11 -Wno-unused-parameter>)
-target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib z)
+target_link_libraries(andropkg_ndk PRIVATE andropkg_art libandroid_runtime_dylib z "-framework Foundation")
+# EGL/GLES (ndk-libs/egl.m): OpenGL ES (EAGL) on iOS; OpenGL 2.1 stands in on macOS.
+target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_AOSP}/frameworks/native/opengl/include)
+set_source_files_properties(${ANDROPKG_ROOT}/ndk-libs/egl.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc;-Wno-unused-parameter")
+if(ANDROPKG_PLATFORM STREQUAL "ios")
+  target_link_libraries(andropkg_ndk PRIVATE "-framework OpenGLES")
+else()
+  target_link_libraries(andropkg_ndk PRIVATE "-framework OpenGL")
+endif()
 
 # dalvikvm: AOSP's command-line launcher (macOS dev loop; iOS embeds the VM in the app).
 if(ANDROPKG_PLATFORM STREQUAL "macos")

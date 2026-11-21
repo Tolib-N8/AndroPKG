@@ -204,11 +204,15 @@ TARGETS = [
                "frameworks/base/core/jni/android_content_res_Configuration.cpp",
                # NDK libandroid pieces that only need androidfw (ndk-libs resolves them by name)
                "frameworks/base/native/android/asset_manager.cpp",
-               "frameworks/base/native/android/configuration.cpp"],
+               "frameworks/base/native/android/configuration.cpp",
+               # NativeActivity input: InputQueue JNI + AInputQueue/AInputEvent (libandroid)
+               "frameworks/base/core/jni/android_view_InputQueue.cpp",
+               "frameworks/base/native/android/input.cpp"],
          andropkg_srcs=[f"{ANDROPKG}/runtime/android_runtime/android_runtime_onload.cc",
                         f"{ANDROPKG}/runtime/android_runtime/binder_stubs.cc",
                         f"{ANDROPKG}/runtime/android_runtime/sensor_jni.cc",
                         f"{ANDROPKG}/runtime/android_runtime/ndk_android.cc",
+                        f"{ANDROPKG}/runtime/android_runtime/native_activity.cc",
                         f"{ANDROPKG}/runtime/android_runtime/system_properties.cc",
                         f"{ANDROPKG}/runtime/android_runtime/process_stubs.cc",
                         f"{ANDROPKG}/runtime/android_runtime/framework_stubs.cc",

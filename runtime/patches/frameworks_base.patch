@@ -412,3 +412,17 @@ index 0fd61c7..843646e 100644
  SkImageInfo ANativeWindowToImageInfo(const ANativeWindow_Buffer& buffer,
                                                   sk_sp<SkColorSpace> colorSpace);
  
+diff --git a/native/android/input.cpp b/native/android/input.cpp
+index 64e8efe..074e45b 100644
+--- a/native/android/input.cpp
++++ b/native/android/input.cpp
+@@ -19,7 +19,9 @@
+ 
+ #include <android/input.h>
+ #include <input/Input.h>
++#if defined(__ANDROID__)  // andropkg: unused here (pulls InputVerifier, a Rust bridge)
+ #include <input/InputTransport.h>
++#endif
+ #include <utils/Looper.h>
+ #include <utils/RefBase.h>
+ #include <utils/Vector.h>
