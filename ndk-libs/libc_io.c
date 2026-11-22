@@ -75,6 +75,29 @@ static int at_flags(int f) {
     return d;
 }
 
+// ANDROPKG_LOG_NDKFS=1: log native file operations (opens for writing, renames, unlinks, mkdirs,
+// and every failure) to see what an app's native code does with its files.
+static int fs_trace(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("ANDROPKG_LOG_NDKFS") != NULL;
+    return on;
+}
+static long trace_fs(const char *op, int dirfd, const char *p, const char *q, int flags, long r) {
+    if (fs_trace() && (r == -1 || strcmp(op, "open") != 0 || (flags & 3) != 0)) {
+        int e = errno;
+        ndk_log(4, "fs %s%s%d %s%s%s flags=0x%x -> %ld%s%s", op, dirfd != -100 ? " at fd " : "",
+                dirfd != -100 ? dirfd : 0, p ? p : "(null)", q ? " -> " : "", q ? q : "", flags, r,
+                r == -1 ? " " : "", r == -1 ? strerror(e) : "");
+        errno = e;
+    }
+    return r;
+}
+void andropkg_ndk_trace_fs(const char *op, const char *p, const char *q, long r) {
+    trace_fs(op, -100, p, q, 0, r);
+}
+#define TRET(op, d, p, q, fl, expr) do { long _t = (expr); trace_fs(op, d, p, q, fl, _t); \
+    if (_t == -1) ndk_fix_errno(); return (int)_t; } while (0)
+
 // ---- open / close / read / write ---------------------------------------------------------------
 
 NDK_EXPORT int bionic_open(const char *path, int flags, int mode) {
@@ -82,14 +105,14 @@ NDK_EXPORT int bionic_open(const char *path, int flags, int mode) {
     const char *v = path ? ndk_virtual_file(path, vbuf, sizeof vbuf) : NULL;
     if (v) return ndk_virtual_fd(v);
     PATH(path);
-    RET(open(t_path, open_flags(flags), mode));
+    TRET("open", -100, path, NULL, flags, open(t_path, open_flags(flags), mode));
 }
 NDK_EXPORT int bionic_open64(const char *path, int flags, int mode) { return bionic_open(path, flags, mode); }
 NDK_EXPORT int bionic___open_2(const char *path, int flags) { return bionic_open(path, flags, 0); }
 NDK_EXPORT int bionic_openat(int dirfd, const char *path, int flags, int mode) {
     if (path && path[0] == '/') return bionic_open(path, flags, mode);
     PATH(path);
-    RET(openat(at_fd(dirfd), t_path, open_flags(flags), mode));
+    TRET("open", dirfd, path, NULL, flags, openat(at_fd(dirfd), t_path, open_flags(flags), mode));
 }
 NDK_EXPORT int bionic_openat64(int dirfd, const char *path, int flags, int mode) { return bionic_openat(dirfd, path, flags, mode); }
 NDK_EXPORT int bionic___openat_2(int dirfd, const char *path, int flags) { return bionic_openat(dirfd, path, flags, 0); }
@@ -325,12 +348,12 @@ NDK_EXPORT int bionic_faccessat(int d, const char *p, int mode, int flags) {
     PATH(p);
     RET(faccessat(at_fd(d), t_p, mode, (flags & 0x200) ? AT_EACCESS : 0));
 }
-NDK_EXPORT int bionic_unlink(const char *p) { PATH(p); RET(unlink(t_p)); }
-NDK_EXPORT int bionic_unlinkat(int d, const char *p, int flags) { PATH(p); RET(unlinkat(at_fd(d), t_p, at_flags(flags) & AT_REMOVEDIR)); }
+NDK_EXPORT int bionic_unlink(const char *p) { PATH(p); TRET("unlink", -100, p, NULL, 0, unlink(t_p)); }
+NDK_EXPORT int bionic_unlinkat(int d, const char *p, int flags) { PATH(p); TRET("unlinkat", d, p, NULL, flags, unlinkat(at_fd(d), t_p, at_flags(flags) & AT_REMOVEDIR)); }
 NDK_EXPORT int bionic_rmdir(const char *p) { PATH(p); RET(rmdir(t_p)); }
-NDK_EXPORT int bionic_mkdir(const char *p, mode_t m) { PATH(p); RET(mkdir(t_p, m)); }
-NDK_EXPORT int bionic_mkdirat(int d, const char *p, mode_t m) { PATH(p); RET(mkdirat(at_fd(d), t_p, m)); }
-NDK_EXPORT int bionic_renameat(int a, const char *p, int b, const char *q) { PATH(p); PATH(q); RET(renameat(at_fd(a), t_p, at_fd(b), t_q)); }
+NDK_EXPORT int bionic_mkdir(const char *p, mode_t m) { PATH(p); TRET("mkdir", -100, p, NULL, 0, mkdir(t_p, m)); }
+NDK_EXPORT int bionic_mkdirat(int d, const char *p, mode_t m) { PATH(p); TRET("mkdirat", d, p, NULL, 0, mkdirat(at_fd(d), t_p, m)); }
+NDK_EXPORT int bionic_renameat(int a, const char *p, int b, const char *q) { PATH(p); PATH(q); TRET("renameat", a, p, q, b, renameat(at_fd(a), t_p, at_fd(b), t_q)); }
 NDK_EXPORT int bionic_chdir(const char *p) { PATH(p); RET(chdir(t_p)); }
 NDK_EXPORT int bionic_fchdir(int fd) { RET(fchdir(fd)); }
 NDK_EXPORT char *bionic_getcwd(char *b, size_t n) { char *r = getcwd(b, n); if (!r) ndk_fix_errno(); return r; }

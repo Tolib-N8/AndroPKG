@@ -1516,7 +1516,7 @@ index 0083b91..621a967 100644
            length += str->GetLength();
            compressible = compressible && str->IsCompressed();
 diff --git a/runtime/thread.cc b/runtime/thread.cc
-index 6b1934c..a8929b3 100644
+index 6b1934c..516eef8 100644
 --- a/runtime/thread.cc
 +++ b/runtime/thread.cc
 @@ -16,6 +16,10 @@
@@ -1549,6 +1549,41 @@ index 6b1934c..a8929b3 100644
 +  return (u(info.user_time.seconds) + u(info.system_time.seconds)) * UINT64_C(1000000) +
 +         u(info.user_time.microseconds) + u(info.system_time.microseconds);
  #endif
+ }
+ 
+@@ -4723,9 +4735,34 @@ bool Thread::ObserveAsyncException() {
+   }
+ }
+ 
++#if defined(__APPLE__)
++// andropkg: ANDROPKG_LOG_THROWS=1 logs every exception thrown (class, message, top frames), to
++// find where an app fails when its own logging is stripped. ClassNotFoundException (class
++// loading's normal path) is left out.
++static void AndropkgLogThrow(ObjPtr<mirror::Throwable> t) REQUIRES_SHARED(Locks::mutator_lock_) {
++  static const bool enabled = getenv("ANDROPKG_LOG_THROWS") != nullptr;
++  if (!enabled) return;
++  static thread_local mirror::Throwable* last = nullptr;
++  if (t.Ptr() == last) return;  // rethrown / re-set while unwinding
++  last = t.Ptr();
++  std::string desc = t->GetClass()->PrettyDescriptor();
++  if (desc == "java.lang.ClassNotFoundException") return;
++  std::string dump = t->Dump();
++  size_t pos = 0;
++  for (int lines = 0; lines < 10 && pos != std::string::npos; lines++) {
++    pos = dump.find('\n', pos + 1);
++  }
++  if (pos != std::string::npos) dump.resize(pos);
++  LOG(WARNING) << "andropkg throw: " << dump;
++}
++#endif
++
+ void Thread::SetException(ObjPtr<mirror::Throwable> new_exception) {
+   CHECK(new_exception != nullptr);
+   // TODO: DCHECK(!IsExceptionPending());
++#if defined(__APPLE__)
++  AndropkgLogThrow(new_exception);
++#endif
+   tlsPtr_.exception = new_exception.Ptr();
  }
  
 diff --git a/sigchainlib/sigchain.cc b/sigchainlib/sigchain.cc

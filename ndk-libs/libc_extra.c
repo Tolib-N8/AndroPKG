@@ -517,7 +517,6 @@ NDK_EXPORT int bionic_mount(const char *s, const char *t, const char *fs, unsign
     errno = 1;
     return -1;
 }
-NDK_EXPORT int bionic_mkstemp64(char *t) { int r = mkstemp(t); if (r < 0) ndk_fix_errno(); return r; }
 
 // ---- virtual /proc and /sys files ------------------------------------------------------------------
 

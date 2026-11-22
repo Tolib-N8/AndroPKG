@@ -35,6 +35,7 @@ static inline FILE *F(FILE *f) {
     return ndk_proc_stream(f);  // an in-process "process" has its own std streams (exec.c)
 }
 
+extern void andropkg_ndk_trace_fs(const char *op, const char *p, const char *q, long r);
 #define FIXERR(cond) do { if (cond) ndk_fix_errno(); } while (0)
 
 extern const char *andropkg_translate_path(const char *path, char *buf, size_t len) __attribute__((weak));
@@ -44,12 +45,19 @@ NDK_EXPORT FILE *bionic_fopen(const char *p, const char *m) {
     if (v) return fdopen(ndk_virtual_fd(v), "r");
     if (p && andropkg_translate_path) p = andropkg_translate_path(p, pb, sizeof pb);
     FILE *f = fopen(p, m);
+    if (!f || (m && m[0] != 'r') || (m && strchr(m, '+'))) andropkg_ndk_trace_fs(m ? m : "fopen", p, NULL, f ? 0 : -1);
     FIXERR(!f);
     return f;
 }
 NDK_EXPORT FILE *bionic_fopen64(const char *p, const char *m) { return bionic_fopen(p, m); }
 NDK_EXPORT FILE *bionic_fdopen(int fd, const char *m) { FILE *f = fdopen(fd, m); FIXERR(!f); return f; }
-NDK_EXPORT FILE *bionic_freopen(const char *p, const char *m, FILE *f) { FILE *r = freopen(p, m, F(f)); FIXERR(!r); return r; }
+NDK_EXPORT FILE *bionic_freopen(const char *p, const char *m, FILE *f) {
+    char pb[1024];
+    if (p && andropkg_translate_path) p = andropkg_translate_path(p, pb, sizeof pb);
+    FILE *r = freopen(p, m, F(f));
+    FIXERR(!r);
+    return r;
+}
 NDK_EXPORT FILE *bionic_tmpfile(void) { FILE *f = tmpfile(); FIXERR(!f); return f; }
 NDK_EXPORT FILE *bionic_popen(const char *c, const char *m) { (void)c; (void)m; errno = 38; return NULL; }  // no processes
 NDK_EXPORT int bionic_pclose(FILE *f) { (void)f; errno = 10; return -1; }
@@ -97,8 +105,57 @@ NDK_EXPORT void bionic_funlockfile(FILE *f) { funlockfile(F(f)); }
 NDK_EXPORT int bionic_ftrylockfile(FILE *f) { return ftrylockfile(F(f)); }
 NDK_EXPORT ssize_t bionic_getline(char **l, size_t *n, FILE *f) { return getline(l, n, F(f)); }
 NDK_EXPORT ssize_t bionic_getdelim(char **l, size_t *n, int d, FILE *f) { return getdelim(l, n, d, F(f)); }
-NDK_EXPORT int bionic_remove(const char *p) { int r = remove(p); FIXERR(r); return r; }
-NDK_EXPORT int bionic_rename(const char *a, const char *b) { int r = rename(a, b); FIXERR(r); return r; }
+NDK_EXPORT int bionic_remove(const char *p) {
+    char pb[1024];
+    const char *t = p && andropkg_translate_path ? andropkg_translate_path(p, pb, sizeof pb) : p;
+    int r = remove(t);
+    andropkg_ndk_trace_fs("remove", p, NULL, r);
+    FIXERR(r);
+    return r;
+}
+
+// mkstemp & co. fill in the template's trailing X's: run them on the translated path and copy the
+// generated tail back into the caller's (Android) template.
+static int temp_translated(char *tmpl, int suffix, int (*fn)(char *, int), int *ok) {
+    char pb[1024];
+    if (!tmpl || !andropkg_translate_path) { *ok = 0; return 0; }
+    const char *t = andropkg_translate_path(tmpl, pb, sizeof pb);
+    if (t != pb) {
+        if (t == tmpl) { *ok = 0; return 0; }
+        snprintf(pb, sizeof pb, "%s", t);
+    }
+    *ok = 1;
+    int r = fn(pb, suffix);
+    size_t n = strlen(tmpl), m = strlen(pb), tail = 6 + (size_t)suffix;
+    if (n >= tail && m >= tail) memcpy(tmpl + n - tail, pb + m - tail, tail);
+    return r;
+}
+static int do_mkstemps(char *p, int suffix) { return mkstemps(p, suffix); }
+static int do_mkdtemp(char *p, int suffix) { (void)suffix; return mkdtemp(p) ? 0 : -1; }
+NDK_EXPORT int bionic_mkstemps(char *tmpl, int suffix) {
+    int ok, r = temp_translated(tmpl, suffix, do_mkstemps, &ok);
+    if (!ok) r = mkstemps(tmpl, suffix);
+    FIXERR(r == -1);
+    return r;
+}
+NDK_EXPORT int bionic_mkstemp(char *tmpl) { return bionic_mkstemps(tmpl, 0); }
+NDK_EXPORT int bionic_mkstemp64(char *tmpl) { return bionic_mkstemps(tmpl, 0); }
+NDK_EXPORT char *bionic_mkdtemp(char *tmpl) {
+    int ok, r = temp_translated(tmpl, 0, do_mkdtemp, &ok);
+    if (!ok) r = mkdtemp(tmpl) ? 0 : -1;
+    FIXERR(r == -1);
+    return r == -1 ? NULL : tmpl;
+}
+// Android paths (/storage/emulated/0, /sdcard) map to the iOS sandbox, as in open().
+NDK_EXPORT int bionic_rename(const char *a, const char *b) {
+    char pa[1024], pb[1024];
+    const char *ta = a && andropkg_translate_path ? andropkg_translate_path(a, pa, sizeof pa) : a;
+    const char *tb = b && andropkg_translate_path ? andropkg_translate_path(b, pb, sizeof pb) : b;
+    int r = rename(ta, tb);
+    andropkg_ndk_trace_fs("rename", a, b, r);
+    FIXERR(r);
+    return r;
+}
 NDK_EXPORT wint_t bionic_fgetwc(FILE *f) { return fgetwc(F(f)); }
 NDK_EXPORT wint_t bionic_fputwc(wchar_t c, FILE *f) { return fputwc(c, F(f)); }
 NDK_EXPORT int bionic_fwide(FILE *f, int m) { return fwide(F(f), m); }
