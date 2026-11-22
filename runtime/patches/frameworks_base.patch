@@ -610,6 +610,22 @@ index d1e04ad..663e800 100644
  
  public:
      enum DirtyPropertyMask {
+diff --git a/libs/hwui/SkiaCanvas.cpp b/libs/hwui/SkiaCanvas.cpp
+index 8394c3c..3fec8ab 100644
+--- a/libs/hwui/SkiaCanvas.cpp
++++ b/libs/hwui/SkiaCanvas.cpp
+@@ -471,6 +471,11 @@ void SkiaCanvas::onFilterPaint(Paint& paint) {
+     if (mPaintFilter) {
+         mPaintFilter->filterFullPaint(&paint);
+     }
++#ifdef ANDROPKG
++    // andropkg: frames are rasterized on the CPU, where dithering is a per-pixel pipeline stage
++    // (~7% of a Yandex Music frame); on 8-bit RGBA its banding fix is barely visible.
++    paint.setDither(false);
++#endif
+ }
+ 
+ void SkiaCanvas::drawPaint(const Paint& paint) {
 diff --git a/libs/hwui/SkiaCanvas.h b/libs/hwui/SkiaCanvas.h
 index b785989..34b7cde 100644
 --- a/libs/hwui/SkiaCanvas.h

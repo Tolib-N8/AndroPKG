@@ -80,6 +80,17 @@ public class MainActivity extends Activity {
             rn = e.toString();
         }
         Log.i(TAG, "[platform] software renderNode " + rn);
+        // A RenderEffect only applies through a layer: the node turns green if it has one.
+        android.graphics.RenderNode fx = new android.graphics.RenderNode("fx");
+        fx.setPosition(0, 0, 8, 4);
+        android.graphics.RecordingCanvas fc = fx.beginRecording();
+        fc.drawColor(0xffff0000);
+        fx.endRecording();
+        fx.setRenderEffect(android.graphics.RenderEffect.createColorFilterEffect(
+                new android.graphics.PorterDuffColorFilter(0xff00ff00, android.graphics.PorterDuff.Mode.SRC_IN)));
+        android.graphics.Bitmap fxTarget = android.graphics.Bitmap.createBitmap(8, 4, android.graphics.Bitmap.Config.ARGB_8888);
+        new android.graphics.Canvas(fxTarget).drawRenderNode(fx);
+        Log.i(TAG, "[platform] renderNode layer effect " + Integer.toHexString(fxTarget.getPixel(3, 2)));
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();

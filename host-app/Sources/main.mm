@@ -388,16 +388,23 @@ static void SetAppVisible(int visible) {
 @implementation AppDelegate
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)opts {
   UIScreen* screen = UIScreen.mainScreen;
-  g_screen_w = static_cast<int>(screen.nativeBounds.size.width);
-  g_screen_h = static_cast<int>(screen.nativeBounds.size.height);
-  g_screen_dpi = static_cast<int>(160 * screen.nativeScale);  // Android dp == iOS point
+  // Android renders on the CPU, so it draws at (at most) 2 pixels per point and the window is
+  // scaled to the screen: a 3x iPhone has 2.25x the pixels to fill per frame otherwise.
+  // ANDROPKG_RENDER_SCALE overrides (e.g. 3 for native resolution).
+  CGFloat scale = MIN(screen.nativeScale, 2.0);
+  if (const char* env = getenv("ANDROPKG_RENDER_SCALE")) {
+    if (atof(env) >= 1.0) scale = MIN(atof(env), screen.nativeScale);
+  }
+  g_screen_w = static_cast<int>(lround(screen.bounds.size.width * scale));
+  g_screen_h = static_cast<int>(lround(screen.bounds.size.height * scale));
+  g_screen_dpi = static_cast<int>(160 * scale);  // Android dp == iOS point
   // Safe area isn't known before a window exists; the key window of a fresh launch has it
   // after the first layout. iPhones with a Dynamic Island: 59 pt top, 34 pt bottom.
   UIWindow* probe = [[UIWindow alloc] initWithFrame:screen.bounds];
   UIEdgeInsets safe = probe.safeAreaInsets;
   if (safe.top == 0) safe = UIEdgeInsetsMake(59, 0, 34, 0);
-  g_inset_top = static_cast<int>(safe.top * screen.nativeScale);
-  g_inset_bottom = static_cast<int>(safe.bottom * screen.nativeScale);
+  g_inset_top = static_cast<int>(safe.top * scale);
+  g_inset_bottom = static_cast<int>(safe.bottom * scale);
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack

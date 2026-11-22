@@ -322,8 +322,12 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
   s->lock.lock();
   size_t n = static_cast<size_t>(s->width) * s->height;
   // The buffer keeps the last frame, so (as Surface does with its back buffer's copy-back) only
-  // the dirty rectangle the view hierarchy asks for is redrawn; a new size redraws everything.
-  bool keep = s->pixels.size() == n && s->drawnW == s->width && s->drawnH == s->height && s->frames > 0;
+  // the dirty rectangle the view hierarchy asks for could be redrawn. Off by default: apps that
+  // build RenderNodes (Compose) re-record them without invalidating the view that draws them,
+  // which only works with a render thread; here those changes would never reach the screen.
+  static const bool dirtyRects = getenv("ANDROPKG_DIRTY_RECTS") != nullptr;
+  bool keep = dirtyRects && s->pixels.size() == n && s->drawnW == s->width && s->drawnH == s->height &&
+              s->frames > 0;
   if (s->pixels.size() != n) s->pixels.assign(n, 0);
   s->drawnW = s->width;
   s->drawnH = s->height;
@@ -604,6 +608,7 @@ struct {
   jmethodID keySetSource;
   jmethodID onFocusEvent;  // InputEventReceiver.onFocusEvent(boolean)
   jmethodID offsetLocation;
+  jmethodID addBatch;      // MotionEvent.addBatch(long eventTime, float x, float y, float pressure, float size, int meta)
   jfieldID channelPtr;     // InputChannel.mPtr: the window id WindowManagerImpl assigned
 } gInput;
 
@@ -614,6 +619,7 @@ struct TouchEvent {
   int action = 0;
   float x = 0, y = 0;    // display coordinates
   float ox = 0, oy = 0;  // the target window's origin on the display
+  int64_t timeNs = 0;    // when the host saw it (SYSTEM_TIME_MONOTONIC: uptimeMillis' clock)
   std::string text;
 };
 
@@ -748,10 +754,25 @@ class InputReceiver : public android::MessageHandler {
         queue_->raiseAndClearException(env, "host keyboard");
         continue;
       }
-      jlong now = systemTime(SYSTEM_TIME_MONOTONIC) / 1000000;  // SystemClock.uptimeMillis()
-      if (e.action == 0 /* ACTION_DOWN */) down_time_ = now;
-      jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtain, down_time_, now, e.action,
+      // Event times are the host's, not the dispatch time: while the UI thread is busy moves
+      // queue up, and stamping them "now" made VelocityTracker see huge speeds (flings jumped).
+      // Queued moves are batched into one MotionEvent with history, as InputConsumer does.
+      jlong when = (e.timeNs ? e.timeNs : systemTime(SYSTEM_TIME_MONOTONIC)) / 1000000;  // uptimeMillis
+      if (e.action == 0 /* ACTION_DOWN */) down_time_ = when;
+      std::vector<TouchEvent> batch;
+      if (e.action == 2 /* ACTION_MOVE */) {
+        std::lock_guard<std::mutex> g(lock_);
+        while (!pending_.empty() && pending_.front().kind == TouchEvent::kTouch && pending_.front().action == 2) {
+          batch.push_back(pending_.front());
+          pending_.pop_front();
+        }
+      }
+      jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtain, down_time_, when, e.action,
                                                e.x, e.y, 0);
+      for (const TouchEvent& b : batch) {
+        jlong t = std::max<jlong>(when, (b.timeNs ? b.timeNs : systemTime(SYSTEM_TIME_MONOTONIC)) / 1000000);
+        env->CallVoidMethod(ev, gInput.addBatch, t, b.x, b.y, 1.0f, 1.0f, 0);
+      }
       env->CallVoidMethod(ev, gInput.setSource, 0x1002 /* InputDevice.SOURCE_TOUCHSCREEN */);
       // Window coordinates; getRawX/Y stay display coordinates, as on a device.
       if (e.ox != 0 || e.oy != 0) env->CallVoidMethod(ev, gInput.offsetLocation, -e.ox, -e.oy);
@@ -1080,6 +1101,7 @@ void ier_dispose(JNIEnv*, jclass, jlong ptr) {
 
 void InjectTouch(int action, float x, float y) {
   TouchEvent e;
+  e.timeNs = systemTime(SYSTEM_TIME_MONOTONIC);
   e.action = action;
   e.x = x;
   e.y = y;
@@ -1538,6 +1560,7 @@ int register_andropkg_window(JNIEnv* env) {
   gInput.dispatchInputEvent = env->GetMethodID(ier, "dispatchInputEvent", "(ILandroid/view/InputEvent;)V");
   gInput.onFocusEvent = env->GetMethodID(ier, "onFocusEvent", "(Z)V");
   gInput.offsetLocation = env->GetMethodID(me, "offsetLocation", "(FF)V");
+  gInput.addBatch = env->GetMethodID(me, "addBatch", "(JFFFFI)V");
   gInput.channelPtr = env->GetFieldID(env->FindClass("android/view/InputChannel"), "mPtr", "J");
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();

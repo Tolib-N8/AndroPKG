@@ -5,8 +5,8 @@
 // the base Canvas method throws. ART marks Canvas.drawRenderNode native (class_linker.cc,
 // kOverrides) and this plays the node with hwui's own RenderNodeDrawable on the CPU: the tree's
 // staging properties and display lists are synced to their render copies (there is no render
-// thread to do it in prepareTree), then drawn into the canvas's SkCanvas. Without layer
-// surfaces, hardware layers draw their content directly, and stretch effects are not applied.
+// thread to do it in prepareTree), layers are rendered into raster surfaces, then the node is
+// drawn into the canvas's SkCanvas.
 #include <jni.h>
 #include <log/log.h>
 
@@ -14,6 +14,9 @@
 #include "SkiaCanvas.h"
 #include "hwui/Canvas.h"
 #include "pipeline/skia/RenderNodeDrawable.h"
+#include "pipeline/skia/SkiaLayer.h"
+#include "include/core/SkSurface.h"
+#include <stdlib.h>
 
 namespace android {
 namespace uirenderer {
@@ -33,6 +36,49 @@ public:
         }
     }
     static SkCanvas* SkCanvasOf(SkiaCanvas* canvas) { return canvas->asSkCanvas(); }
+
+    // Nodes that are layers (RenderEffect blur, Offscreen compositing, alpha over overlapping
+    // content, LAYER_TYPE_HARDWARE) get a raster SkSurface and are rendered into it, innermost
+    // first, as SkiaPipeline::renderLayers does on the render thread. RenderNodeDrawable then
+    // composites them with their image filter, alpha and stretch.
+    static void RenderLayers(RenderNode* node, int depth) {
+        if (depth > 256) return;
+        if (auto& displayList = node->getDisplayList()) {
+            displayList.updateChildren([depth](RenderNode* child) { RenderLayers(child, depth + 1); });
+        }
+        const RenderProperties& props = node->properties();
+        const int w = props.getWidth(), h = props.getHeight();
+        if (props.effectiveLayerType() != LayerType::RenderLayer || !node->getDisplayList() || w <= 0 ||
+            h <= 0 || static_cast<int64_t>(w) * h > (int64_t{1} << 24)) {
+            if (node->hasLayer()) node->setLayerSurface(nullptr);
+            return;
+        }
+        SkSurface* surface = node->getLayerSurface();
+        if (surface == nullptr || surface->width() != w || surface->height() != h) {
+            node->setLayerSurface(SkSurface::MakeRaster(SkImageInfo::MakeN32Premul(w, h)));
+            surface = node->getLayerSurface();
+            if (surface == nullptr) return;
+        }
+        SkCanvas* canvas = surface->getCanvas();
+        canvas->clear(SK_ColorTRANSPARENT);
+        skiapipeline::RenderNodeDrawable content(node, canvas, /*composeLayer=*/false);
+        content.forceDraw(canvas);
+        node->getSkiaLayer()->hasRenderedSinceRepaint = false;
+    }
+
+    // ANDROPKG_LOG_RENDERNODES: the tree a software canvas draws, now and then.
+    static void Dump(RenderNode* node, int depth) {
+        if (depth > 40) return;
+        const RenderProperties& p = node->properties();
+        ALOGI("rn %*s%s %dx%d at %d,%d t=%.0f,%.0f a=%.2f layer=%d filter=%d clip=%d dl=%d",
+              depth * 2, "", node->getName(), p.getWidth(), p.getHeight(), p.getLeft(), p.getTop(),
+              p.getTranslationX(), p.getTranslationY(), p.getAlpha(), static_cast<int>(p.effectiveLayerType()),
+              p.layerProperties().getImageFilter() != nullptr, p.getClippingFlags(),
+              static_cast<int>(static_cast<bool>(node->getDisplayList())));
+        if (auto& displayList = node->getDisplayList()) {
+            displayList.updateChildren([depth](RenderNode* child) { Dump(child, depth + 1); });
+        }
+    }
 };
 
 }  // namespace uirenderer
@@ -51,6 +97,10 @@ void Canvas_drawRenderNode(JNIEnv* env, jobject jcanvas, jobject jnode) {
     if (sk == nullptr) return;
     uirenderer::AndropkgSoftwareRenderNode::Sync(node, 0);
     if (!node->getDisplayList()) return;  // nothing recorded yet
+    uirenderer::AndropkgSoftwareRenderNode::RenderLayers(node, 0);
+    static const bool dump = getenv("ANDROPKG_LOG_RENDERNODES") != nullptr;
+    static int calls = 0;
+    if (dump && calls++ % 300 == 0) uirenderer::AndropkgSoftwareRenderNode::Dump(node, 0);
     uirenderer::skiapipeline::RenderNodeDrawable drawable(node, sk);
     sk->drawDrawable(&drawable);
 }
