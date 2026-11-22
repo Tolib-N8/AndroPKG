@@ -37,6 +37,7 @@ static bool GpuRendering() {
   return on;
 }
 static void (*g_inject_touch)(int action, float x, float y);
+static void (*g_inject_pointer)(int action, int id, float x, float y);  // multi-touch
 static void (*g_ime_insert_text)(const char* utf8);
 static void (*g_ime_delete_backward)();
 static void (*g_ime_enter)();
@@ -56,15 +57,33 @@ static void (*g_inject_key)(int action, int keycode);
 }
 @end
 @implementation AndroidWindowView {
-  UITouch* _tracked;
+  NSMapTable<UITouch*, NSNumber*>* _fingers;  // each touch's pointer id while it is down
 }
 - (void)send:(int)action touch:(UITouch*)t {
-  if (!g_inject_touch || self.hidden) return;
+  if (self.hidden) return;
+  if (!_fingers) _fingers = [NSMapTable weakToStrongObjectsMapTable];
+  NSNumber* finger = [_fingers objectForKey:t];
+  if (action == 0 && !finger) {  // the smallest id no other finger uses
+    int id = 0;
+    for (BOOL taken = YES; taken; id += taken) {
+      taken = NO;
+      for (UITouch* other in _fingers) taken |= [_fingers objectForKey:other].intValue == id;
+    }
+    finger = @(id);
+    [_fingers setObject:finger forKey:t];
+  }
+  if (!finger) return;
   CGPoint p = [t locationInView:self];
   // The view shows the Android display (g_screen_w x g_screen_h pixels) scaled to its bounds.
   CGFloat sx = g_screen_w / self.bounds.size.width;
   CGFloat sy = g_screen_h / self.bounds.size.height;
-  g_inject_touch(action, static_cast<float>(p.x * sx), static_cast<float>(p.y * sy));
+  float x = static_cast<float>(p.x * sx), y = static_cast<float>(p.y * sy);
+  if (g_inject_pointer) {
+    g_inject_pointer(action, finger.intValue, x, y);
+  } else if (g_inject_touch && finger.intValue == 0) {
+    g_inject_touch(action, x, y);
+  }
+  if (action == 1 || action == 3) [_fingers removeObjectForKey:t];
 }
 // The iOS keyboard types into the focused Android text editor (andropkg's host IME).
 - (BOOL)canBecomeFirstResponder {
@@ -94,22 +113,16 @@ static void (*g_inject_key)(int action, int keycode);
   return UITextAutocorrectionTypeNo;  // no marked/replaced text yet: plain key input
 }
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
-  if (_tracked) return;
-  _tracked = touches.anyObject;
-  [self send:0 touch:_tracked];
+  for (UITouch* t in touches) [self send:0 touch:t];
 }
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
-  if ([touches containsObject:_tracked]) [self send:2 touch:_tracked];
+  for (UITouch* t in touches) [self send:2 touch:t];
 }
 - (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
-  if (![touches containsObject:_tracked]) return;
-  [self send:1 touch:_tracked];
-  _tracked = nil;
+  for (UITouch* t in touches) [self send:1 touch:t];
 }
 - (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
-  if (![touches containsObject:_tracked]) return;
-  [self send:3 touch:_tracked];
-  _tracked = nil;
+  for (UITouch* t in touches) [self send:3 touch:t];
 }
 @end
 
@@ -283,6 +296,7 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
     }
   }
   g_inject_touch = reinterpret_cast<void (*)(int, float, float)>(dlsym(RTLD_DEFAULT, "andropkg_inject_touch"));
+  g_inject_pointer = reinterpret_cast<void (*)(int, int, float, float)>(dlsym(RTLD_DEFAULT, "andropkg_inject_pointer"));
   g_ime_insert_text = reinterpret_cast<void (*)(const char*)>(dlsym(RTLD_DEFAULT, "andropkg_ime_insert_text"));
   g_ime_delete_backward = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_delete_backward"));
   g_ime_enter = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_enter"));
@@ -393,7 +407,7 @@ static void SetAppVisible(int visible) {
   [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer*) { label.text = g_status; }];
   g_frame_view = [[AndroidWindowView alloc] initWithFrame:root.bounds];
   g_frame_view.userInteractionEnabled = YES;
-  g_frame_view.multipleTouchEnabled = NO;
+  g_frame_view.multipleTouchEnabled = YES;
   UIScreenEdgePanGestureRecognizer* back =
       [[UIScreenEdgePanGestureRecognizer alloc] initWithTarget:g_frame_view action:@selector(edgeSwipe:)];
   back.edges = UIRectEdgeLeft;

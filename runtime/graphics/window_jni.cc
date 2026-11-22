@@ -71,6 +71,7 @@ extern "C" __attribute__((visibility("default"))) void andropkg_set_frame_sink(F
 
 namespace {
 void InjectTouch(int action, float x, float y);
+void InjectPointer(int action, int id, float x, float y);
 void InjectText(const char* utf8);
 void InjectDeleteBackward();
 void InjectEnter();
@@ -104,6 +105,13 @@ extern "C" __attribute__((visibility("default"))) void andropkg_set_ime_listener
 /// (0 down, 1 up, 2 move, 3 cancel). Delivered on the focused window's Looper.
 extern "C" __attribute__((visibility("default"))) void andropkg_inject_touch(int action, float x, float y) {
   InjectTouch(action, x, y);
+}
+
+/// Multi-touch: finger `id` (any small number, stable while it touches) went down (0), up (1),
+/// moved (2) or was cancelled (3) at window pixel (x, y). The runtime turns these into
+/// MotionEvents with every finger (ACTION_POINTER_DOWN/UP for the second and later ones).
+extern "C" __attribute__((visibility("default"))) void andropkg_inject_pointer(int action, int id, float x, float y) {
+  InjectPointer(action, id, x, y);
 }
 
 namespace {
@@ -707,6 +715,11 @@ struct {
   jmethodID onFocusEvent;  // InputEventReceiver.onFocusEvent(boolean)
   jmethodID offsetLocation;
   jmethodID addBatch;      // MotionEvent.addBatch(long eventTime, float x, float y, float pressure, float size, int meta)
+  jmethodID obtainMulti;   // MotionEvent.obtain(down, time, action, count, PointerProperties[], PointerCoords[], ...)
+  jmethodID addBatchMulti; // MotionEvent.addBatch(long eventTime, PointerCoords[], int meta)
+  jclass propsClass, coordsClass;
+  jmethodID propsCtor, coordsCtor;
+  jfieldID propsId, propsToolType, coordsX, coordsY, coordsPressure, coordsSize;
   jfieldID channelPtr;     // InputChannel.mPtr: the window id WindowManagerImpl assigned
 } gInput;
 
@@ -719,6 +732,12 @@ struct TouchEvent {
   float ox = 0, oy = 0;  // the target window's origin on the display
   int64_t timeNs = 0;    // when the host saw it (SYSTEM_TIME_MONOTONIC: uptimeMillis' clock)
   std::string text;
+  // Multi-touch (pointers > 1): every finger down, by index; `action` carries the index for
+  // POINTER_DOWN/POINTER_UP. With one finger, x/y as above.
+  static constexpr int kMaxPointers = 10;
+  int pointers = 1;
+  int ids[kMaxPointers] = {};
+  float px[kMaxPointers] = {}, py[kMaxPointers] = {};
 };
 
 // dev.andropkg.system.HostIme (services; system class loader): the host keyboard as IME.
@@ -858,9 +877,14 @@ class InputReceiver : public android::MessageHandler {
       jlong when = (e.timeNs ? e.timeNs : systemTime(SYSTEM_TIME_MONOTONIC)) / 1000000;  // uptimeMillis
       if (e.action == 0 /* ACTION_DOWN */) down_time_ = when;
       std::vector<TouchEvent> batch;
+      if (e.pointers > 1) {
+        DispatchMulti(env, e, when);
+        continue;
+      }
       if (e.action == 2 /* ACTION_MOVE */) {
         std::lock_guard<std::mutex> g(lock_);
-        while (!pending_.empty() && pending_.front().kind == TouchEvent::kTouch && pending_.front().action == 2) {
+        while (!pending_.empty() && pending_.front().kind == TouchEvent::kTouch && pending_.front().action == 2 &&
+               pending_.front().pointers == 1) {
           batch.push_back(pending_.front());
           pending_.pop_front();
         }
@@ -887,6 +911,69 @@ class InputReceiver : public android::MessageHandler {
         queue_->raiseAndClearException(env, "HostIme.onTouchUp");
       }
     }
+  }
+
+  // A MotionEvent with every finger; queued moves of the same fingers become its history.
+  jobjectArray Coords(JNIEnv* env, const TouchEvent& e) {
+    jobjectArray a = env->NewObjectArray(e.pointers, gInput.coordsClass, nullptr);
+    for (int i = 0; i < e.pointers; i++) {
+      jobject c = env->NewObject(gInput.coordsClass, gInput.coordsCtor);
+      env->SetFloatField(c, gInput.coordsX, e.px[i]);
+      env->SetFloatField(c, gInput.coordsY, e.py[i]);
+      env->SetFloatField(c, gInput.coordsPressure, 1.0f);
+      env->SetFloatField(c, gInput.coordsSize, 1.0f);
+      env->SetObjectArrayElement(a, i, c);
+      env->DeleteLocalRef(c);
+    }
+    return a;
+  }
+  static bool SameFingers(const TouchEvent& a, const TouchEvent& b) {
+    if (a.pointers != b.pointers) return false;
+    for (int i = 0; i < a.pointers; i++) if (a.ids[i] != b.ids[i]) return false;
+    return true;
+  }
+  void DispatchMulti(JNIEnv* env, const TouchEvent& e, jlong when) {
+    std::vector<TouchEvent> batch;
+    if (e.action == 2) {
+      std::lock_guard<std::mutex> g(lock_);
+      while (!pending_.empty() && pending_.front().kind == TouchEvent::kTouch && pending_.front().action == 2 &&
+             SameFingers(pending_.front(), e)) {
+        batch.push_back(pending_.front());
+        pending_.pop_front();
+      }
+    }
+    jobjectArray props = env->NewObjectArray(e.pointers, gInput.propsClass, nullptr);
+    for (int i = 0; i < e.pointers; i++) {
+      jobject p = env->NewObject(gInput.propsClass, gInput.propsCtor);
+      env->SetIntField(p, gInput.propsId, e.ids[i]);
+      env->SetIntField(p, gInput.propsToolType, 1 /* TOOL_TYPE_FINGER */);
+      env->SetObjectArrayElement(props, i, p);
+      env->DeleteLocalRef(p);
+    }
+    jobjectArray coords = Coords(env, e);
+    jobject ev = env->CallStaticObjectMethod(gInput.motionEventClass, gInput.obtainMulti, down_time_, when, e.action,
+                                             e.pointers, props, coords, 0, 0, 1.0f, 1.0f, 0, 0,
+                                             0x1002 /* SOURCE_TOUCHSCREEN */, 0);
+    env->DeleteLocalRef(props);
+    env->DeleteLocalRef(coords);
+    if (!ev) {
+      queue_->raiseAndClearException(env, "MotionEvent.obtain");
+      return;
+    }
+    for (const TouchEvent& b : batch) {
+      jobjectArray bc = Coords(env, b);
+      jlong t = std::max<jlong>(when, (b.timeNs ? b.timeNs : systemTime(SYSTEM_TIME_MONOTONIC)) / 1000000);
+      env->CallVoidMethod(ev, gInput.addBatchMulti, t, bc, 0);
+      env->DeleteLocalRef(bc);
+    }
+    if (e.ox != 0 || e.oy != 0) env->CallVoidMethod(ev, gInput.offsetLocation, -e.ox, -e.oy);
+    jobject receiver = env->CallObjectMethod(receiver_, gVsync.referenceGet);
+    if (receiver) {
+      env->CallVoidMethod(receiver, gInput.dispatchInputEvent, ++seq_, ev);
+      env->DeleteLocalRef(receiver);
+    }
+    env->DeleteLocalRef(ev);
+    queue_->raiseAndClearException(env, "dispatchInputEvent(multi)");
   }
 
  private:
@@ -1287,6 +1374,56 @@ void InjectTouch(int action, float x, float y) {
   if (action == 1 || action == 3) gTouchTarget = -1;
 }
 
+// Fingers down now (multi-touch), by id, in the order they went down. Under gWmLock.
+std::vector<std::pair<int, std::pair<float, float>>> gFingers;
+
+void InjectPointer(int action, int id, float x, float y) {
+  auto find = [&]() {
+    for (size_t i = 0; i < gFingers.size(); i++) if (gFingers[i].first == id) return (int)i;
+    return -1;
+  };
+  {
+    std::lock_guard<std::mutex> g(gWmLock);
+    int index = find();
+    bool first = action == 0 && gFingers.empty();
+    bool last = (action == 1 && gFingers.size() <= 1) || action == 3;
+    if (action == 0 && index < 0 && gFingers.size() < (size_t)TouchEvent::kMaxPointers) {
+      gFingers.push_back({id, {x, y}});
+      index = (int)gFingers.size() - 1;
+    } else if (index >= 0) {
+      gFingers[index].second = {x, y};
+    }
+    if (index < 0 || first || last || gFingers.size() == 1) {
+      // One finger: the single-pointer path (targeting, outside touches, batching).
+    } else {
+      TouchEvent e;
+      e.timeNs = systemTime(SYSTEM_TIME_MONOTONIC);
+      e.pointers = (int)gFingers.size();
+      for (int i = 0; i < e.pointers; i++) {
+        e.ids[i] = gFingers[i].first;
+        e.px[i] = gFingers[i].second.first;
+        e.py[i] = gFingers[i].second.second;
+      }
+      e.action = action == 0 ? (5 /* POINTER_DOWN */ | index << 8)
+               : action == 1 ? (6 /* POINTER_UP */ | index << 8)
+                             : 2;
+      e.x = x;
+      e.y = y;
+      auto it = gWindows.find(gTouchTarget);
+      if (it != gWindows.end() && it->second.receiver) {
+        e.ox = static_cast<float>(it->second.fx);
+        e.oy = static_cast<float>(it->second.fy);
+        it->second.receiver->Post(e);
+      }
+      if (action == 1) gFingers.erase(gFingers.begin() + index);
+      return;
+    }
+    if (action == 1 || action == 3) gFingers.clear();
+  }
+  // The remaining finger after others lifted keeps its own coordinates: single-pointer events.
+  InjectTouch(action, x, y);
+}
+
 void PostToFocused(const TouchEvent& e) {
   std::lock_guard<std::mutex> g(gWmLock);
   if (gFocused) gFocused->Post(e);
@@ -1332,6 +1469,7 @@ void SetImeListener(void (*listener)(int visible)) { gImeListener = listener; }
 //   ANDROPKG_TEST_SCRIPT="cmd; cmd; ..." — a scenario, with commands
 //     wait MS | tap X,Y | swipe X1,Y1,X2,Y2 | type TEXT | del | enter | key CODE | back |
 //     accel X,Y,Z | shake (accelerometer samples) | mediacmd play|pause|toggle|next|previous|seek MS |
+//     pinch CX,CY,D0,D1 (two fingers from D0 to D1 pixels apart) |
 //     bg | fg |
 //     shot PATH (the screen as shown now, as PNG) | log TEXT
 
@@ -1339,6 +1477,24 @@ void Tap(float x, float y) {
   InjectTouch(0, x, y);
   usleep(80 * 1000);
   InjectTouch(1, x, y);
+}
+
+// Two fingers, centered on (cx, cy), from d0 to d1 pixels apart (horizontally).
+void Pinch(float cx, float cy, float d0, float d1) {
+  InjectPointer(0, 0, cx - d0 / 2, cy);
+  usleep(15 * 1000);
+  InjectPointer(0, 1, cx + d0 / 2, cy);
+  constexpr int kSteps = 20;
+  float d = d0;
+  for (int i = 1; i <= kSteps; i++) {
+    usleep(15 * 1000);
+    d = d0 + (d1 - d0) * i / kSteps;
+    InjectPointer(2, 0, cx - d / 2, cy);
+    InjectPointer(2, 1, cx + d / 2, cy);
+  }
+  InjectPointer(1, 1, cx + d / 2, cy);
+  usleep(15 * 1000);
+  InjectPointer(1, 0, cx - d / 2, cy);
 }
 
 void Swipe(float x, float y, float x2, float y2) {
@@ -1384,6 +1540,8 @@ void RunTestScript(std::string script) {
       Tap(x, y);
     } else if (op == "swipe" && sscanf(arg.c_str(), "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
       Swipe(x, y, x2, y2);
+    } else if (op == "pinch" && sscanf(arg.c_str(), "%f,%f,%f,%f", &x, &y, &x2, &y2) == 4) {
+      Pinch(x, y, x2, y2);
     } else if (op == "type") {
       InjectKeyboard(TouchEvent::kText, arg.c_str());
     } else if (op == "del") {
@@ -1937,6 +2095,21 @@ int register_andropkg_window(JNIEnv* env) {
   gInput.onFocusEvent = env->GetMethodID(ier, "onFocusEvent", "(Z)V");
   gInput.offsetLocation = env->GetMethodID(me, "offsetLocation", "(FF)V");
   gInput.addBatch = env->GetMethodID(me, "addBatch", "(JFFFFI)V");
+  gInput.obtainMulti = env->GetStaticMethodID(me, "obtain",
+      "(JJII[Landroid/view/MotionEvent$PointerProperties;[Landroid/view/MotionEvent$PointerCoords;IIFFIIII)Landroid/view/MotionEvent;");
+  gInput.addBatchMulti = env->GetMethodID(me, "addBatch", "(J[Landroid/view/MotionEvent$PointerCoords;I)V");
+  jclass pp = env->FindClass("android/view/MotionEvent$PointerProperties");
+  gInput.propsClass = static_cast<jclass>(env->NewGlobalRef(pp));
+  gInput.propsCtor = env->GetMethodID(pp, "<init>", "()V");
+  gInput.propsId = env->GetFieldID(pp, "id", "I");
+  gInput.propsToolType = env->GetFieldID(pp, "toolType", "I");
+  jclass pc = env->FindClass("android/view/MotionEvent$PointerCoords");
+  gInput.coordsClass = static_cast<jclass>(env->NewGlobalRef(pc));
+  gInput.coordsCtor = env->GetMethodID(pc, "<init>", "()V");
+  gInput.coordsX = env->GetFieldID(pc, "x", "F");
+  gInput.coordsY = env->GetFieldID(pc, "y", "F");
+  gInput.coordsPressure = env->GetFieldID(pc, "pressure", "F");
+  gInput.coordsSize = env->GetFieldID(pc, "size", "F");
   gInput.channelPtr = env->GetFieldID(env->FindClass("android/view/InputChannel"), "mPtr", "J");
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
