@@ -939,6 +939,20 @@ void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray val
   }
   std::lock_guard<std::mutex> g(c->lock);
   c->format = Format::From(env, keys, values);
+  // Input buffers hold what the app says one access unit may take (max-input-size); a video
+  // key frame can be far larger than an audio packet: at least an uncompressed 4:2:0 frame.
+  size_t inSize = std::max<size_t>(kInputSize, (size_t)std::max<int64_t>(0, c->format.Int("max-input-size", 0)));
+  if (IsVideo(c->desc)) {
+    int64_t w = c->format.Int("width", 1920), h = c->format.Int("height", 1080);
+    inSize = std::max(inSize, (size_t)std::max<int64_t>(w * h * 3 / 2, 1 << 20));
+  }
+  if (c->in[0].size() != inSize) {
+    for (auto& b : c->in) b.assign(inSize, 0);
+    if (c->inBufs) {  // views of the old buffers
+      env->DeleteGlobalRef(c->inBufs);
+      c->inBufs = nullptr;
+    }
+  }
   if (IsVideo(c->desc)) {
     c->vdec = std::make_unique<VideoDecoder>(strcmp(kCodecs[c->desc].mime, "video/hevc") == 0);
     c->vdec->Init(c->format);
@@ -1048,7 +1062,7 @@ void QueueInput(JNIEnv* env, Codec* c, int index, int offset, int size, int64_t 
   bool inputBack = false;
   {
     std::lock_guard<std::mutex> g(c->lock);
-    if (index < 0 || index >= kNumInput || offset < 0 || size < 0 || (size_t)offset + size > kInputSize) {
+    if (index < 0 || index >= kNumInput || offset < 0 || size < 0 || (size_t)offset + size > c->in[index].size()) {
       Throw(env, "java/lang/IllegalArgumentException", "bad input buffer");
       return;
     }
@@ -1247,12 +1261,12 @@ jobject cs_getFormat(JNIEnv* env, jobject thiz, jboolean input) {
   if (c->vdec) {
     m.PutInt("width", c->vdec->width);
     m.PutInt("height", c->vdec->height);
-    m.PutInt("max-input-size", (int)kInputSize);
+    m.PutInt("max-input-size", (int)c->in[0].size());
     return m.get();
   }
   m.PutInt("sample-rate", c->dec ? c->dec->rate : 44100);
   m.PutInt("channel-count", c->dec ? c->dec->channels : 2);
-  m.PutInt("max-input-size", (int)kInputSize);
+  m.PutInt("max-input-size", (int)c->in[0].size());
   return m.get();
 }
 
