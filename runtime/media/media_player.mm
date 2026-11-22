@@ -27,6 +27,17 @@
 #include "decoder.h"
 #include "jni_defaults.h"
 
+#include "andropkg/paths.h"
+
+// file:// URLs name Android paths (/data/user/0/<pkg>/..., /sdcard/...): map them to the sandbox.
+static NSURL* AndropkgHostURL(NSURL* url) {
+  if (!url.isFileURL || !url.path) return url;
+  char buf[1024];
+  const char* t = andropkg_translate_path(url.path.fileSystemRepresentation, buf, sizeof buf);
+  return [NSURL fileURLWithPath:@(t)];
+}
+
+
 namespace {
 JavaVM* gVm;
 jclass gMediaPlayerClass;
@@ -553,7 +564,7 @@ void mp_setDataSourceUrl(JNIEnv* env, jobject thiz, jobject /*httpService*/, jst
   const char* s = env->GetStringUTFChars(jpath, nullptr);
   NSString* str = [NSString stringWithUTF8String:s];
   env->ReleaseStringUTFChars(jpath, s);
-  NSURL* url = [NSURL URLWithString:str];
+  NSURL* url = AndropkgHostURL([NSURL URLWithString:str]);
   if (!url || !url.scheme) {
     Throw(env, "java/io/IOException", "unsupported data source");
     return;
@@ -824,7 +835,7 @@ void mr_setDataSourceFd(JNIEnv* env, jobject thiz, jobject fdObj, jlong offset, 
 void mr_setDataSourceUrl(JNIEnv* env, jobject thiz, jobject, jstring jpath, jobjectArray, jobjectArray) {
   AndropkgRetriever* r = GetRetriever(env, thiz);
   const char* s = env->GetStringUTFChars(jpath, nullptr);
-  NSURL* url = [NSURL URLWithString:[NSString stringWithUTF8String:s]];
+  NSURL* url = AndropkgHostURL([NSURL URLWithString:[NSString stringWithUTF8String:s]]);
   env->ReleaseStringUTFChars(jpath, s);
   if (!r || !url.scheme) {
     Throw(env, "java/lang/IllegalArgumentException", "unsupported data source");

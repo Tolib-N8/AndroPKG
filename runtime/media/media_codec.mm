@@ -17,6 +17,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #include <fcntl.h>
+#include "andropkg/paths.h"
 #include <jni.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1169,7 +1170,8 @@ void ex_setDataSourcePath(JNIEnv* env, jobject thiz, jobject, jstring jpath, job
     Throw(env, "java/io/IOException", "Failed to instantiate extractor (network sources: not yet).");
     return;
   }
-  int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  char buf[1024];
+  int fd = open(andropkg_translate_path(path.c_str(), buf, sizeof buf), O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
     Throw(env, "java/io/IOException", "Failed to open " + path);
     return;

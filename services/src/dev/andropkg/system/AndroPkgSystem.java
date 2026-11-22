@@ -110,21 +110,32 @@ public final class AndroPkgSystem {
         } else {
             appInfo.sourceDir = appInfo.publicSourceDir = apkPath;
         }
+        // As on a device, the app sees /data/user/0/<pkg> (credential-protected) and
+        // /data/user_de/0/<pkg>; path translation maps them onto the host directory (dataDir),
+        // whose iOS container path changes when the app is reinstalled. Apps store these paths.
+        String hostData = dataDir;
+        try {
+            android.system.Os.setenv("ANDROPKG_APP_DATA_HOST", hostData, true);
+            android.system.Os.setenv("ANDROPKG_APP_DATA_PKG", appInfo.packageName, true);
+        } catch (android.system.ErrnoException e) {
+            throw new RuntimeException(e);
+        }
+        new File(hostData).mkdirs();
+        new File(hostData + "_de").mkdirs();
+        dataDir = "/data/user/0/" + appInfo.packageName;
         appInfo.dataDir = dataDir;
-        // As on a device: dataDir is the credential-protected dir (/data/user/0/<pkg>).
         Hidden.setField(appInfo, "credentialProtectedDataDir", dataDir);
-        Hidden.setField(appInfo, "deviceProtectedDataDir", dataDir + "_de");
-        new File(dataDir + "_de").mkdirs();
-        // Converted native libraries (scripts/prepare-native-libs.sh): <dataDir>/lib, or a
-        // signed location inside the iOS app bundle (-Dandropkg.nativeLibraryDir).
-        appInfo.nativeLibraryDir = System.getProperty("andropkg.nativeLibraryDir", dataDir + "/lib");
+        Hidden.setField(appInfo, "deviceProtectedDataDir", "/data/user_de/0/" + appInfo.packageName);
+        // Converted native libraries (scripts/prepare-native-libs.sh): <host data>/lib, or a
+        // signed location inside the iOS app bundle (-Dandropkg.nativeLibraryDir). A host path:
+        // the dynamic loader doesn't translate.
+        appInfo.nativeLibraryDir = System.getProperty("andropkg.nativeLibraryDir", hostData + "/lib");
         Hidden.setField(appInfo, "primaryCpuAbi", "arm64-v8a");
         appInfo.uid = Process.myUid();
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
         if (appInfo.metaData == null) appInfo.metaData = (android.os.Bundle) Hidden.getField(parsedPackage, "mAppMetaData");
-        new File(dataDir).mkdirs();
         // keystore2's key blobs: next to the app's data, outside it (as /data/misc/keystore).
-        AndroidKeyStore.install(new File(dataDir + "_keystore"));
+        AndroidKeyStore.install(new File(hostData + "_keystore"));
 
         packageInfo = new PackageInfo();
         packageInfo.packageName = appInfo.packageName;

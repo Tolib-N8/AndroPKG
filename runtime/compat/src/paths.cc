@@ -15,7 +15,43 @@ extern "C" const char* andropkg_translate_path(const char* path, char* buf, size
                                             "/vendor", "/odm", "/data", "/storage"};
   const char* root = getenv("ANDROPKG_ANDROID_ROOT");
   if (path == nullptr || root == nullptr || *root == '\0' || path[0] != '/') return path;
+
+  // A path into an earlier data container of this iOS app (/var/mobile/Containers/Data/
+  // Application/<UUID>/...): iOS moves the container when the app is reinstalled, and apps keep
+  // absolute paths they once got (settings locations, caches). Redirect to the current one ($HOME).
+  for (const char* c : {"/private/var/mobile/Containers/Data/Application/",
+                        "/var/mobile/Containers/Data/Application/"}) {
+    size_t cn = strlen(c);
+    const char* home = getenv("HOME");
+    if (home == nullptr || strncmp(path, c, cn) != 0 || strlen(path) < cn + 36) continue;
+    const char* rest = path + cn + 36;  // after the UUID
+    if (*rest != '/' && *rest != '\0') continue;
+    const char* hc = strstr(home, "/Containers/Data/Application/");
+    if (hc == nullptr) continue;
+    hc += strlen("/Containers/Data/Application/");
+    if (strncmp(hc, path + cn, 36) == 0) return path;  // the current container
+    int n = snprintf(buf, len, "%s%s", home, rest);
+    return (n > 0 && static_cast<size_t>(n) < len) ? buf : path;
+  }
   if (strncmp(path, root, strlen(root)) == 0) return path;  // already a host path
+
+  // The app's private data: /data/user/0/<pkg> (alias /data/data/<pkg>) and the device-protected
+  // /data/user_de/0/<pkg> are the host directory ANDROPKG_APP_DATA_HOST (+ "_de"). Apps keep these
+  // paths (settings, caches), and the iOS container path changes when the app is reinstalled.
+  const char* pkg = getenv("ANDROPKG_APP_DATA_PKG");
+  const char* host = getenv("ANDROPKG_APP_DATA_HOST");
+  if (pkg != nullptr && host != nullptr && *pkg != '\0') {
+    static const char* const kData[] = {"/data/user/0/", "/data/data/", "/data/user_de/0/"};
+    size_t pn = strlen(pkg);
+    for (const char* d : kData) {
+      size_t dn = strlen(d);
+      if (strncmp(path, d, dn) == 0 && Under(path + dn, pkg, pn)) {
+        const char* de = d[6] == '_' ? "_de" : "";
+        int n = snprintf(buf, len, "%s%s%s", host, de, path + dn + pn);
+        return (n > 0 && static_cast<size_t>(n) < len) ? buf : path;
+      }
+    }
+  }
 
   // Shared storage: /storage/emulated/0 (and its /sdcard alias) is a host directory of its
   // own (ANDROPKG_STORAGE_DIR, e.g. the iOS app's Documents), else <root>/storage/emulated/0.
