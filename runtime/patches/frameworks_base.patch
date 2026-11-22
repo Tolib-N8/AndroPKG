@@ -598,6 +598,39 @@ index 2a6dc7b..e361929 100644
  
  status_t CursorWindow::clear() {
      if (mReadOnly) {
+diff --git a/libs/hwui/RenderNode.h b/libs/hwui/RenderNode.h
+index d1e04ad..663e800 100644
+--- a/libs/hwui/RenderNode.h
++++ b/libs/hwui/RenderNode.h
+@@ -76,6 +76,7 @@ class RenderNode;
+  */
+ class RenderNode : public VirtualLightRefBase {
+     friend class TestUtils;  // allow TestUtils to access syncDisplayList / syncProperties
++    friend class AndropkgSoftwareRenderNode;  // andropkg: software canvases sync and draw nodes
+ 
+ public:
+     enum DirtyPropertyMask {
+diff --git a/libs/hwui/SkiaCanvas.h b/libs/hwui/SkiaCanvas.h
+index b785989..34b7cde 100644
+--- a/libs/hwui/SkiaCanvas.h
++++ b/libs/hwui/SkiaCanvas.h
+@@ -38,6 +38,8 @@ class SkRRect;
+ namespace android {
+ 
+ // Holds an SkCanvas reference plus additional native data.
++namespace uirenderer { class AndropkgSoftwareRenderNode; }  // andropkg
++
+ class SkiaCanvas : public Canvas {
+ public:
+     explicit SkiaCanvas(const SkBitmap& bitmap);
+@@ -166,6 +168,7 @@ public:
+ protected:
+     SkiaCanvas();
+     SkCanvas* asSkCanvas() { return mCanvas; }
++    friend class uirenderer::AndropkgSoftwareRenderNode;  // andropkg: draws RenderNodes into mCanvas
+     void reset(SkCanvas* skiaCanvas);
+     void drawDrawable(SkDrawable* drawable) { mCanvas->drawDrawable(drawable); }
+ 
 diff --git a/libs/hwui/apex/android_bitmap.cpp b/libs/hwui/apex/android_bitmap.cpp
 index c442a7b..b494f1f 100644
 --- a/libs/hwui/apex/android_bitmap.cpp

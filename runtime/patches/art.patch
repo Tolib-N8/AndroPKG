@@ -599,7 +599,7 @@ index 87e9525..9fa967c 100644
  #else
  #define ART_USE_FUTEXES 0
 diff --git a/runtime/class_linker.cc b/runtime/class_linker.cc
-index c4a3165..28c2338 100644
+index c4a3165..49b6615 100644
 --- a/runtime/class_linker.cc
 +++ b/runtime/class_linker.cc
 @@ -39,6 +39,7 @@
@@ -610,7 +610,44 @@ index c4a3165..28c2338 100644
  #include "base/casts.h"
  #include "base/file_utils.h"
  #include "base/hash_map.h"
-@@ -8282,6 +8283,9 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
+@@ -3974,6 +3975,24 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
+     access_flags |= kAccNterpInvokeFastPathFlag;
+   }
+ 
++#ifdef ANDROPKG
++  // andropkg: a few boot-classpath methods are replaced by natives the runtime registers
++  // (framework behaviour that assumes a hardware renderer, a real device...). Their dex code
++  // stays in the file but never runs.
++  bool andropkg_native_override = false;
++  if (klass->GetClassLoader() == nullptr && (access_flags & (kAccNative | kAccAbstract)) == 0u) {
++    static constexpr struct { const char* cls; const char* name; const char* shorty; } kOverrides[] = {
++        {"Landroid/graphics/Canvas;", "drawRenderNode", "VL"},  // software canvases play RenderNodes
++    };
++    for (const auto& o : kOverrides) {
++      if (has_ascii_name(o.name, strlen(o.name)) && shorty == o.shorty &&
++          dex_file.GetTypeDescriptorView(dex_file.GetTypeId(klass->GetDexTypeIndex())) == o.cls) {
++        access_flags |= kAccNative;
++        andropkg_native_override = true;
++      }
++    }
++  }
++#endif
+   if (UNLIKELY((access_flags & kAccNative) != 0u)) {
+     // Check if the native method is annotated with @FastNative or @CriticalNative.
+     const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
+@@ -3982,7 +4001,11 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
+     dst->SetAccessFlags(access_flags);
+     DCHECK(!dst->IsAbstract());
+     DCHECK(!dst->HasCodeItem());
++#ifdef ANDROPKG
++    DCHECK(andropkg_native_override || method.GetCodeItemOffset() == 0u);
++#else
+     DCHECK_EQ(method.GetCodeItemOffset(), 0u);
++#endif
+     dst->SetDataPtrSize(nullptr, image_pointer_size_);  // JNI stub/trampoline not linked yet.
+   } else if ((access_flags & kAccAbstract) != 0u) {
+     dst->SetAccessFlags(access_flags);
+@@ -8282,6 +8305,9 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
                                  Allocator::GetNoopAllocator(),
                                  bit_vector_size,
                                  bit_vector_buffer_ptr);

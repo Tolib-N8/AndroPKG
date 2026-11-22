@@ -12,6 +12,7 @@
 #include <vector>
 
 static NSString* g_status = @"starting ART…";
+static UILabel* g_status_label;  // shown until the first frame
 static int g_exit_code = 1;
 // The screen the Android display maps to (read on the main thread before ART starts).
 static int g_screen_w = 1080, g_screen_h = 2400, g_screen_dpi = 420;
@@ -118,6 +119,7 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
   dispatch_async(dispatch_get_main_queue(), ^{
     g_frame_view.image = image;
     g_frame_view.hidden = NO;
+    g_status_label.hidden = YES;  // windows may be translucent: no "starting ART…" behind them
   });
   }
 }
@@ -351,9 +353,10 @@ static void SetAppVisible(int visible) {
   label.numberOfLines = 0;
   label.textAlignment = NSTextAlignmentCenter;
   label.text = g_status;
+  g_status_label = label;
   UIViewController* vc = [UIViewController new];
   UIView* root = [UIView new];
-  root.backgroundColor = UIColor.systemBackgroundColor;
+  root.backgroundColor = UIColor.blackColor;  // what shows through translucent windows
   label.frame = root.bounds;
   label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   [root addSubview:label];

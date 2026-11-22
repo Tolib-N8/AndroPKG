@@ -321,9 +321,22 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
   }
   s->lock.lock();
   size_t n = static_cast<size_t>(s->width) * s->height;
+  // The buffer keeps the last frame, so (as Surface does with its back buffer's copy-back) only
+  // the dirty rectangle the view hierarchy asks for is redrawn; a new size redraws everything.
+  bool keep = s->pixels.size() == n && s->drawnW == s->width && s->drawnH == s->height && s->frames > 0;
   if (s->pixels.size() != n) s->pixels.assign(n, 0);
   s->drawnW = s->width;
   s->drawnH = s->height;
+  ARect dirty{0, 0, s->width, s->height};
+  if (keep && dirtyRect) {
+    ARect d{env->GetIntField(dirtyRect, gJni.rectLeft), env->GetIntField(dirtyRect, gJni.rectTop),
+            env->GetIntField(dirtyRect, gJni.rectRight), env->GetIntField(dirtyRect, gJni.rectBottom)};
+    d.left = std::max(d.left, 0);
+    d.top = std::max(d.top, 0);
+    d.right = std::min(d.right, s->width);
+    d.bottom = std::min(d.bottom, s->height);
+    if (d.left < d.right && d.top < d.bottom) dirty = d;
+  }
   ANativeWindow_Buffer buffer = {};
   buffer.width = s->width;
   buffer.height = s->height;
@@ -332,11 +345,12 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
   buffer.bits = s->pixels.data();
   android::graphics::Canvas canvas(env, canvasObj);
   canvas.setBuffer(&buffer, ADATASPACE_SRGB);
-  if (dirtyRect) {  // the whole window is redrawn: one buffer, nothing to preserve per frame
-    env->SetIntField(dirtyRect, gJni.rectLeft, 0);
-    env->SetIntField(dirtyRect, gJni.rectTop, 0);
-    env->SetIntField(dirtyRect, gJni.rectRight, s->width);
-    env->SetIntField(dirtyRect, gJni.rectBottom, s->height);
+  canvas.clipRect(dirty);
+  if (dirtyRect) {
+    env->SetIntField(dirtyRect, gJni.rectLeft, dirty.left);
+    env->SetIntField(dirtyRect, gJni.rectTop, dirty.top);
+    env->SetIntField(dirtyRect, gJni.rectRight, dirty.right);
+    env->SetIntField(dirtyRect, gJni.rectBottom, dirty.bottom);
   }
   return ptr;
 }
@@ -1401,8 +1415,10 @@ jlong hr_createProxy(JNIEnv*, jclass, jboolean, jlong) {
 
 namespace android {
 int register_android_view_ThreadedRenderer(JNIEnv* env);
+int register_andropkg_software_render_node(JNIEnv* env);
 
 int register_andropkg_window(JNIEnv* env) {
+  register_andropkg_software_render_node(env);
   ZeroFillNatives(env, "android/graphics/HardwareRenderer");
   register_android_view_ThreadedRenderer(env);  // the process-wide config natives, as before
   jclass rn = env->FindClass("android/graphics/RenderNode");

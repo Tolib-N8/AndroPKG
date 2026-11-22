@@ -134,7 +134,8 @@ TARGETS = [
                      "frameworks/base/libs/hwui/apex/android_bitmap.cpp"],  # ABitmap_* (libjnigraphics)
          andropkg_srcs=[f"{ANDROPKG}/runtime/graphics/gpu_unavailable.cc",
                         f"{ANDROPKG}/runtime/graphics/hwui_jni_pending.cc",
-                        f"{ANDROPKG}/runtime/graphics/window_jni.cc"],
+                        f"{ANDROPKG}/runtime/graphics/window_jni.cc",
+                        f"{ANDROPKG}/runtime/graphics/render_node_software.cc"],
          extra_includes=["frameworks/native/libs/ui/include_types", "frameworks/native/libs/ui/include",
                          "frameworks/native/include", "frameworks/native/libs/math/include",
                          "frameworks/native/opengl/include", "external/vulkan-headers/include",

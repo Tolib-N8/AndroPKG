@@ -58,6 +58,28 @@ public class MainActivity extends Activity {
         parcel.recycle();
         Log.i(TAG, "[platform] parcel bitmap " + copy.getWidth() + "x" + copy.getHeight() + " pixel="
                 + Integer.toHexString(copy.getPixel(2, 2)));
+        // RenderNodes drawn into a software canvas (Compose's GraphicsLayer does this).
+        android.graphics.RenderNode outer = new android.graphics.RenderNode("outer");
+        android.graphics.RenderNode inner = new android.graphics.RenderNode("inner");
+        inner.setPosition(0, 0, 4, 4);
+        inner.setTranslationX(4);
+        android.graphics.RecordingCanvas ic = inner.beginRecording();
+        ic.drawColor(0xff0000ff);
+        inner.endRecording();
+        outer.setPosition(0, 0, 8, 4);
+        android.graphics.RecordingCanvas oc = outer.beginRecording();
+        oc.drawColor(0xffff0000);
+        oc.drawRenderNode(inner);
+        outer.endRecording();
+        android.graphics.Bitmap target = android.graphics.Bitmap.createBitmap(8, 4, android.graphics.Bitmap.Config.ARGB_8888);
+        String rn;
+        try {
+            new android.graphics.Canvas(target).drawRenderNode(outer);
+            rn = Integer.toHexString(target.getPixel(1, 1)) + "," + Integer.toHexString(target.getPixel(6, 1));
+        } catch (RuntimeException e) {
+            rn = e.toString();
+        }
+        Log.i(TAG, "[platform] software renderNode " + rn);
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();
