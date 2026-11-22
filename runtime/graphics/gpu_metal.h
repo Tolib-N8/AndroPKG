@@ -35,8 +35,9 @@ GrDirectContext* Context();
 sk_sp<SkSurface> MakeSurface(int width, int height);
 
 /// Starts composing a display frame of width x height: the canvas draws into the host's
-/// CAMetalLayer drawable, or an offscreen target.
-SkCanvas* BeginFrame(int width, int height);
+/// CAMetalLayer drawable, or an offscreen target (no layer, or `readback`: EndFrame will be
+/// given a buffer).
+SkCanvas* BeginFrame(int width, int height, bool readback);
 
 /// Submits the frame and presents it. With `readback` (width * height RGBA8888 pixels) the
 /// frame is also copied there.

@@ -1043,7 +1043,12 @@ void ComposeLocked() {
   }
   if (andropkg_gpu::Enabled()) {
     std::lock_guard<std::recursive_mutex> gpuLock(andropkg_gpu::Mutex());
-    SkCanvas* canvas = andropkg_gpu::BeginFrame(gDisplayW, gDisplayH);
+    // A copy in memory only when someone looks at it: no layer (the Mac), tests, the first
+    // frame (the runner checks it), test taps.
+    static uint64_t gpuFrames = 0;
+    static const bool keepFrames = TestsEnabled() || getenv("ANDROPKG_TEST_TAP") || getenv("ANDROPKG_FRAME_PNG");
+    bool readback = !andropkg_gpu::PresentsToLayer() || keepFrames || gpuFrames++ == 0;
+    SkCanvas* canvas = andropkg_gpu::BeginFrame(gDisplayW, gDisplayH, readback);
     if (canvas != nullptr) {
       canvas->clear(SK_ColorBLACK);
       for (HostWindow* w : drawn) {
@@ -1068,11 +1073,6 @@ void ComposeLocked() {
           if (c.z >= 0) DrawChildLocked(canvas, c, w->sx, w->sy);
         }
       }
-      // A copy in memory only when someone looks at it: no layer (the Mac), tests, the first
-      // frame (the runner checks it), test taps.
-      static uint64_t gpuFrames = 0;
-      static const bool keepFrames = TestsEnabled() || getenv("ANDROPKG_TEST_TAP") || getenv("ANDROPKG_FRAME_PNG");
-      bool readback = !andropkg_gpu::PresentsToLayer() || keepFrames || gpuFrames++ == 0;
       if (readback) gScreen.assign(static_cast<size_t>(gDisplayW) * gDisplayH, 0);
       andropkg_gpu::EndFrame(readback ? gScreen.data() : nullptr);
       if (readback) Present(gScreen.data(), gDisplayW, gDisplayH, gDisplayW * 4);

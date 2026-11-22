@@ -72,11 +72,13 @@ sk_sp<SkSurface> MakeSurface(int width, int height) {
 
 bool PresentsToLayer() { return S().layer != nil; }
 
-SkCanvas* BeginFrame(int width, int height) {
+SkCanvas* BeginFrame(int width, int height, bool readback) {
   State& s = S();
   if (!s.context) return nullptr;
   s.frame.reset();
-  if (s.layer != nil) {
+  // A frame to keep is composed offscreen: drawables can't be read back (iOS); EndFrame then
+  // copies it to the layer.
+  if (s.layer != nil && !readback) {
     CGSize size = CGSizeMake(width, height);
     if (!CGSizeEqualToSize(s.layer.drawableSize, size)) s.layer.drawableSize = size;
     s.frame = SkSurface::MakeFromCAMetalLayer(s.context.get(), (__bridge GrMTLHandle)s.layer,
@@ -98,7 +100,15 @@ void EndFrame(uint32_t* readback) {
     SkImageInfo info = SkImageInfo::Make(s.frame->width(), s.frame->height(), kRGBA_8888_SkColorType,
                                          kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
     s.frame->readPixels(info, readback, static_cast<size_t>(s.frame->width()) * 4, 0, 0);
+    if (s.layer != nil && s.frame == s.offscreen) {  // now show it
+      sk_sp<SkImage> image = s.offscreen->makeImageSnapshot();
+      s.frame = SkSurface::MakeFromCAMetalLayer(s.context.get(), (__bridge GrMTLHandle)s.layer,
+                                                kTopLeft_GrSurfaceOrigin, 1, kBGRA_8888_SkColorType,
+                                                SkColorSpace::MakeSRGB(), nullptr, &s.drawable);
+      if (s.frame) s.frame->getCanvas()->drawImage(image, 0, 0);
+    }
   }
+  if (!s.frame) return;
   s.frame->flushAndSubmit();
   if (s.drawable != nullptr) {
     id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)s.drawable;  // balances Skia's retain
