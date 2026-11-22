@@ -22,6 +22,7 @@
 // AudioFile (compressed packets), and serves anything else ExtAudioFile reads (WAV, FLAC,
 // AIFF, CAF, ALAC...) as an audio/raw track decoded on the fly.
 #import <AudioToolbox/AudioToolbox.h>
+#import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <VideoToolbox/VideoToolbox.h>
 
@@ -764,7 +765,25 @@ struct Codec {
 jfieldID gCodecContext;
 jmethodID gPostEvent;
 
+void EnsureCodecIds(JNIEnv* env, jobject codec) {
+  if (gCodecContext) return;
+  jclass c = env->GetObjectClass(codec);  // MediaCodec (final): initialized by now
+  gPostEvent = env->GetMethodID(c, "postEventFromNative", "(IIILjava/lang/Object;)V");
+  gCodecContext = env->GetFieldID(c, "mNativeContext", "J");
+  env->DeleteLocalRef(c);
+}
+int64_t SurfaceNative(JNIEnv* env, jobject surface) {
+  if (!surface) return 0;
+  if (!gSurfaceNative) {
+    jclass c = env->FindClass("android/view/Surface");
+    gSurfaceNative = env->GetFieldID(c, "mNativeObject", "J");
+    env->DeleteLocalRef(c);
+  }
+  return env->GetLongField(surface, gSurfaceNative);
+}
+
 Codec* GetCodec(JNIEnv* env, jobject thiz) {
+  EnsureCodecIds(env, thiz);
   auto* c = reinterpret_cast<Codec*>(env->GetLongField(thiz, gCodecContext));
   if (!c) Throw(env, "java/lang/IllegalStateException", "released");
   return c;
@@ -888,6 +907,7 @@ void cs_setup(JNIEnv* env, jobject thiz, jstring name, jboolean nameIsType, jboo
     Throw(env, "java/lang/IllegalArgumentException", "no codec for " + n + (encoder ? " (encoder)" : ""));
     return;
   }
+  EnsureCodecIds(env, thiz);
   auto* c = new Codec;
   c->desc = d;
   c->self = env->NewGlobalRef(thiz);
@@ -895,6 +915,7 @@ void cs_setup(JNIEnv* env, jobject thiz, jstring name, jboolean nameIsType, jboo
 }
 
 void ReleaseCodec(JNIEnv* env, jobject thiz) {
+  EnsureCodecIds(env, thiz);
   auto* c = reinterpret_cast<Codec*>(env->GetLongField(thiz, gCodecContext));
   if (!c) return;
   env->SetLongField(thiz, gCodecContext, 0);
@@ -921,7 +942,7 @@ void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray val
   if (IsVideo(c->desc)) {
     c->vdec = std::make_unique<VideoDecoder>(strcmp(kCodecs[c->desc].mime, "video/hevc") == 0);
     c->vdec->Init(c->format);
-    c->surface = surface ? env->GetLongField(surface, gSurfaceNative) : 0;
+    c->surface = SurfaceNative(env, surface);
     MLOG("video codec %s %dx%d surface=%lld", kCodecs[c->desc].name, c->vdec->width, c->vdec->height,
          (long long)c->surface);
     return;
@@ -1157,7 +1178,7 @@ void cs_setSurface(JNIEnv* env, jobject thiz, jobject surface) {  // MediaCodec.
   Codec* c = GetCodec(env, thiz);
   if (!c) return;
   std::lock_guard<std::mutex> g(c->lock);
-  c->surface = surface ? env->GetLongField(surface, gSurfaceNative) : 0;
+  c->surface = SurfaceNative(env, surface);
 }
 void cs_setVideoScalingMode(JNIEnv*, jobject, jint) {}
 
@@ -1333,10 +1354,13 @@ jobject cs_getOwnCodecInfo(JNIEnv* env, jobject thiz) {
 struct Sample {
   Bytes data;
   int64_t timeUs;
+  bool sync = true;
 };
 struct Track {
   std::string mime;
   int rate = 0, channels = 0;
+  int width = 0, height = 0;  // (video)
+  float frameRate = 0;
   int64_t durationUs = -1;
   std::vector<Bytes> csd;
   std::vector<Sample> samples;           // (compressed tracks)
@@ -1355,7 +1379,15 @@ struct Extractor {
 
 jfieldID gExtractorContext;
 
+void EnsureExtractorIds(JNIEnv* env, jobject extractor) {
+  if (gExtractorContext) return;
+  jclass c = env->FindClass("android/media/MediaExtractor");  // initialized by now (an instance exists)
+  gExtractorContext = env->GetFieldID(c, "mNativeContext", "J");
+  env->DeleteLocalRef(c);
+}
+
 Extractor* GetExtractor(JNIEnv* env, jobject thiz) {
+  EnsureExtractorIds(env, thiz);
   return reinterpret_cast<Extractor*>(env->GetLongField(thiz, gExtractorContext));
 }
 
@@ -1461,6 +1493,101 @@ Bytes AscFromEsds(const Bytes& esds) {
   return {};
 }
 
+// Video tracks of an MP4/MOV (AVAssetReader, compressed samples). Samples are converted to
+// Annex-B and the parameter sets become csd-* as Android's MPEG4Extractor delivers them.
+bool OpenVideoTracks(Extractor* x, const Bytes& file) {
+  @autoreleasepool {
+    NSString* path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                                                 [NSString stringWithFormat:@"andropkg-extract-%@.mp4", NSUUID.UUID.UUIDString]];
+    if (![[NSData dataWithBytesNoCopy:(void*)file.data() length:file.size() freeWhenDone:NO] writeToFile:path atomically:NO]) {
+      return false;
+    }
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+    bool added = false;
+    for (AVAssetTrack* track in [asset tracksWithMediaType:AVMediaTypeVideo]) {
+      CMFormatDescriptionRef fd = (__bridge CMFormatDescriptionRef)track.formatDescriptions.firstObject;
+      if (!fd) continue;
+      FourCharCode codec = CMFormatDescriptionGetMediaSubType(fd);
+      bool hevc = codec == kCMVideoCodecType_HEVC;
+      if (codec != kCMVideoCodecType_H264 && !hevc) continue;
+      auto t = std::make_unique<Track>();
+      t->mime = hevc ? "video/hevc" : "video/avc";
+      CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(fd);
+      t->width = dim.width;
+      t->height = dim.height;
+      t->frameRate = track.nominalFrameRate;
+      t->durationUs = (int64_t)(CMTimeGetSeconds(asset.duration) * 1e6);
+      static const uint8_t kStart[] = {0, 0, 0, 1};
+      size_t count = 0;
+      int nalHeader = 4;
+      if (hevc) {
+        CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, 0, nullptr, nullptr, &count, &nalHeader);
+      } else {
+        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, 0, nullptr, nullptr, &count, &nalHeader);
+      }
+      Bytes all;
+      for (size_t k = 0; k < count; k++) {
+        const uint8_t* ps = nullptr;
+        size_t len = 0;
+        OSStatus st = hevc ? CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fd, k, &ps, &len, nullptr, nullptr)
+                           : CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fd, k, &ps, &len, nullptr, nullptr);
+        if (st != noErr) continue;
+        Bytes one(kStart, kStart + 4);
+        one.insert(one.end(), ps, ps + len);
+        if (hevc) {
+          all.insert(all.end(), one.begin(), one.end());  // HEVC: VPS+SPS+PPS in csd-0
+        } else {
+          t->csd.push_back(one);  // AVC: csd-0 SPS, csd-1 PPS
+        }
+      }
+      if (hevc && !all.empty()) t->csd.push_back(all);
+      NSError* error = nil;
+      AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset error:&error];
+      AVAssetReaderTrackOutput* out = [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track outputSettings:nil];
+      if (!reader || ![reader canAddOutput:out]) continue;
+      [reader addOutput:out];
+      if (![reader startReading]) continue;
+      while (CMSampleBufferRef sb = [out copyNextSampleBuffer]) {
+        CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
+        size_t total = bb ? CMBlockBufferGetDataLength(bb) : 0;
+        Bytes avcc(total);
+        if (total) CMBlockBufferCopyDataBytes(bb, 0, total, avcc.data());
+        Sample smp;
+        for (size_t p = 0; p + nalHeader <= total;) {  // length-prefixed NALs -> start codes
+          size_t len = 0;
+          for (int b = 0; b < nalHeader; b++) len = len << 8 | avcc[p + b];
+          p += nalHeader;
+          if (p + len > total) break;
+          smp.data.insert(smp.data.end(), kStart, kStart + 4);
+          smp.data.insert(smp.data.end(), avcc.begin() + p, avcc.begin() + p + len);
+          p += len;
+        }
+        CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
+        smp.timeUs = CMTIME_IS_VALID(pts) ? (int64_t)(CMTimeGetSeconds(pts) * 1e6) : 0;
+        CFArrayRef att = CMSampleBufferGetSampleAttachmentsArray(sb, false);
+        if (att && CFArrayGetCount(att) > 0) {
+          auto d = (CFDictionaryRef)CFArrayGetValueAtIndex(att, 0);
+          CFBooleanRef notSync = nullptr;
+          smp.sync = !(CFDictionaryGetValueIfPresent(d, kCMSampleAttachmentKey_NotSync, (const void**)&notSync) &&
+                       notSync && CFBooleanGetValue(notSync));
+        }
+        CFRelease(sb);
+        if (smp.data.empty()) continue;
+        t->maxSize = std::max(t->maxSize, smp.data.size());
+        t->samples.push_back(std::move(smp));
+      }
+      // Samples come in decode order; readSampleData serves them so (pts may go back: B-frames).
+      if (!t->samples.empty()) {
+        x->tracks.push_back(std::move(t));
+        added = true;
+      }
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    if (added) x->container = "video/mp4";
+    return added;
+  }
+}
+
 bool OpenAudioFile(Extractor* x, const Bytes& file) {
   FileReader reader{&file};
   AudioFileID af = nullptr;
@@ -1547,15 +1674,16 @@ void OpenSource(JNIEnv* env, jobject thiz, int fd, int64_t offset, int64_t lengt
   x->tracks.clear();
   if (andropkg_media::IsOgg(file.data(), file.size())) {
     if (OpenOgg(x, file)) return;
-  } else if (OpenAudioFile(x, file)) {
-    return;
+  } else {
+    bool video = OpenVideoTracks(x, file);
+    if (OpenAudioFile(x, file) || video) return;  // (an MP4's audio track comes from AudioFile)
   }
   if (OpenRaw(x, fd, offset, length)) return;
   Throw(env, "java/io/IOException", "Failed to instantiate extractor.");
 }
 
 void ex_init(JNIEnv*, jclass) {}
-void ex_setup(JNIEnv* env, jobject thiz) { env->SetLongField(thiz, gExtractorContext, reinterpret_cast<jlong>(new Extractor)); }
+void ex_setup(JNIEnv* env, jobject thiz) { EnsureExtractorIds(env, thiz); env->SetLongField(thiz, gExtractorContext, reinterpret_cast<jlong>(new Extractor)); }
 void ex_release(JNIEnv* env, jobject thiz) {
   delete GetExtractor(env, thiz);
   env->SetLongField(thiz, gExtractorContext, 0);
@@ -1625,8 +1753,14 @@ jobject ex_trackFormat(JNIEnv* env, jobject thiz, jint i) {
   Track& t = *x->tracks[i];
   JMap m(env);
   m.PutString("mime", t.mime);
-  m.PutInt("sample-rate", t.rate);
-  m.PutInt("channel-count", t.channels);
+  if (t.width > 0) {
+    m.PutInt("width", t.width);
+    m.PutInt("height", t.height);
+    if (t.frameRate > 0) m.PutInt("frame-rate", (int)lrintf(t.frameRate));
+  } else {
+    m.PutInt("sample-rate", t.rate);
+    m.PutInt("channel-count", t.channels);
+  }
   if (t.durationUs >= 0) m.PutLong("durationUs", t.durationUs);
   m.PutInt("max-input-size", (int)std::max<size_t>(t.maxSize + 16, 8192));
   if (t.mime == "audio/raw") m.PutInt("pcm-encoding", 2);
@@ -1755,7 +1889,10 @@ jlong ex_sampleSize(JNIEnv* env, jobject thiz) {
 }
 jint ex_sampleFlags(JNIEnv* env, jobject thiz) {
   Extractor* x = GetExtractor(env, thiz);
-  return x && NextTrack(x) >= 0 ? 1 /* SAMPLE_FLAG_SYNC */ : -1;
+  int ti = x ? NextTrack(x) : -1;
+  if (ti < 0) return -1;
+  Track& t = *x->tracks[ti];
+  return t.pcm || t.samples[t.cursor].sync ? 1 /* SAMPLE_FLAG_SYNC */ : 0;
 }
 
 void ex_seekTo(JNIEnv* env, jobject thiz, jlong timeUs, jint mode) {
@@ -1771,8 +1908,12 @@ void ex_seekTo(JNIEnv* env, jobject thiz, jlong timeUs, jint mode) {
       t.rawChunk.clear();
       t.rawEnd = false;
     } else {
-      size_t i = 0;  // the last sample at or before timeUs (every audio sample is a sync sample)
-      while (i + 1 < t.samples.size() && t.samples[i + 1].timeUs <= timeUs) i++;
+      // The last sync sample at or before timeUs (every audio sample is one); video samples are
+      // in decode order, so compare presentation times of sync samples only.
+      size_t i = 0;
+      for (size_t k = 0; k < t.samples.size(); k++) {
+        if (t.samples[k].sync && t.samples[k].timeUs <= timeUs) i = k;
+      }
       t.cursor = i;
     }
   }
@@ -1789,16 +1930,10 @@ jboolean ex_cryptoInfo(JNIEnv*, jobject, jobject) { return JNI_FALSE; }
 namespace andropkg_media {
 
 void RegisterCodecs(JNIEnv* env) {
-  jclass mc = env->FindClass("android/media/MediaCodec");
-  gCodecContext = env->GetFieldID(mc, "mNativeContext", "J");
-  gPostEvent = env->GetMethodID(mc, "postEventFromNative", "(IIILjava/lang/Object;)V");
-  env->DeleteLocalRef(mc);
-  jclass sf = env->FindClass("android/view/Surface");
-  gSurfaceNative = env->GetFieldID(sf, "mNativeObject", "J");
-  env->DeleteLocalRef(sf);
-  jclass me = env->FindClass("android/media/MediaExtractor");
-  gExtractorContext = env->GetFieldID(me, "mNativeContext", "J");
-  env->DeleteLocalRef(me);
+  // Field and method IDs are looked up on first use (EnsureIds), not here: GetFieldID would
+  // initialize MediaCodec/MediaExtractor, whose static initializers load this very library;
+  // with one thread loading it from MediaCodec.<clinit> and another in MediaExtractor.<clinit>,
+  // each waited for the other.
   if (env->ExceptionCheck()) {
     env->ExceptionDescribe();
     env->ExceptionClear();

@@ -34,6 +34,7 @@ public class MainActivity extends Activity {
         root.addView(player("video/avc", "green_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(player("video/hevc", "red_hevc.bin", 35), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(texturePlayer("video/avc", "blue_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(extractorPlayer("yellow.mp4.bin"), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
     }
 
@@ -63,6 +64,75 @@ public class MainActivity extends Activity {
             @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
         });
         return view;
+    }
+
+    /** An MP4 (H.264 with B-frames + AAC) demuxed by MediaExtractor. */
+    SurfaceView extractorPlayer(String asset) {
+        SurfaceView view = new SurfaceView(this);
+        view.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) {
+                new Thread(() -> extract(asset, holder.getSurface()), "extractor").start();
+            }
+            @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) {}
+            @Override public void surfaceDestroyed(SurfaceHolder h) {}
+        });
+        return view;
+    }
+
+    void extract(String asset, Surface surface) {
+        try (android.content.res.AssetFileDescriptor fd = getAssets().openFd(asset)) {
+            android.media.MediaExtractor ex = new android.media.MediaExtractor();
+            ex.setDataSource(fd.getFileDescriptor(), fd.getStartOffset(), fd.getLength());
+            StringBuilder tracks = new StringBuilder();
+            int video = -1;
+            MediaFormat vf = null;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                MediaFormat f = ex.getTrackFormat(i);
+                String mime = f.getString(MediaFormat.KEY_MIME);
+                tracks.append(mime).append(' ');
+                if (mime.startsWith("video/")) {
+                    video = i;
+                    vf = f;
+                }
+            }
+            ex.selectTrack(video);
+            MediaCodec codec = MediaCodec.createDecoderByType(vf.getString(MediaFormat.KEY_MIME));
+            codec.configure(vf, surface, null, 0);
+            codec.start();
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            int samples = 0, sync = 0, rendered = 0;
+            boolean inEos = false, eos = false;
+            for (int spins = 0; !eos && spins < 2000; spins++) {
+                if (!inEos) {
+                    int in = codec.dequeueInputBuffer(10000);
+                    if (in >= 0) {
+                        int n = ex.readSampleData(codec.getInputBuffer(in), 0);
+                        if (n < 0) {
+                            codec.queueInputBuffer(in, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            inEos = true;
+                        } else {
+                            if ((ex.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0) sync++;
+                            codec.queueInputBuffer(in, 0, n, ex.getSampleTime(), 0);
+                            samples++;
+                            ex.advance();
+                        }
+                    }
+                }
+                int out = codec.dequeueOutputBuffer(info, 10000);
+                if (out >= 0) {
+                    codec.releaseOutputBuffer(out, info.size > 0);
+                    if (info.size > 0) rendered++;
+                    eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                }
+            }
+            codec.release();
+            ex.release();
+            Log.i(TAG, "[video] extractor tracks=" + tracks.toString().trim() + " size=" + vf.getInteger(MediaFormat.KEY_WIDTH)
+                    + "x" + vf.getInteger(MediaFormat.KEY_HEIGHT) + " csd=" + vf.containsKey("csd-0") + " samples=" + samples
+                    + " sync=" + sync + " rendered=" + rendered);
+        } catch (Exception e) {
+            Log.e(TAG, "[video] extractor failed", e);
+        }
     }
 
     void play(String mime, String asset, int audType, SurfaceHolder holder) {
