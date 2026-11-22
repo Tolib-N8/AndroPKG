@@ -14,6 +14,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,6 +150,31 @@ static void no_sigpipe(int fd) {  // Linux apps pass MSG_NOSIGNAL; Darwin has a 
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 }
 
+// ANDROPKG_LOG_NDKNET=1: log native name lookups, connects and socket errors.
+static int net_trace(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("ANDROPKG_LOG_NDKNET") != NULL;
+    return on;
+}
+static const char *fmt_addr(const struct sockaddr *sa, char *buf, size_t n) {
+    char ip[64] = "?";
+    int port = 0;
+    if (sa->sa_family == AF_INET) {
+        const struct sockaddr_in *in = (const struct sockaddr_in *)sa;
+        inet_ntop(AF_INET, &in->sin_addr, ip, sizeof ip);
+        port = ntohs(in->sin_port);
+    } else if (sa->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *in = (const struct sockaddr_in6 *)sa;
+        inet_ntop(AF_INET6, &in->sin6_addr, ip, sizeof ip);
+        port = ntohs(in->sin6_port);
+    } else {
+        snprintf(buf, n, "family %d", sa->sa_family);
+        return buf;
+    }
+    snprintf(buf, n, "%s:%d", ip, port);
+    return buf;
+}
+
 NDK_EXPORT int bionic_socket(int family, int type, int protocol) {
     int df = family_to_darwin(family);
     if (df < 0) return fail(97);  // EAFNOSUPPORT (netlink, packet)
@@ -180,7 +206,15 @@ NDK_EXPORT int bionic_connect(int fd, const void *addr, socklen_t len) {
     struct sockaddr_storage ss;
     int n = addr_to_darwin(addr, len, &ss);
     if (n < 0) return -1;
-    RET(connect(fd, (struct sockaddr *)&ss, (socklen_t)n));
+    int r = connect(fd, (struct sockaddr *)&ss, (socklen_t)n);
+    if (net_trace()) {
+        int e = errno;
+        char b[96];
+        ndk_log(4, "net connect fd %d %s -> %d%s%s", fd, fmt_addr((struct sockaddr *)&ss, b, sizeof b), r,
+                r < 0 ? " " : "", r < 0 ? strerror(e) : "");
+        errno = e;
+    }
+    RET(r);
 }
 NDK_EXPORT int bionic_listen(int fd, int backlog) { RET(listen(fd, backlog)); }
 NDK_EXPORT int bionic_shutdown(int fd, int how) { RET(shutdown(fd, how)); }
@@ -291,8 +325,17 @@ NDK_EXPORT int bionic_setsockopt(int fd, int level, int opt, const void *val, so
     int dlevel;
     int dopt = map_option(level, opt, &dlevel);
     if (dopt == OPT_IGNORE) return 0;
-    if (dopt == OPT_UNSUPPORTED) return fail(92);  // ENOPROTOOPT
-    RET(setsockopt(fd, dlevel, dopt, val, len));
+    if (dopt == OPT_UNSUPPORTED) {
+        if (net_trace()) ndk_log(4, "net setsockopt fd %d level %d opt %d: unsupported", fd, level, opt);
+        return fail(92);  // ENOPROTOOPT
+    }
+    int r = setsockopt(fd, dlevel, dopt, val, len);
+    if (r < 0 && net_trace()) {
+        int e = errno;
+        ndk_log(4, "net setsockopt fd %d level %d opt %d -> %s", fd, level, opt, strerror(e));
+        errno = e;
+    }
+    RET(r);
 }
 
 NDK_EXPORT int bionic_getsockopt(int fd, int level, int opt, void *val, socklen_t *len) {
@@ -345,8 +388,16 @@ static int msg_to_linux(int d) {
     return f;
 }
 
-NDK_EXPORT ssize_t bionic_send(int fd, const void *b, size_t n, int flags) { RET(send(fd, b, n, msg_to_darwin(flags))); }
-NDK_EXPORT ssize_t bionic_recv(int fd, void *b, size_t n, int flags) { RET(recv(fd, b, n, msg_to_darwin(flags))); }
+static ssize_t net_io(const char *op, int fd, ssize_t r) {
+    if (r < 0 && net_trace() && errno != EAGAIN) {
+        int e = errno;
+        ndk_log(4, "net %s fd %d -> %s", op, fd, strerror(e));
+        errno = e;
+    }
+    return r;
+}
+NDK_EXPORT ssize_t bionic_send(int fd, const void *b, size_t n, int flags) { RET(net_io("send", fd, send(fd, b, n, msg_to_darwin(flags)))); }
+NDK_EXPORT ssize_t bionic_recv(int fd, void *b, size_t n, int flags) { RET(net_io("recv", fd, recv(fd, b, n, msg_to_darwin(flags)))); }
 NDK_EXPORT ssize_t bionic___recvfrom_chk(int fd, void *b, size_t n, size_t blen, int flags, void *addr, socklen_t *len);
 NDK_EXPORT ssize_t bionic___sendto_chk(int fd, const void *b, size_t n, size_t blen, int flags, const void *addr, socklen_t len);
 
@@ -434,6 +485,12 @@ NDK_EXPORT int bionic_getaddrinfo(const char *node, const char *service, const s
         h.ai_next = NULL;
     }
     int r = getaddrinfo(node, service, hints ? &h : NULL, &dres);
+    if (net_trace()) {
+        char b[96] = "";
+        if (r == 0 && dres) fmt_addr(dres->ai_addr, b, sizeof b);
+        ndk_log(4, "net getaddrinfo %s:%s -> %d %s", node ? node : "(null)", service ? service : "", r,
+                r == 0 ? b : gai_strerror(r));
+    }
     if (r != 0) {
         if (r == EAI_SYSTEM) ndk_fix_errno();
         return r;  // (EAI_* values: the same BSD numbering in bionic)

@@ -42,6 +42,12 @@ public final class AndroPkgSystem {
     static final ActivityStack stack = new ActivityStack();
     static final MediaSessionImpl mediaSessions = new MediaSessionImpl();
 
+    static void deleteTree(File f) {
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteTree(k);
+        f.delete();
+    }
+
     public static void main(String[] args) throws Exception {
         apkPath = args[0];
         dataDir = args[1];
@@ -135,7 +141,14 @@ public final class AndroPkgSystem {
         if (appInfo.processName == null) appInfo.processName = appInfo.packageName;
         if (appInfo.metaData == null) appInfo.metaData = (android.os.Bundle) Hidden.getField(parsedPackage, "mAppMetaData");
         // keystore2's key blobs: next to the app's data, outside it (as /data/misc/keystore).
-        AndroidKeyStore.install(new File(hostData + "_keystore"));
+        // (debugging switch) start with an empty app-specific external storage (caches).
+        if (System.getenv("ANDROPKG_TEST_CLEAR_EXTERNAL") != null) {
+            deleteTree(new File("/storage/emulated/0/Android/data/" + appInfo.packageName));
+            Log.i(TAG, "cleared external app storage");
+        }
+        if (System.getenv("ANDROPKG_TEST_NO_KEYSTORE") == null) {  // (debugging switch)
+            AndroidKeyStore.install(new File(hostData + "_keystore"));
+        }
 
         packageInfo = new PackageInfo();
         packageInfo.packageName = appInfo.packageName;

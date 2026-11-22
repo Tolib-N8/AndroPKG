@@ -253,6 +253,9 @@ add_library(andropkg_ndk SHARED ${_ndk_srcs}
   ${ANDROPKG_ROOT}/shim/src/syscall.c ${ANDROPKG_ROOT}/shim/src/tls.c ${ANDROPKG_ROOT}/shim/src/svc_entry.S
   ${ANDROPKG_ROOT}/ndk-libs/exec_entry.S ${ANDROPKG_ROOT}/ndk-libs/setjmp.S
   ${_ndkgen}/ndk_symbols.inc)
+if(ANDROPKG_NDK_O0)  # (debugging: the NDK layer without optimization)
+  target_compile_options(andropkg_ndk PRIVATE -O0)
+endif()
 set_target_properties(andropkg_ndk PROPERTIES OUTPUT_NAME andropkg_ndk INSTALL_NAME_DIR "@rpath"
                       BUILD_RPATH "@loader_path" C_VISIBILITY_PRESET hidden)
 target_include_directories(andropkg_ndk PRIVATE ${ANDROPKG_ROOT}/loader/include ${ANDROPKG_ROOT}/shim/include

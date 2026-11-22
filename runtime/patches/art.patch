@@ -1232,6 +1232,66 @@ index bef0fd3..365eb4c 100644
 +  art::JNIEnvExt::SetTableOverride(table);
 +}
 +#endif
+diff --git a/runtime/jni/jni_internal.cc b/runtime/jni/jni_internal.cc
+index ad2efc5..cb0fa30 100644
+--- a/runtime/jni/jni_internal.cc
++++ b/runtime/jni/jni_internal.cc
+@@ -2403,8 +2403,34 @@ class JNI {
+     return GetPrimitiveArray<jbooleanArray, jboolean, mirror::BooleanArray>(env, array, is_copy);
+   }
+ 
++#if defined(__APPLE__)
++  // andropkg: ANDROPKG_LOG_JNIBYTES=1 appends every byte array (>= 32 bytes) native code reads
++  // to $TMPDIR/andropkg-jnibytes.bin as [u32 length][bytes] records (to inspect what an app's
++  // native code receives, e.g. HTTP bodies).
++  static void AndropkgDumpBytes(const jbyte* p, jsize n, bool set = false) {
++    static const bool on = getenv("ANDROPKG_LOG_JNIBYTES") != nullptr;
++    if (!on || p == nullptr || n < 32) return;
++    static std::mutex mu;
++    std::lock_guard<std::mutex> lock(mu);
++    static FILE* f = nullptr;
++    if (f == nullptr) {
++      std::string path = std::string(getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp") + "/andropkg-jnibytes.bin";
++      f = fopen(path.c_str(), "wb");
++      if (f == nullptr) return;
++    }
++    uint32_t len = static_cast<uint32_t>(n) | (set ? 0x80000000u : 0);  // high bit: written by native code
++    fwrite(&len, 4, 1, f);
++    fwrite(p, 1, n, f);
++    fflush(f);
++  }
++#endif
++
+   static jbyte* GetByteArrayElements(JNIEnv* env, jbyteArray array, jboolean* is_copy) {
+-    return GetPrimitiveArray<jbyteArray, jbyte, mirror::ByteArray>(env, array, is_copy);
++    jbyte* r = GetPrimitiveArray<jbyteArray, jbyte, mirror::ByteArray>(env, array, is_copy);
++#if defined(__APPLE__)
++    if (r != nullptr) AndropkgDumpBytes(r, GetArrayLength(env, array));
++#endif
++    return r;
+   }
+ 
+   static jchar* GetCharArrayElements(JNIEnv* env, jcharArray array, jboolean* is_copy) {
+@@ -2477,6 +2503,9 @@ class JNI {
+   static void GetByteArrayRegion(JNIEnv* env, jbyteArray array, jsize start, jsize length,
+                                  jbyte* buf) {
+     GetPrimitiveArrayRegion<jbyteArray, jbyte, mirror::ByteArray>(env, array, start, length, buf);
++#if defined(__APPLE__)
++    AndropkgDumpBytes(buf, length);
++#endif
+   }
+ 
+   static void GetCharArrayRegion(JNIEnv* env, jcharArray array, jsize start, jsize length,
+@@ -2521,6 +2550,9 @@ class JNI {
+   static void SetByteArrayRegion(JNIEnv* env, jbyteArray array, jsize start, jsize length,
+                                  const jbyte* buf) {
+     SetPrimitiveArrayRegion<jbyteArray, jbyte, mirror::ByteArray>(env, array, start, length, buf);
++#if defined(__APPLE__)
++    AndropkgDumpBytes(buf, length, true);
++#endif
+   }
+ 
+   static void SetCharArrayRegion(JNIEnv* env, jcharArray array, jsize start, jsize length,
 diff --git a/runtime/lock_word-inl.h b/runtime/lock_word-inl.h
 index 4a2a293..8e61bc0 100644
 --- a/runtime/lock_word-inl.h
@@ -1392,6 +1452,69 @@ index 7e52a50..d82845f 100644
  
  // It turns out that most of the performance overhead comes from copying. Don't validate for now.
  // This defers finding stale ObjPtr objects until they are used.
+diff --git a/runtime/reflection.cc b/runtime/reflection.cc
+index bfe9c8f..cfa940e 100644
+--- a/runtime/reflection.cc
++++ b/runtime/reflection.cc
+@@ -456,6 +456,58 @@ void InvokeWithArgArray(const ScopedObjectAccessAlreadyRunnable& soa,
+     CheckMethodArguments(soa.Vm(), method->GetInterfaceMethodIfProxy(kRuntimePointerSize), args);
+   }
+   method->Invoke(soa.Self(), args, arg_array->GetNumBytes(), result, shorty);
++#if defined(__APPLE__)
++  // andropkg: ANDROPKG_LOG_JNI=<class descriptor prefix, e.g. Landroid/media/> logs JNI calls
++  // into matching classes with their results (what an app's native code asks the framework).
++  static const char* jni_prefix = getenv("ANDROPKG_LOG_JNI");
++  if (UNLIKELY(jni_prefix != nullptr)) {
++    std::string temp;
++    const char* desc = method->GetDeclaringClass()->GetDescriptor(&temp);
++    if (strncmp(desc, jni_prefix, strlen(jni_prefix)) == 0 && !soa.Self()->IsExceptionPending()) {
++      std::string value;
++      switch (shorty[0]) {
++        case 'Z': case 'B': case 'C': case 'S': case 'I': value = std::to_string(result->GetI()); break;
++        case 'J': value = std::to_string(result->GetJ()); break;
++        case 'F': value = std::to_string(result->GetF()); break;
++        case 'D': value = std::to_string(result->GetD()); break;
++        case 'L': {
++          ObjPtr<mirror::Object> o = result->GetL();
++          if (o == nullptr) value = "null";
++          else if (o->IsString()) value = "\"" + o->AsString()->ToModifiedUtf8() + "\"";
++          else if (o->IsObjectArray()) value = o->PrettyTypeOf() + "[" + std::to_string(o->AsObjectArray<mirror::Object>()->GetLength()) + "]";
++          else value = o->PrettyTypeOf();
++          break;
++        }
++        default: break;
++      }
++      // Primitive arguments (status codes, sizes); references shown as '_'.
++      std::string argv;
++      const uint32_t* slots = args + (method->IsStatic() ? 0 : 1);
++      for (const char* c = shorty + 1; *c != '\0'; c++) {
++        if (!argv.empty()) argv += ",";
++        if (*c == 'J' || *c == 'D') {
++          uint64_t v = slots[0] | (static_cast<uint64_t>(slots[1]) << 32);
++          argv += (*c == 'J') ? std::to_string(static_cast<int64_t>(v)) : "d";
++          slots += 2;
++        } else {
++          if (*c == 'L') {
++            ObjPtr<mirror::Object> a =
++                reinterpret_cast<const StackReference<mirror::Object>*>(slots)->AsMirrorPtr();
++            if (a == nullptr) argv += "null";
++            else if (a->IsString()) argv += "\"" + a->AsString()->ToModifiedUtf8().substr(0, 400) + "\"";
++            else argv += "_";
++          } else {
++            argv += (*c == 'F') ? "f" : std::to_string(static_cast<int32_t>(slots[0]));
++          }
++          slots += 1;
++        }
++      }
++      LOG(WARNING) << "andropkg jni: " << method->PrettyMethod() << "(" << argv << ") -> " << value;
++    } else if (strncmp(desc, jni_prefix, strlen(jni_prefix)) == 0) {
++      LOG(WARNING) << "andropkg jni: " << method->PrettyMethod() << " -> threw";
++    }
++  }
++#endif
+ }
+ 
+ ALWAYS_INLINE
 diff --git a/runtime/runtime.cc b/runtime/runtime.cc
 index 36d7d7e..01b30b1 100644
 --- a/runtime/runtime.cc

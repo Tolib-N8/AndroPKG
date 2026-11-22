@@ -51,6 +51,21 @@ void Throw(JNIEnv* env, const char* cls, const std::string& msg) {
   if (jclass c = env->FindClass(cls)) env->ThrowNew(c, msg.c_str());
 }
 
+// ANDROPKG_LOG_MEDIA=1: log MediaCodec / MediaExtractor calls.
+bool MediaTrace() {
+  static const bool on = getenv("ANDROPKG_LOG_MEDIA") != nullptr;
+  return on;
+}
+void MediaLog(const char* fmt, ...) {
+  char buf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof buf, fmt, ap);
+  va_end(ap);
+  fprintf(stderr, "andropkg-media I %s\n", buf);
+}
+#define MLOG(...) do { if (MediaTrace()) MediaLog(__VA_ARGS__); } while (0)
+
 std::string Str(JNIEnv* env, jstring s) {
   if (!s) return {};
   const char* c = env->GetStringUTFChars(s, nullptr);
@@ -592,6 +607,7 @@ void cs_init(JNIEnv*, jclass) {}
 void cs_setup(JNIEnv* env, jobject thiz, jstring name, jboolean nameIsType, jboolean encoder, jint, jint) {
   std::string n = Str(env, name);
   int d = nameIsType ? CodecByMime(n) : CodecByName(n);
+  MLOG("codec setup %s type=%d encoder=%d -> %d", n.c_str(), nameIsType, encoder, d);
   if (encoder || d < 0) {
     Throw(env, "java/lang/IllegalArgumentException", "no codec for " + n + (encoder ? " (encoder)" : ""));
     return;
@@ -617,6 +633,7 @@ void cs_finalize(JNIEnv* env, jobject thiz) { ReleaseCodec(env, thiz); }
 void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray values, jobject, jobject crypto, jobject,
                   jint flags) {
   Codec* c = GetCodec(env, thiz);
+  MLOG("codec configure %p flags=%d crypto=%d", c, flags, crypto != nullptr);
   if (!c) return;
   if (flags & 1) {
     Throw(env, "java/lang/IllegalArgumentException", "no encoders");
@@ -638,6 +655,7 @@ void cs_setCallback(JNIEnv* env, jobject thiz, jobject cb) {
 
 void cs_start(JNIEnv* env, jobject thiz) {
   Codec* c = GetCodec(env, thiz);
+  MLOG("codec start %p", c);
   if (!c) return;
   if (!c->dec) {
     Throw(env, "java/lang/IllegalStateException", "not configured");
@@ -697,6 +715,7 @@ void cs_flush(JNIEnv* env, jobject thiz) {
 
 jint cs_dequeueInput(JNIEnv* env, jobject thiz, jlong timeoutUs) {
   Codec* c = GetCodec(env, thiz);
+  MLOG("codec dequeueInput %p timeout=%lld", c, (long long)timeoutUs);
   if (!c) return INFO_TRY_AGAIN_LATER;
   std::lock_guard<std::mutex> g(c->lock);
   if (!c->started) {
@@ -766,6 +785,7 @@ void cs_queueSecureInput(JNIEnv* env, jobject, jint, jint, jobject, jlong, jint)
 
 jint cs_dequeueOutput(JNIEnv* env, jobject thiz, jobject info, jlong timeoutUs) {
   Codec* c = GetCodec(env, thiz);
+  MLOG("codec dequeueOutput %p timeout=%lld", c, (long long)timeoutUs);
   if (!c) return INFO_TRY_AGAIN_LATER;
   std::lock_guard<std::mutex> g(c->lock);
   if (c->formatPending) {
@@ -900,7 +920,16 @@ jobject Capabilities(JNIEnv* env, int i) {
   return r;
 }
 
-jint cl_count(JNIEnv*, jclass) { return kNumCodecs; }
+// ANDROPKG_TEST_NO_CODECS: an empty MediaCodecList (debugging apps that choose formats by it).
+jint cl_count(JNIEnv* env, jclass) {
+  MLOG("codec list queried");
+  if (MediaTrace()) {  // who asks (Thread.dumpStack() prints to stderr)
+    jclass t = env->FindClass("java/lang/Thread");
+    env->CallStaticVoidMethod(t, env->GetStaticMethodID(t, "dumpStack", "()V"));
+    env->ExceptionClear();
+  }
+  return getenv("ANDROPKG_TEST_NO_CODECS") ? 0 : kNumCodecs;
+}
 jstring cl_name(JNIEnv* env, jclass, jint i) { return i >= 0 && i < kNumCodecs ? env->NewStringUTF(kCodecs[i].name) : nullptr; }
 jint cl_attributes(JNIEnv*, jclass, jint) { return 4; }  // FLAG_IS_SOFTWARE_ONLY
 jobjectArray cl_types(JNIEnv* env, jclass, jint i) {
@@ -1161,10 +1190,12 @@ void ex_release(JNIEnv* env, jobject thiz) {
 void ex_setDataSourceFd(JNIEnv* env, jobject thiz, jobject fdObj, jlong offset, jlong length) {
   jclass fdc = env->FindClass("java/io/FileDescriptor");
   int fd = env->GetIntField(fdObj, env->GetFieldID(fdc, "descriptor", "I"));
+  MLOG("extractor setDataSource fd=%d offset=%lld length=%lld", fd, (long long)offset, (long long)length);
   OpenSource(env, thiz, fd, offset, length);
 }
 void ex_setDataSourcePath(JNIEnv* env, jobject thiz, jobject, jstring jpath, jobjectArray, jobjectArray) {
   std::string path = Str(env, jpath);
+  MLOG("extractor setDataSource path %s", path.c_str());
   if (path.rfind("file://", 0) == 0) path = path.substr(7);
   if (path.find("://") != std::string::npos) {
     Throw(env, "java/io/IOException", "Failed to instantiate extractor (network sources: not yet).");
@@ -1183,6 +1214,7 @@ void ex_setDataSourceMedia(JNIEnv* env, jobject thiz, jobject source) {
   // A MediaDataSource: read it whole into a temporary file.
   jclass c = env->GetObjectClass(source);
   jlong size = env->CallLongMethod(source, env->GetMethodID(c, "getSize", "()J"));
+  MLOG("extractor setDataSource MediaDataSource size=%lld", (long long)size);
   jmethodID readAt = env->GetMethodID(c, "readAt", "(J[BII)I");
   char path[1024];
   snprintf(path, sizeof path, "%s/andropkg-extractor-XXXXXX", getenv("TMPDIR") ?: "/tmp");

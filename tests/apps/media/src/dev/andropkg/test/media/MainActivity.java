@@ -162,6 +162,32 @@ public class MainActivity extends Activity {
         Log.i(TAG, "[media] router selected=" + (router.getSelectedRoute(android.media.MediaRouter.ROUTE_TYPE_LIVE_AUDIO) != null)
                 + " router2 routes=" + router2.getSystemController().getSelectedRoutes().size()
                 + " system=" + router2.getSystemController().getSelectedRoutes().get(0).isSystemRoute());
+        // The codec list as ExoPlayer and apps walk it (capabilities of every type).
+        long t0 = System.currentTimeMillis();
+        StringBuilder caps = new StringBuilder();
+        for (int kind : new int[] {android.media.MediaCodecList.ALL_CODECS, android.media.MediaCodecList.REGULAR_CODECS}) {
+            for (android.media.MediaCodecInfo ci : new android.media.MediaCodecList(kind).getCodecInfos()) {
+                for (String type : ci.getSupportedTypes()) {
+                    android.media.MediaCodecInfo.CodecCapabilities cc = ci.getCapabilitiesForType(type);
+                    android.media.MediaCodecInfo.AudioCapabilities ac = cc.getAudioCapabilities();
+                    cc.isFeatureSupported(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback);
+                    cc.isFeatureRequired(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback);
+                    int n = cc.profileLevels.length + cc.colorFormats.length;
+                    if (ac != null) {
+                        n += ac.getMaxInputChannelCount() + ac.getSupportedSampleRateRanges().length;
+                        ac.isSampleRateSupported(44100);
+                        ac.getBitrateRange();
+                    }
+                    caps.append(ci.getName()).append(ci.isAlias() ? "*" : "").append(ci.isHardwareAccelerated() ? "h" : "")
+                            .append(ci.isSoftwareOnly() ? "s" : "").append(ci.isVendor() ? "v" : "").append(ac != null ? "a" : "-")
+                            .append(cc.getVideoCapabilities() != null ? "V" : "").append(',');
+                }
+            }
+        }
+        android.media.MediaFormat aac = android.media.MediaFormat.createAudioFormat("audio/mp4a-latm", 44100, 2);
+        Log.i(TAG, "[media] codec walk " + (System.currentTimeMillis() - t0) + "ms aac="
+                + new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).findDecoderForFormat(aac)
+                + " " + caps);
         // MediaMetricsManager: ExoPlayer opens a PlaybackSession per player.
         android.media.metrics.MediaMetricsManager metrics =
                 (android.media.metrics.MediaMetricsManager) getSystemService(MEDIA_METRICS_SERVICE);
