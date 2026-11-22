@@ -81,7 +81,7 @@ echo "ok   platform checks"
 ANDROPKG_TEST_SCRIPT="wait 500; mediacmd pause" run media "\[media\] done" $(apk media)
 for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file prepared" "file seek done at 300" \
     "retriever duration=600 mime=audio/wav audio=yes" \
-    "file completed" "track played true timestamp=true" "static marker reached" \
+    "file completed" "track played true timestamp=true clock=true" "static marker reached" \
     "codec audio/vorbis 22050x2 ok=true signal=true async audio/vorbis 22050x2 ok=true signal=true" \
     "codec audio/opus 48000x1 ok=true signal=true" "codec audio/mp4a-latm 22050x1 ok=true signal=true" \
     "codec audio/mpeg 22050x1 ok=true signal=true" "codec audio/raw 22050x1 ok=true signal=true" \

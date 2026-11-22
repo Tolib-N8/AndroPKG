@@ -320,7 +320,11 @@ public class MainActivity extends Activity {
                 try { Thread.sleep(20); } catch (InterruptedException e) { return; }
             }
             AudioTimestamp ts = new AudioTimestamp();
-            Log.i(TAG, "[media] track played " + (t.getPlaybackHeadPosition() >= frames) + " timestamp=" + t.getTimestamp(ts));
+            boolean stamped = t.getTimestamp(ts);
+            // On System.nanoTime()'s clock, as players compare it with (within a second).
+            boolean sameClock = stamped && Math.abs(System.nanoTime() - ts.nanoTime) < 1_000_000_000L;
+            Log.i(TAG, "[media] track played " + (t.getPlaybackHeadPosition() >= frames) + " timestamp=" + stamped
+                    + " clock=" + sameClock);
             t.stop();
             t.release();
             handler.post(this::stepDone);

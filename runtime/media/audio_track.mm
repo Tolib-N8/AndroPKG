@@ -40,9 +40,14 @@ constexpr int kEventMarker = 3, kEventNewPos = 4;  // AudioSystem.NATIVE_EVENT_*
 constexpr int kModeStatic = 0;
 constexpr int kBuffers = 3;
 
+// System.nanoTime()'s clock. AOSP code sees Linux's CLOCK_MONOTONIC, which stops while the
+// device sleeps: andropkg_darwin_compat.h maps it to CLOCK_UPTIME_RAW, but that header isn't
+// force-included into Objective-C++ (this file), where CLOCK_MONOTONIC is Darwin's and counts
+// sleep. Timestamps on that clock were off by the device's total sleep time, and ExoPlayer
+// rejected every one ("Spurious audio timestamp (system clock mismatch)").
 int64_t NowNs() {
   struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);  // System.nanoTime()
+  clock_gettime(CLOCK_UPTIME_RAW, &ts);
   return int64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
 }
 
