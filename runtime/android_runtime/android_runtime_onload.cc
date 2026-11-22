@@ -97,6 +97,7 @@ extern int register_android_animation_PropertyValuesHolder(JNIEnv* env);
 extern int register_android_text_AndroidCharacter(JNIEnv* env);
 extern int register_android_text_Hyphenator(JNIEnv* env);
 extern int register_android_util_CharsetUtils(JNIEnv* env);
+extern int register_android_util_jar_StrictJarFile(JNIEnv* env);
 extern int register_android_content_res_Configuration(JNIEnv* env);
 }  // namespace android
 
@@ -144,6 +145,7 @@ static const RegJni kRegistrations[] = {
     {"android_text_AndroidCharacter", register_android_text_AndroidCharacter},
     {"android_text_Hyphenator", register_android_text_Hyphenator},
     {"android_util_CharsetUtils", register_android_util_CharsetUtils},
+    {"android_util_jar_StrictJarFile", register_android_util_jar_StrictJarFile},
     {"android_content_res_Configuration", register_android_content_res_Configuration},
     {"Parcel (andropkg)", register_andropkg_parcel},
     {"android.graphics (hwui)", register_hwui_graphics},

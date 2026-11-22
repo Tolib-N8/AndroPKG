@@ -219,7 +219,11 @@ target_link_libraries(libmedia_jni_dylib PRIVATE "-framework Foundation" "-frame
 andropkg_jni_dylib(libsoundpool andropkg_soundpool libvorbisidec libopus)
 target_link_libraries(libsoundpool_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework AudioToolbox")
 
-andropkg_jni_dylib(libandroid_runtime andropkg_audio libandroid_runtime libandroidfw libincfs-utils libutils libcutils
+# android.webkit.WebView on WKWebView (natives of services' WkWebView).
+add_library(andropkg_webview OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/webview/wkwebview.mm)
+target_compile_options(andropkg_webview PRIVATE -fobjc-arc -std=gnu++17)
+target_include_directories(andropkg_webview PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
+andropkg_jni_dylib(libandroid_runtime andropkg_audio andropkg_webview libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
     libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput
     libsqlite libsqlite3_android)
@@ -234,7 +238,7 @@ target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundatio
                       "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation"
                       "-framework MediaPlayer")
 if(ANDROPKG_PLATFORM STREQUAL "ios")
-  target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit")
+  target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit" "-framework WebKit")
 else()
   target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework AppKit")
 endif()

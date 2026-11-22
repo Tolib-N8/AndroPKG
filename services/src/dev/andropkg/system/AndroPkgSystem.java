@@ -100,6 +100,13 @@ public final class AndroPkgSystem {
             System.exit(10);
         });
         installServices();
+        // The window manager's natives (and the WKWebView bridge's) register when the first
+        // SurfaceControl is made; apps create WebViews in onCreate, before their first window.
+        try {
+            new android.view.SurfaceControl.Builder().setName("andropkg:init").setBufferSize(1, 1).build().release();
+        } catch (Throwable t) {
+            Log.w(TAG, "SurfaceControl natives", t);
+        }
         // As RuntimeInit.commonInit: the full MIME table (framework's mime.types), not libcore's
         // short built-in list (which lacks e.g. m4a, flac, webp).
         Class<?> factory = Hidden.cls("android.content.type.DefaultMimeMapFactory");

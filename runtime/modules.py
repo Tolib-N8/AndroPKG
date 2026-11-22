@@ -201,6 +201,7 @@ TARGETS = [
                "frameworks/base/core/jni/android_text_AndroidCharacter.cpp",
                "frameworks/base/core/jni/android_text_Hyphenator.cpp",
                "frameworks/base/core/jni/android_util_CharsetUtils.cpp",
+               "frameworks/base/core/jni/android_util_jar_StrictJarFile.cpp",
                "frameworks/base/core/jni/android_content_res_Configuration.cpp",
                # NDK libandroid pieces that only need androidfw (ndk-libs resolves them by name)
                "frameworks/base/native/android/asset_manager.cpp",

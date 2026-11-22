@@ -1009,6 +1009,7 @@ void wm_removeWindow(JNIEnv*, jclass, jint id) {
 
 std::atomic<bool> gWmNativesRegistered{false};
 extern "C" void andropkg_media_bind_services(JNIEnv* env);  // runtime/media/audio_track.mm
+extern "C" void andropkg_register_webview(JNIEnv* env, jclass cls);  // runtime/webview/wkwebview.mm
 
 void EnsureWmNatives(JNIEnv* env) {
   if (gWmNativesRegistered.load()) return;
@@ -1025,6 +1026,11 @@ void EnsureWmNatives(JNIEnv* env) {
     env->ExceptionClear();
   }
   env->DeleteLocalRef(c);
+  // android.webkit.WebView on WKWebView (runtime/webview, iOS).
+  if (jclass wk = LoadServicesClass(env, "dev.andropkg.system.webview.WkWebView")) {
+    andropkg_register_webview(env, wk);
+    env->DeleteLocalRef(wk);
+  }
 }
 
 jlong ier_init(JNIEnv* env, jclass, jobject receiverWeak, jobject inputChannel, jobject messageQueue) {

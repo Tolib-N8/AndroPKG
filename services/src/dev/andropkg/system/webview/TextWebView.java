@@ -56,10 +56,13 @@ public final class TextWebView implements InvocationHandler {
                     default: return defaultFor(m);
                 }
             });
-            StubCookieManager cookies = new StubCookieManager();
+            android.webkit.CookieManager cookies =
+                    WkWebView.available() ? new WkWebView.Cookies() : new StubCookieManager();
             Object factory = Proxy.newProxyInstance(loader, new Class<?>[] {factoryIface}, (p, m, a) -> {
                 switch (m.getName()) {
-                    case "createWebView": return new TextWebView((WebView) a[0], a[1]).provider;
+                    case "createWebView":  // WKWebView on iOS, text rendering elsewhere
+                        return WkWebView.available() ? new WkWebView((WebView) a[0], a[1]).provider
+                                                     : new TextWebView((WebView) a[0], a[1]).provider;
                     case "getStatics": return statics;
                     case "getCookieManager": return cookies;
                     case "getWebViewClassLoader": return TextWebView.class.getClassLoader();
