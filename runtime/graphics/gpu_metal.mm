@@ -118,8 +118,21 @@ void EndFrame(uint32_t* readback) {
     [cb commit];
   }
   if (s.frame != s.offscreen) s.frame.reset();
-  // Keep the GPU's memory in check: textures of bitmaps no longer drawn are purged.
+  // Keep the GPU's memory in check: textures of bitmaps no longer drawn are purged, and the
+  // video frame texture cache lets go of frames no longer referenced (it never does unless
+  // flushed).
   s.context->performDeferredCleanup(std::chrono::seconds(5));
+  if (s.textures) CVMetalTextureCacheFlush(s.textures, 0);
+  static const bool logMemory = getenv("ANDROPKG_LOG_MEMORY") != nullptr;
+  static int frames = 0;
+  if (logMemory && ++frames % 300 == 0) {
+    int count = 0;
+    size_t bytes = 0;
+    s.context->getResourceCacheUsage(&count, &bytes);
+    fprintf(stderr, "andropkg-gpu: skia cache %d resources, %zu MB (%zu MB purgeable); device %llu MB allocated\n",
+            count, bytes >> 20, s.context->getResourceCachePurgeableBytes() >> 20,
+            (unsigned long long)s.device.currentAllocatedSize >> 20);
+  }
 }
 
 sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer) {
