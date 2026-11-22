@@ -1297,7 +1297,7 @@ jobject Capabilities(JNIEnv* env, int i) {
     caps.PutString("blocks-per-second-range", "1-1958400");
     caps.PutString("frame-rate-range", "1-240");
     caps.PutString("bitrate-range", "1-240000000");
-    caps.PutString("feature-adaptive-playback", "1");
+    caps.PutInt("feature-adaptive-playback", 1);  // features are Integers (CodecCapabilities)
   } else {
   levels = env->NewObjectArray(0, pl, nullptr);
   colors = env->NewIntArray(0);

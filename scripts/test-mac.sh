@@ -142,7 +142,9 @@ ANDROPKG_TEST_SCRIPT="wait 3500; pixel 540,300; pixel 540,690; pixel 540,1080; p
 for want in "video/avc units=30 rendered=30 format=320x240" "video/hevc units=30 rendered=30 format=320x240" \
             "video/avc (texture) units=30 rendered=30 format=320x240" \
             "extractor tracks=video/avc audio/mp4a-latm size=320x240 csd=true samples=30 sync=2 rendered=30" \
-            "videoview prepared 320x240 duration=2000" "videoview completed"; do
+            "videoview prepared 320x240 duration=2000" "videoview completed" \
+            "codec c2.android.avc.decoder video/avc 1080p=true profiles=3 adaptive=true" \
+            "codec c2.android.hevc.decoder video/hevc 1080p=true profiles=2 adaptive=true"; do
   grep -qF "[video] $want" "$log/video.log" || fail "video: $want" video
 done
 grep -qE "test: pixel 540,300 = 0[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: AVC frame not green" video

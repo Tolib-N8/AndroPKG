@@ -1592,6 +1592,7 @@ struct {
   jmethodID setListener;       // setOnFrameAvailableListener(OnFrameAvailableListener)
   jmethodID setDefaultSize;    // setDefaultBufferSize(int, int)
   jfieldID tvSurface, tvListener, tvUpdateListener, tvMatrix;  // TextureView.mSurface, ...
+  jfieldID tvNativeWindow;     // TextureView.mNativeWindow (lockCanvas' window: the texture's buffer)
   jmethodID onAvailable;       // SurfaceTextureListener.onSurfaceTextureAvailable
   jmethodID getWidth, getHeight;
   jfieldID matrixNative;       // Matrix.native_instance
@@ -1726,6 +1727,20 @@ void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
   sk->restore();
 }
 
+// TextureView.lockCanvas/unlockCanvasAndPost: draw into the SurfaceTexture's buffer.
+void tv_createNativeWindow(JNIEnv* env, jobject view, jobject st) {
+  Texture* t = st ? TextureOf(env, st) : nullptr;
+  env->SetLongField(view, gTex.tvNativeWindow, t ? reinterpret_cast<jlong>(t->surface) : 0);
+}
+void tv_destroyNativeWindow(JNIEnv* env, jobject view) { env->SetLongField(view, gTex.tvNativeWindow, 0); }
+jboolean tv_lockCanvas(JNIEnv* env, jclass, jlong window, jobject canvas, jobject dirty) {
+  if (window == 0) return JNI_FALSE;
+  return s_lockCanvas(env, nullptr, window, canvas, dirty) != 0 && !env->ExceptionCheck();
+}
+void tv_unlockCanvasAndPost(JNIEnv* env, jclass, jlong window, jobject canvas) {
+  if (window != 0) s_unlockCanvasAndPost(env, nullptr, window, canvas);
+}
+
 void RegisterSurfaceTexture(JNIEnv* env) {
   jclass st = env->FindClass("android/graphics/SurfaceTexture");
   gTex.clazz = static_cast<jclass>(env->NewGlobalRef(st));
@@ -1762,6 +1777,7 @@ void RegisterSurfaceTexture(JNIEnv* env) {
   gTex.tvUpdateListener =
       env->GetFieldID(tv, "mUpdateListener", "Landroid/graphics/SurfaceTexture$OnFrameAvailableListener;");
   gTex.tvMatrix = env->GetFieldID(tv, "mMatrix", "Landroid/graphics/Matrix;");
+  gTex.tvNativeWindow = env->GetFieldID(tv, "mNativeWindow", "J");
   jclass view = env->FindClass("android/view/View");
   gTex.getWidth = env->GetMethodID(view, "getWidth", "()I");
   gTex.getHeight = env->GetMethodID(view, "getHeight", "()I");
@@ -1771,8 +1787,13 @@ void RegisterSurfaceTexture(JNIEnv* env) {
   gTex.matrixNative = env->GetFieldID(matrix, "native_instance", "J");
   static const JNINativeMethod kTextureView[] = {
       {"draw", "(Landroid/graphics/Canvas;)V", reinterpret_cast<void*>(tv_draw)},
+      {"nCreateNativeWindow", "(Landroid/graphics/SurfaceTexture;)V", reinterpret_cast<void*>(tv_createNativeWindow)},
+      {"nDestroyNativeWindow", "()V", reinterpret_cast<void*>(tv_destroyNativeWindow)},
+      {"nLockCanvas", "(JLandroid/graphics/Canvas;Landroid/graphics/Rect;)Z", reinterpret_cast<void*>(tv_lockCanvas)},
+      {"nUnlockCanvasAndPost", "(JLandroid/graphics/Canvas;)V", reinterpret_cast<void*>(tv_unlockCanvasAndPost)},
   };
-  if (env->ExceptionCheck() || env->RegisterNatives(tv, kTextureView, 1) != JNI_OK) {
+  if (env->ExceptionCheck() ||
+      env->RegisterNatives(tv, kTextureView, sizeof kTextureView / sizeof *kTextureView) != JNI_OK) {
     env->ExceptionClear();
     ALOGW("andropkg: TextureView.draw stays Java (no TextureView frames)");
   }

@@ -37,6 +37,16 @@ public class MainActivity extends Activity {
         root.addView(extractorPlayer("yellow.mp4.bin"), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(videoView("magenta.mp4.bin"), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
+        // What players (ExoPlayer's MediaCodecUtil) read before choosing a decoder.
+        for (android.media.MediaCodecInfo info : new android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).getCodecInfos()) {
+            for (String type : info.getSupportedTypes()) {
+                if (!type.startsWith("video/")) continue;
+                android.media.MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(type);
+                Log.i(TAG, "[video] codec " + info.getName() + " " + type + " 1080p="
+                        + caps.getVideoCapabilities().isSizeSupported(1920, 1080) + " profiles=" + caps.profileLevels.length
+                        + " adaptive=" + caps.isFeatureSupported(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback));
+            }
+        }
     }
 
     SurfaceView player(String mime, String asset, int audType) {
