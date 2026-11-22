@@ -112,6 +112,22 @@ const JNINativeMethod kFileObserverThread[] = {
     M("stopWatching", "(I[I)V", fo_stopWatching),
 };
 
+// android.os.incremental.IncrementalManager (libservices.core on a device): no incremental file
+// system, so no file is incremental and none has a v4 signature (ApkSignatureVerifier then reads
+// the v3/v2/v1 signatures, as for any installed APK).
+jboolean im_false(JNIEnv*, jclass) { return JNI_FALSE; }
+jboolean im_isIncrementalFd(JNIEnv*, jclass, jint) { return JNI_FALSE; }
+jboolean im_isIncrementalPath(JNIEnv*, jclass, jstring) { return JNI_FALSE; }
+jbyteArray im_unsafeGetFileSignature(JNIEnv*, jclass, jstring) { return nullptr; }
+
+const JNINativeMethod kIncrementalManager[] = {
+    M("nativeIsEnabled", "()Z", im_false),
+    M("nativeIsV2Available", "()Z", im_false),
+    M("nativeIsIncrementalFd", "(I)Z", im_isIncrementalFd),
+    M("nativeIsIncrementalPath", "(Ljava/lang/String;)Z", im_isIncrementalPath),
+    M("nativeUnsafeGetFileSignature", "(Ljava/lang/String;)[B", im_unsafeGetFileSignature),
+};
+
 }  // namespace
 
 namespace android {
@@ -121,6 +137,8 @@ int register_andropkg_framework_stubs(JNIEnv* env) {
   andropkg::RegisterIfDeclared(env, "android/app/ActivityThread", kActivityThread, N(kActivityThread));
   andropkg::RegisterIfDeclared(env, "android/os/FileObserver$ObserverThread", kFileObserverThread,
                                N(kFileObserverThread));
+  andropkg::RegisterIfDeclared(env, "android/os/incremental/IncrementalManager", kIncrementalManager,
+                               N(kIncrementalManager));
   return 0;
 }
 }  // namespace android

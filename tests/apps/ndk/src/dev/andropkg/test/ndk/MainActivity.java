@@ -19,6 +19,7 @@ public class MainActivity extends Activity {
     static native int threads(int n);
     static native String files(String dir);
     static native String cpp(int n);
+    static native String page4k();
     static native java.nio.ByteBuffer directbuf();
     static native String directcheck();
     static native String aaudio();
@@ -62,6 +63,8 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[ndk] platform: " + platform(getAssets(), bmp) + " pixel=" + Integer.toHexString(bmp.getPixel(2, 1)));
             System.loadLibrary("ndkcpp");
             Log.i(TAG, "[ndk] cpp: " + cpp(5));
+            System.loadLibrary("ndk4k");
+            Log.i(TAG, "[ndk] page4k: " + page4k());
             for (int run = 1; run <= 2; run++) Log.i(TAG, "[ndk] exec" + run + ": " + exec());
         } catch (Throwable t) {
             Log.e(TAG, "[ndk] failed", t);

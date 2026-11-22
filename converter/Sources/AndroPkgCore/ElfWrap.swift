@@ -68,9 +68,18 @@ public enum ElfWrapper {
         let loads = elf.loadSegments
         guard !loads.isEmpty else { throw ConverterError.layout("no PT_LOAD segments") }
 
-        // 1. Rebuild each PT_LOAD exactly as the Linux kernel / bionic linker would map it.
+        // 1. Rebuild each PT_LOAD exactly as the Linux kernel / bionic linker would map it
+        //    (an ELF linked for 4 KB pages: code and data apart, see Layout4K).
         var segments: [Segment] = []
-        for (i, ph) in loads.enumerated() {
+        var split: UInt64 = 0, shift: UInt64 = 0, moved = 0
+        if Layout4K.needed(loads) {
+            let l = try Layout4K.layout(elf)
+            segments = l.segments
+            split = l.split
+            shift = l.shift
+            moved = l.rewritten
+        }
+        for (i, ph) in loads.enumerated() where shift == 0 && split == 0 {
             if ph.writable && ph.executable {
                 throw ConverterError.unsupported("segment \(i) is W+X; iOS forbids writable code")
             }
@@ -130,16 +139,21 @@ public enum ElfWrapper {
                             dataVMOffset: sites.isEmpty ? 0 : elfBaseVM + dataBase,
                             svcCount: count { if case .svc = $0 { true } else { false } },
                             tpReadCount: count { if case .tpRead = $0 { true } else { false } },
-                            tpWriteCount: count { if case .tpWrite = $0 { true } else { false } })
+                            tpWriteCount: count { if case .tpWrite = $0 { true } else { false } },
+                            splitVaddr: split, shift: shift)
         let uuid = Array(Insecure.MD5.hash(data: elf.bytes))
         let machO = try MachOWriter.write(segments: segments, info: info, options: options, uuid: uuid)
 
-        let map = segments.map { s in
+        var map = segments.map { s in
             String(format: "%-12@ vm 0x%08llx-0x%08llx %@%@%@ file 0x%llx",
                    s.name as NSString, elfBaseVM + s.vmStart, elfBaseVM + s.vmEnd,
                    (s.prot & protR != 0 ? "r" : "-") as NSString,
                    (s.prot & protW != 0 ? "w" : "-") as NSString,
                    (s.prot & protX != 0 ? "x" : "-") as NSString, UInt64(s.content.count))
+        }
+        if shift > 0 {
+            map.append(String(format: "4KB-page ELF: data from 0x%llx moved by 0x%llx, %d references rewritten",
+                              split, shift, moved))
         }
         return Result(machO: machO, patches: sites, segmentMap: map)
     }
@@ -186,8 +200,6 @@ public enum ElfWrapper {
 /// Mirrors `apk_wrap_info` in loader/include/andropkg/loader.h.
 struct WrapInfo {
     static let magic = Array("APKELF01".utf8)
-    static let size = 64
-    static let version: UInt32 = 2
 
     var elfVMOffset: UInt64
     var elfVMSize: UInt64
@@ -196,11 +208,16 @@ struct WrapInfo {
     var svcCount: UInt32
     var tpReadCount: UInt32
     var tpWriteCount: UInt32
+    var splitVaddr: UInt64 = 0    // version 3: ELF vaddrs >= splitVaddr were moved up by shift
+    var shift: UInt64 = 0
+
+    var version: UInt32 { shift > 0 ? 3 : 2 }
+    var size: Int { shift > 0 ? 80 : 64 }
 
     var bytes: [UInt8] {
         var w = ByteWriter()
         w.append(WrapInfo.magic)
-        w.u32(WrapInfo.version)
+        w.u32(version)
         w.u32(0)            // flags
         w.u64(elfVMOffset)
         w.u64(elfVMSize)
@@ -210,7 +227,11 @@ struct WrapInfo {
         w.u32(tpReadCount)
         w.u32(tpWriteCount)
         w.u32(0)
-        assert(w.count == WrapInfo.size)
+        if shift > 0 {
+            w.u64(splitVaddr)
+            w.u64(shift)
+        }
+        assert(w.count == size)
         return w.bytes
     }
 }

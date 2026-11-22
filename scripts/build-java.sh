@@ -44,7 +44,8 @@ for app in "$root"/tests/apps/*/; do
       extra=""  # GLUE marker: an android_native_app_glue NativeActivity; GLES marker: EGL/GLES 2+
       [ -f "$lib/GLUE" ] && extra="-I$NDK/sources/android/native_app_glue $NDK/sources/android/native_app_glue/android_native_app_glue.c -u ANativeActivity_onCreate"
       [ -f "$lib/GLES" ] && extra="$extra -lEGL -lGLESv2"
-      "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=16384 \
+      page=16384; [ -f "$lib/PAGE4K" ] && page=4096  # PAGE4K marker: linked for 4 KB pages (old NDKs)
+      "$cc" $kind -fPIC -O2 -fstack-protector-strong -Wl,-z,max-page-size=$page \
         -o "$w/lib/arm64-v8a/lib$lname.so" $(ls "$lib"*.c "$lib"*.cpp 2>/dev/null) $extra -llog -landroid -ljnigraphics -lOpenSLES
       [ -n "$cxx" ] && cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libc++_shared.so" "$w/lib/arm64-v8a/"
     done

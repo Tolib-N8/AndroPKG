@@ -101,6 +101,7 @@ for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36
     "opensl: results=00000 callbacks>0=1 played>0=1 volume=-300 recorder=12" \
     "net: opt=0 bind=0 connect=0 accept>0=1 peer=2 idle=0 events=3 recv=ping/4 eventfd=5 so_error=0 gai=0 127.0.0.1:443 fam=2" \
     "platform: asset=asset read by native code(25) density>0=1 looper=1 bitmap=4x3 fmt=1 pixel=ffff0000" "cpp: static-init caught=\[too big: 5\] threads=15 seen=5 sum=15" \
+    "page4k: counter=8 table=6 bss=523776 names=alpha,beta fns=10,15 catch=Custom(42),logic_error(range)" \
     "exec1: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3" \
     "exec2: argc=2 arg1=hello stdin=from java counter=1 stderr=to stderr exit=3"; do
   grep -q "\[ndk\] $want" "$log/ndk.log" || fail "ndk: $want" ndk

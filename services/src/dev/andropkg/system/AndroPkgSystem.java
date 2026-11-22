@@ -33,6 +33,7 @@ public final class AndroPkgSystem {
 
     static String apkPath;
     static String dataDir;
+    static volatile Throwable lastFatal;
     static String launchActivity;
     static Object parsedPackage;     // android.content.pm.PackageParser.Package
     static ApplicationInfo appInfo;
@@ -41,6 +42,33 @@ public final class AndroPkgSystem {
     static IInterface activityClientController;
     static final ActivityStack stack = new ActivityStack();
     static final MediaSessionImpl mediaSessions = new MediaSessionImpl();
+
+    /**
+     * The APK's signing certificates (v3/v2 signature block, else v1 JAR signature), as the
+     * package manager reports them: apps and SDKs check their own signature (Yandex Passport,
+     * Google APIs keyed by certificate hash). Read without verifying digests (the installer's job).
+     */
+    static void setSigningInfo(PackageInfo info, String apk) {
+        try {
+            Object input = Hidden.callStatic(Hidden.cls("android.content.pm.parsing.result.ParseTypeImpl"),
+                    "forDefaultParsing");
+            Object res = Hidden.callStatic(Hidden.cls("android.util.apk.ApkSignatureVerifier"),
+                    "unsafeGetCertsWithoutVerification", input, apk, 1 /* SignatureSchemeVersion.JAR */);
+            if ((boolean) Hidden.call(res, "isError")) {
+                Log.w(TAG, "no signing certificates in " + apk + ": " + Hidden.call(res, "getErrorMessage"));
+                return;
+            }
+            Object details = Hidden.call(res, "getResult");
+            info.signatures = (android.content.pm.Signature[]) Hidden.call(details, "getSignatures");
+            Class<?> sd = Hidden.cls("android.content.pm.SigningDetails");
+            java.lang.reflect.Constructor<android.content.pm.SigningInfo> c =
+                    android.content.pm.SigningInfo.class.getDeclaredConstructor(sd);
+            c.setAccessible(true);
+            info.signingInfo = c.newInstance(details);
+        } catch (Throwable t) {
+            Log.w(TAG, "signing certificates unavailable for " + apk, t);
+        }
+    }
 
     static void deleteTree(File f) {
         File[] kids = f.listFiles();
@@ -56,8 +84,20 @@ public final class AndroPkgSystem {
         // As RuntimeInit.commonInit: uncaught exceptions are logged before the app's own
         // handler (crash reporters often exit without saying why).
         Hidden.callStatic(Thread.class, "setUncaughtExceptionPreHandler",
-                (Thread.UncaughtExceptionHandler) (t, e) -> Log.e("AndroidRuntime",
-                        "FATAL EXCEPTION: " + t.getName() + "\nProcess: " + appInfoName(), e));
+                (Thread.UncaughtExceptionHandler) (t, e) -> {
+                    lastFatal = e;
+                    Log.e("AndroidRuntime", "FATAL EXCEPTION: " + t.getName() + "\nProcess: " + appInfoName(), e);
+                });
+        // As RuntimeInit's KillApplicationHandler: the default handler ends the process. Crash
+        // reporters chain to the previous default handler and expect one (a null one throws an
+        // NPE from inside their handler, hiding the original exception).
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            if (e != lastFatal) {  // (not already logged by the pre-handler)
+                Log.e("AndroidRuntime", "FATAL EXCEPTION: " + t.getName() + "\nProcess: " + appInfoName(), e);
+            }
+            Process.killProcess(Process.myPid());
+            System.exit(10);
+        });
         installServices();
         // As RuntimeInit.commonInit: the full MIME table (framework's mime.types), not libcore's
         // short built-in list (which lacks e.g. m4a, flac, webp).
@@ -161,6 +201,7 @@ public final class AndroPkgSystem {
         packageInfo.services = AndroPkgSystem.<android.content.pm.ServiceInfo>infos("services")
                 .toArray(new android.content.pm.ServiceInfo[0]);
         packageInfo.versionCode = (int) Hidden.getField(parsedPackage, "mVersionCode");
+        setSigningInfo(packageInfo, appInfo.sourceDir);
 
         if (launchActivity == null) launchActivity = findLauncherActivity();
     }

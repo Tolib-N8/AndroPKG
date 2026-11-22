@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 
 struct apk_image {
@@ -37,8 +38,9 @@ struct apk_image {
     // Parsed dynamic section (apk_image_load), used by apk_image_link / init.
     uint64_t rela, relasz, jmprel, pltrelsz, relr, relrsz, aps2, aps2sz;
     uint64_t init, init_array, init_arraysz, fini, fini_array, fini_arraysz;
-    const Elf64_Phdr *phdr;
+    const Elf64_Phdr *phdr;       // as mapped (shift applied to moved segments)
     int phnum;
+    uint64_t split, shift;        // see apk_wrap_info (split = UINT64_MAX: nothing moved)
     const char *needed[64];
     size_t nneeded;
     bool linked;
@@ -50,6 +52,11 @@ static void set_err(char *err, size_t len, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(err, len, fmt, ap);
     va_end(ap);
+}
+
+// Runtime address of an ELF vaddr.
+static inline uintptr_t va(const apk_image *img, uint64_t v) {
+    return img->base + v + (v >= img->split ? img->shift : 0);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -134,7 +141,7 @@ static const Elf64_Sym *lookup_export(const apk_image *img, const char *name) {
 void *apk_image_sym(const apk_image *img, const char *name) {
     const Elf64_Sym *s = lookup_export(img, name);
     if (!s || ELF64_ST_TYPE(s->st_info) == STT_TLS) return NULL;
-    return (void *)(img->base + s->st_value);
+    return (void *)va(img, s->st_value);
 }
 
 // Resolves the symbol referenced by a relocation. Defined symbols bind to this image
@@ -145,7 +152,7 @@ static bool resolve_reloc_sym(const apk_image *img, uint32_t symidx, uintptr_t *
     const Elf64_Sym *s = &img->symtab[symidx];
     const char *name = img->strtab + s->st_name;
     if (s->st_shndx != SHN_UNDEF) {
-        *out = img->base + s->st_value;
+        *out = va(img, s->st_value);
         return true;
     }
     void *p = img->resolver_ex ? img->resolver_ex(img, name, s, img->resolver_ctx)
@@ -164,13 +171,13 @@ static bool resolve_reloc_sym(const apk_image *img, uint32_t symidx, uintptr_t *
 
 static bool apply_rela(const apk_image *img, const Elf64_Rela *r, char *err, size_t errlen) {
     uint32_t type = ELF64_R_TYPE(r->r_info);
-    uint64_t *where = (uint64_t *)(img->base + r->r_offset);
+    uint64_t *where = (uint64_t *)va(img, r->r_offset);
     uintptr_t s;
     switch (type) {
     case R_AARCH64_NONE:
         return true;
     case R_AARCH64_RELATIVE:
-        *where = img->base + r->r_addend;
+        *where = va(img, (uint64_t)r->r_addend);
         return true;
     case R_AARCH64_ABS64:
     case R_AARCH64_GLOB_DAT:
@@ -179,7 +186,7 @@ static bool apply_rela(const apk_image *img, const Elf64_Rela *r, char *err, siz
         *where = s + r->r_addend;
         return true;
     case R_AARCH64_IRELATIVE:
-        *where = ((uintptr_t (*)(void))(img->base + r->r_addend))();
+        *where = ((uintptr_t (*)(void))va(img, (uint64_t)r->r_addend))();
         return true;
     default:
         // TODO(M4): TLS_TPREL64 / TLSDESC once the bionic TLS layout spike lands.
@@ -249,11 +256,12 @@ static void apply_relr(const apk_image *img, const uint64_t *t, size_t bytes) {
     for (size_t i = 0; i < bytes / sizeof(uint64_t); i++) {
         uint64_t e = t[i];
         if ((e & 1) == 0) {
-            where = (uint64_t *)(img->base + e);
-            *where++ += img->base;
+            where = (uint64_t *)va(img, e);
+            *where = va(img, *where);
+            where++;
         } else {
             for (unsigned bit = 0; (e >>= 1) != 0; bit++)
-                if (e & 1) where[bit] += img->base;
+                if (e & 1) where[bit] = va(img, where[bit]);
             where += 63;
         }
     }
@@ -271,8 +279,9 @@ apk_image *apk_image_load(const char *path, char *err, size_t errlen) {
     unsigned long info_size = 0;
     const apk_wrap_info *info =
         mh ? (const apk_wrap_info *)getsectiondata(mh, "__TEXT", "__elfwrap", &info_size) : NULL;
-    if (!info || info_size < sizeof(*info) || memcmp(info->magic, "APKELF01", 8) != 0 ||
-        info->version != 2) {
+    // (version 2: 64 bytes; version 3 adds split_vaddr and shift)
+    if (!info || info_size < offsetof(apk_wrap_info, split_vaddr) || memcmp(info->magic, "APKELF01", 8) != 0 ||
+        (info->version != 2 && info->version != 3)) {
         set_err(err, errlen, "%s: not an andropkg-wrapped ELF (missing __TEXT,__elfwrap)", path);
         dlclose(h);
         return NULL;
@@ -284,13 +293,31 @@ apk_image *apk_image_load(const char *path, char *err, size_t errlen) {
     img->info = info;
     img->base = (uintptr_t)mh + info->elf_vm_offset;
     img->soname = img->path;
+    img->split = UINT64_MAX;
+    if (info->version >= 3 && info_size >= sizeof(*info) && info->shift) {
+        img->split = info->split_vaddr;
+        img->shift = info->shift;
+    }
 
     const Elf64_Ehdr *eh = (const Elf64_Ehdr *)img->base;
-    img->phdr = (const Elf64_Phdr *)(img->base + eh->e_phoff);
     img->phnum = eh->e_phnum;
+    img->phdr = (const Elf64_Phdr *)va(img, eh->e_phoff);
+    if (img->shift) {
+        // Program headers as mapped: consumers (dl_iterate_phdr -> unwinders, dladdr) compute
+        // base + p_vaddr.
+        Elf64_Phdr *ph = malloc(sizeof(Elf64_Phdr) * (size_t)img->phnum);
+        memcpy(ph, img->phdr, sizeof(Elf64_Phdr) * (size_t)img->phnum);
+        for (int i = 0; i < img->phnum; i++) {
+            if (ph[i].p_vaddr >= img->split) {
+                ph[i].p_vaddr += img->shift;
+                ph[i].p_paddr += img->shift;
+            }
+        }
+        img->phdr = ph;
+    }
     for (int i = 0; i < img->phnum; i++)
         if (img->phdr[i].p_type == PT_DYNAMIC)
-            img->dynamic = (const Elf64_Dyn *)(img->base + img->phdr[i].p_vaddr);
+            img->dynamic = (const Elf64_Dyn *)(img->base + img->phdr[i].p_vaddr);  // (adjusted phdr)
     if (!img->dynamic) {
         set_err(err, errlen, "%s: no PT_DYNAMIC", path);
         dlclose(h);
@@ -304,10 +331,10 @@ apk_image *apk_image_load(const char *path, char *err, size_t errlen) {
     for (const Elf64_Dyn *d = img->dynamic; d->d_tag != DT_NULL; d++) {
         uint64_t v = d->d_val;
         switch (d->d_tag) {
-        case DT_SYMTAB: img->symtab = (const Elf64_Sym *)(img->base + v); break;
-        case DT_STRTAB: img->strtab = (const char *)(img->base + v); break;
-        case DT_GNU_HASH: img->gnu_hash = (const uint32_t *)(img->base + v); break;
-        case DT_HASH: img->sysv_hash = (const uint32_t *)(img->base + v); break;
+        case DT_SYMTAB: img->symtab = (const Elf64_Sym *)va(img, v); break;
+        case DT_STRTAB: img->strtab = (const char *)va(img, v); break;
+        case DT_GNU_HASH: img->gnu_hash = (const uint32_t *)va(img, v); break;
+        case DT_HASH: img->sysv_hash = (const uint32_t *)va(img, v); break;
         case DT_SONAME: soname = v; break;
         case DT_NEEDED: if (img->nneeded < 64) needed_off[img->nneeded++] = v; break;
         case DT_RELA: img->rela = v; break;
@@ -344,23 +371,23 @@ bool apk_image_link(apk_image *img, apk_resolver_ex_fn resolver, void *ctx, char
     img->resolver_ex = resolver;
     img->resolver_ctx = ctx;
     // Same order as the bionic linker: RELR first (no symbols), then RELA/APS2, then PLT.
-    if (img->relr) apply_relr(img, (const uint64_t *)(img->base + img->relr), img->relrsz);
+    if (img->relr) apply_relr(img, (const uint64_t *)va(img, img->relr), img->relrsz);
     if (img->rela &&
-        !apply_rela_table(img, (const Elf64_Rela *)(img->base + img->rela), img->relasz, err, errlen))
+        !apply_rela_table(img, (const Elf64_Rela *)va(img, img->rela), img->relasz, err, errlen))
         return false;
-    if (img->aps2 && !apply_aps2(img, (const uint8_t *)(img->base + img->aps2), img->aps2sz, err, errlen))
+    if (img->aps2 && !apply_aps2(img, (const uint8_t *)va(img, img->aps2), img->aps2sz, err, errlen))
         return false;
     if (img->jmprel &&
-        !apply_rela_table(img, (const Elf64_Rela *)(img->base + img->jmprel), img->pltrelsz, err, errlen))
+        !apply_rela_table(img, (const Elf64_Rela *)va(img, img->jmprel), img->pltrelsz, err, errlen))
         return false;
     img->linked = true;
     return true;
 }
 
 void apk_image_run_init(const apk_image *img) {
-    if (img->init) ((void (*)(void))(img->base + img->init))();
+    if (img->init) ((void (*)(void))va(img, img->init))();
     if (img->init_array) {
-        void (**fns)(void) = (void (**)(void))(img->base + img->init_array);
+        void (**fns)(void) = (void (**)(void))va(img, img->init_array);
         for (size_t i = 0; i < img->init_arraysz / sizeof(void *); i++)
             if (fns[i] && (uintptr_t)fns[i] != UINTPTR_MAX) fns[i]();
     }
@@ -368,11 +395,11 @@ void apk_image_run_init(const apk_image *img) {
 
 void apk_image_run_fini(const apk_image *img) {
     if (img->fini_array) {
-        void (**fns)(void) = (void (**)(void))(img->base + img->fini_array);
+        void (**fns)(void) = (void (**)(void))va(img, img->fini_array);
         for (size_t i = img->fini_arraysz / sizeof(void *); i-- > 0;)
             if (fns[i] && (uintptr_t)fns[i] != UINTPTR_MAX) fns[i]();
     }
-    if (img->fini) ((void (*)(void))(img->base + img->fini))();
+    if (img->fini) ((void (*)(void))va(img, img->fini))();
 }
 
 apk_image *apk_image_open(const char *path, apk_resolver_fn resolver, void *ctx, char *err,

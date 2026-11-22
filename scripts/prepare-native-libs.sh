@@ -31,9 +31,15 @@ for so in "$tmp"/lib/arm64-v8a/*.so; do
   cp "$so" "$out/$name"
   chmod 755 "$out/$name"  # as the package installer extracts them (apps exec some: helpers)
   if [ "$platform" = ios ]; then
-    "$conv" wrap-elf "$so" -o "$out/$name.dylib" --platform ios --install-name "@rpath/$name.dylib" --sign "$identity"
+    set -- --platform ios --install-name "@rpath/$name.dylib" --sign "$identity"
   else
-    "$conv" wrap-elf "$so" -o "$out/$name.dylib" --platform macos --install-name "@rpath/$name.dylib" --adhoc
+    set -- --platform macos --install-name "@rpath/$name.dylib" --adhoc
+  fi
+  # A library that can't be converted (e.g. ELF linked for 4 KB pages) is left out with a warning:
+  # loading it fails like a missing library, which apps often handle (optional codecs, extras).
+  if ! "$conv" wrap-elf "$so" -o "$out/$name.dylib" "$@"; then
+    echo "warning: $name not converted; the app won't be able to load it" >&2
+    rm -f "$out/$name" "$out/$name.dylib" "$out/${name%.so}.dylib"
   fi
 done
 echo "native libs: $(ls "$out"/*.so.dylib 2>/dev/null | wc -l | tr -d ' ') converted into $out"

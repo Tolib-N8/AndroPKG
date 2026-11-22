@@ -30,6 +30,10 @@ typedef struct {
     uint64_t tramp_vm_offset; // 0 if nothing was rewritten
     uint64_t data_vm_offset;  // [0] svc dispatcher, [1] TSD byte offset of the bionic TP
     uint32_t svc_count, tp_read_count, tp_write_count, reserved;
+    // version >= 3: an ELF linked for 4 KB pages, whose writable segments were moved up by
+    // `shift` (a multiple of 4 KB) to 16 KB pages of their own; ELF vaddrs >= split_vaddr are at +shift.
+    uint64_t split_vaddr;
+    uint64_t shift;
 } apk_wrap_info;
 
 /// dlopen()s the wrapped dylib, applies ELF relocations, and runs DT_INIT/init_array.

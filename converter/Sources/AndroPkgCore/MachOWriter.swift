@@ -74,7 +74,7 @@ enum MachOWriter {
 
         let rx = ElfWrapper.protR | ElfWrapper.protX
         segment("__TEXT", vm: 0, vmsize: UInt64(page), fileoff: 0, filesize: page, maxprot: rx, initprot: rx,
-                sections: [("__elfwrap", UInt64(ElfWrapper.infoFileOffset), UInt64(WrapInfo.size),
+                sections: [("__elfwrap", UInt64(ElfWrapper.infoFileOffset), UInt64(info.size),
                             ElfWrapper.infoFileOffset)])
         for p in placed {
             segment(p.seg.name, vm: base + p.seg.vmStart, vmsize: p.seg.vmEnd - p.seg.vmStart,
