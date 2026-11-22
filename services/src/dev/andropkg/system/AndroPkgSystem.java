@@ -454,6 +454,16 @@ public final class AndroPkgSystem {
 
     /** IActivityTaskManager. */
     static final class ActivityTaskManagerImpl {
+        /** ActivityManager.getDeviceConfigurationInfo (IActivityTaskManager on 14): a touch screen, no keyboard, GLES 3.0 (EAGL). */
+        public android.content.pm.ConfigurationInfo getDeviceConfigurationInfo() {
+            android.content.pm.ConfigurationInfo c = new android.content.pm.ConfigurationInfo();
+            c.reqTouchScreen = android.content.res.Configuration.TOUCHSCREEN_FINGER;
+            c.reqKeyboardType = android.content.res.Configuration.KEYBOARD_NOKEYS;
+            c.reqNavigation = android.content.res.Configuration.NAVIGATION_NONAV;
+            c.reqGlEsVersion = 0x00030000;
+            return c;
+        }
+
         public Object getActivityClientController() { return activityClientController; }
 
         // startActivity(IApplicationThread caller, String callingPackage, String callingFeatureId,

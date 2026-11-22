@@ -637,6 +637,85 @@ index 92d875b..df48402 100644
  #else
      return Bitmap::allocateHeapBitmap(bitmap.info());
  #endif
+diff --git a/libs/hwui/jni/Bitmap.cpp b/libs/hwui/jni/Bitmap.cpp
+index 6ee7576..7d8a7ca 100644
+--- a/libs/hwui/jni/Bitmap.cpp
++++ b/libs/hwui/jni/Bitmap.cpp
+@@ -819,6 +819,43 @@ static jobject Bitmap_createFromParcel(JNIEnv* env, jobject, jobject parcel) {
+         return nullptr;
+     }
+ 
++    return createBitmap(env, nativeBitmap.release(), getPremulBitmapCreateFlags(isMutable), nullptr,
++                        nullptr, density);
++#elif defined(ANDROPKG)
++    // andropkg: Parcel is andropkg's (runtime/android_runtime/parcel_jni.cc): the fields through
++    // its Java API, the pixels as one byte array (no other process: no ashmem blob).
++    if (parcel == NULL) {
++        jniThrowNullPointerException(env, "parcel cannot be null");
++        return NULL;
++    }
++    jclass pc = env->GetObjectClass(parcel);
++    jmethodID readInt = env->GetMethodID(pc, "readInt", "()I");
++    jmethodID readBytes = env->GetMethodID(pc, "createByteArray", "()[B");
++    const bool isMutable = env->CallIntMethod(parcel, readInt);
++    const SkColorType colorType = static_cast<SkColorType>(env->CallIntMethod(parcel, readInt));
++    const SkAlphaType alphaType = static_cast<SkAlphaType>(env->CallIntMethod(parcel, readInt));
++    const bool srgb = env->CallIntMethod(parcel, readInt) != 0;
++    const int32_t width = env->CallIntMethod(parcel, readInt);
++    const int32_t height = env->CallIntMethod(parcel, readInt);
++    const int32_t rowBytes = env->CallIntMethod(parcel, readInt);
++    const int32_t density = env->CallIntMethod(parcel, readInt);
++    jbyteArray pixels = static_cast<jbyteArray>(env->CallObjectMethod(parcel, readBytes));
++    if (env->ExceptionCheck()) return NULL;
++    auto imageInfo = SkImageInfo::Make(width, height, colorType, alphaType,
++                                       srgb ? SkColorSpace::MakeSRGB() : nullptr);
++    size_t allocationSize = 0;
++    if (!validateImageInfo(imageInfo, rowBytes) || !Bitmap::computeAllocationSize(rowBytes, height, &allocationSize) ||
++        pixels == nullptr || static_cast<size_t>(env->GetArrayLength(pixels)) < allocationSize) {
++        jniThrowExceptionFmt(env, BadParcelableException, "Received bad bitmap: %dx%d rowBytes=%d", width, height,
++                             rowBytes);
++        return NULL;
++    }
++    sk_sp<Bitmap> nativeBitmap = Bitmap::allocateHeapBitmap(allocationSize, imageInfo, rowBytes);
++    if (!nativeBitmap) {
++        jniThrowRuntimeException(env, "Could not allocate bitmap data.");
++        return NULL;
++    }
++    env->GetByteArrayRegion(pixels, 0, allocationSize, static_cast<jbyte*>(nativeBitmap->pixels()));
+     return createBitmap(env, nativeBitmap.release(), getPremulBitmapCreateFlags(isMutable), nullptr,
+                         nullptr, density);
+ #else
+@@ -886,6 +923,30 @@ static jboolean Bitmap_writeToParcel(JNIEnv* env, jobject,
+         return JNI_FALSE;
+     }
+     return JNI_TRUE;
++#elif defined(ANDROPKG)
++    if (parcel == NULL) return JNI_FALSE;
++    SkBitmap bitmap;
++    reinterpret_cast<BitmapWrapper*>(bitmapHandle)->getSkBitmap(&bitmap);
++    jclass pc = env->GetObjectClass(parcel);
++    jmethodID writeInt = env->GetMethodID(pc, "writeInt", "(I)V");
++    jmethodID writeBytes = env->GetMethodID(pc, "writeByteArray", "([B)V");
++    env->CallVoidMethod(parcel, writeInt, (jint)!bitmap.isImmutable());
++    env->CallVoidMethod(parcel, writeInt, (jint)bitmap.colorType());
++    env->CallVoidMethod(parcel, writeInt, (jint)bitmap.alphaType());
++    env->CallVoidMethod(parcel, writeInt, (jint)(bitmap.colorSpace() != nullptr));
++    env->CallVoidMethod(parcel, writeInt, (jint)bitmap.width());
++    env->CallVoidMethod(parcel, writeInt, (jint)bitmap.height());
++    env->CallVoidMethod(parcel, writeInt, (jint)bitmap.rowBytes());
++    env->CallVoidMethod(parcel, writeInt, density);
++    size_t size = bitmap.computeByteSize();
++    jbyteArray pixels = env->NewByteArray(static_cast<jsize>(size));
++    if (pixels == nullptr) return JNI_FALSE;
++    if (bitmap.getPixels() != nullptr) {
++        env->SetByteArrayRegion(pixels, 0, static_cast<jsize>(size), static_cast<const jbyte*>(bitmap.getPixels()));
++    }
++    env->CallVoidMethod(parcel, writeBytes, pixels);
++    env->DeleteLocalRef(pixels);
++    return env->ExceptionCheck() ? JNI_FALSE : JNI_TRUE;
+ #else
+     doThrowRE(env, "Cannot use parcels outside of Android");
+     return JNI_FALSE;
 diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
 index 78db54a..bb95c44 100644
 --- a/libs/hwui/jni/graphics_jni_helpers.h

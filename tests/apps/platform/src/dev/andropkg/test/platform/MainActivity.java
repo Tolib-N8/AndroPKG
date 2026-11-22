@@ -50,6 +50,14 @@ public class MainActivity extends Activity {
         android.graphics.Bitmap hw = src.copy(android.graphics.Bitmap.Config.HARDWARE, false);
         android.graphics.Bitmap back = hw == null ? null : hw.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
         Log.i(TAG, "[platform] hardware bitmap pixel=" + (back == null ? "null" : Integer.toHexString(back.getPixel(1, 1))));
+        // Bitmaps in parcels (MediaSession queues, notifications, Intents carry them).
+        android.os.Parcel parcel = android.os.Parcel.obtain();
+        src.writeToParcel(parcel, 0);
+        parcel.setDataPosition(0);
+        android.graphics.Bitmap copy = android.graphics.Bitmap.CREATOR.createFromParcel(parcel);
+        parcel.recycle();
+        Log.i(TAG, "[platform] parcel bitmap " + copy.getWidth() + "x" + copy.getHeight() + " pixel="
+                + Integer.toHexString(copy.getPixel(2, 2)));
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();
