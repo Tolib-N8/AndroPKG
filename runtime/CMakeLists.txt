@@ -256,7 +256,7 @@ endif()
 target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundation" "-framework CoreGraphics"
                       "-framework CoreText" "-framework ImageIO" ${_uti_fw}
                       "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation"
-                      "-framework MediaPlayer" "-framework Metal" "-framework QuartzCore")
+                      "-framework MediaPlayer" "-framework Metal" "-framework QuartzCore" "-framework CoreVideo")
 if(ANDROPKG_PLATFORM STREQUAL "ios")
   target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit" "-framework WebKit")
 else()
