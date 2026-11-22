@@ -44,6 +44,12 @@ public class MainActivity extends Activity {
         TextView text = new TextView(this);
         text.setText("platform");
         setContentView(text);
+        // Config.HARDWARE (image loaders such as Coil use it): pixels must survive the copy.
+        android.graphics.Bitmap src = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888);
+        src.eraseColor(0xff00ff00);
+        android.graphics.Bitmap hw = src.copy(android.graphics.Bitmap.Config.HARDWARE, false);
+        android.graphics.Bitmap back = hw == null ? null : hw.copy(android.graphics.Bitmap.Config.ARGB_8888, false);
+        Log.i(TAG, "[platform] hardware bitmap pixel=" + (back == null ? "null" : Integer.toHexString(back.getPixel(1, 1))));
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();

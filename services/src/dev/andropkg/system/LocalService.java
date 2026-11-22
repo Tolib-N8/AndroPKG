@@ -105,7 +105,40 @@ final class LocalService {
         }
     }
 
+    // Per (class, name, arity) lookups, cached: every service call goes through here, and
+    // getDeclaredMethods() copies the whole method table each time.
+    private static final Method NONE;
+    static {
+        try {
+            NONE = Object.class.getDeclaredMethod("toString");
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError(e);
+        }
+    }
+    private static final java.util.concurrent.ConcurrentHashMap<String, Method> CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private static Method findVarargs(Class<?> c, String name) {
+        String key = c.getName() + "#" + name + "/*";
+        Method m = CACHE.get(key);
+        if (m == null) {
+            m = findVarargsUncached(c, name);
+            CACHE.put(key, m == null ? NONE : m);
+        }
+        return m == NONE ? null : m;
+    }
+
+    private static Method find(Class<?> c, String name, int arity) {
+        String key = c.getName() + "#" + name + "/" + arity;
+        Method m = CACHE.get(key);
+        if (m == null) {
+            m = findUncached(c, name, arity);
+            CACHE.put(key, m == null ? NONE : m);
+        }
+        return m == NONE ? null : m;
+    }
+
+    private static Method findVarargsUncached(Class<?> c, String name) {
         for (Method m : c.getDeclaredMethods()) {
             Class<?>[] p = m.getParameterTypes();
             if (m.getName().equals(name) && p.length == 1 && p[0] == Object[].class) {
@@ -116,7 +149,7 @@ final class LocalService {
         return null;
     }
 
-    private static Method find(Class<?> c, String name, int arity) {
+    private static Method findUncached(Class<?> c, String name, int arity) {
         for (Method m : c.getDeclaredMethods()) {
             if (m.getName().equals(name) && m.getParameterCount() == arity) {
                 m.setAccessible(true);

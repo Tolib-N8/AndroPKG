@@ -618,6 +618,25 @@ index c442a7b..b494f1f 100644
 +    return nullptr;
 +#endif
  }
+diff --git a/libs/hwui/hwui/Bitmap.cpp b/libs/hwui/hwui/Bitmap.cpp
+index 92d875b..df48402 100644
+--- a/libs/hwui/hwui/Bitmap.cpp
++++ b/libs/hwui/hwui/Bitmap.cpp
+@@ -150,6 +150,14 @@ sk_sp<Bitmap> Bitmap::allocateHardwareBitmap(const SkBitmap& bitmap) {
+         return nullptr;
+     }
+     return uirenderer::HardwareBitmapUploader::allocateHardwareBitmap(bitmap);
++#elif defined(ANDROPKG)
++    // andropkg: no hardware buffers; a "hardware" bitmap is a heap copy of the pixels
++    // (layoutlib's path below allocates it empty: every Config.HARDWARE image drew blank).
++    sk_sp<Bitmap> heap = Bitmap::allocateHeapBitmap(bitmap.info());
++    if (heap && !bitmap.readPixels(heap->info(), heap->pixels(), heap->rowBytes(), 0, 0)) {
++        return nullptr;
++    }
++    return heap;
+ #else
+     return Bitmap::allocateHeapBitmap(bitmap.info());
+ #endif
 diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
 index 78db54a..bb95c44 100644
 --- a/libs/hwui/jni/graphics_jni_helpers.h

@@ -25,11 +25,18 @@ final class Hidden {
         }
     }
 
+    private static final java.util.concurrent.ConcurrentHashMap<String, Method> METHODS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     static Method method(Class<?> c, String name, int arity) {
+        String key = c.getName() + "#" + name + "/" + arity;
+        Method cached = METHODS.get(key);
+        if (cached != null) return cached;
         for (Class<?> k = c; k != null; k = k.getSuperclass()) {
             for (Method m : k.getDeclaredMethods()) {
                 if (m.getName().equals(name) && (arity < 0 || m.getParameterCount() == arity)) {
                     m.setAccessible(true);
+                    METHODS.put(key, m);
                     return m;
                 }
             }
@@ -97,13 +104,23 @@ final class Hidden {
         }
     }
 
+    private static final java.util.concurrent.ConcurrentHashMap<String, Field> FIELDS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    // Cached, and found by scanning declared fields: getDeclaredField() throws for every class
+    // up the hierarchy that lacks it, and exceptions are slow in the interpreter (thousands of
+    // component lookups while parsing a large app's manifest).
     private static Field field(Class<?> c, String name) {
+        String key = c.getName() + "#" + name;
+        Field cached = FIELDS.get(key);
+        if (cached != null) return cached;
         for (Class<?> k = c; k != null; k = k.getSuperclass()) {
-            try {
-                Field f = k.getDeclaredField(name);
-                f.setAccessible(true);
-                return f;
-            } catch (NoSuchFieldException ignored) {
+            for (Field f : k.getDeclaredFields()) {
+                if (f.getName().equals(name)) {
+                    f.setAccessible(true);
+                    FIELDS.put(key, f);
+                    return f;
+                }
             }
         }
         throw new IllegalStateException("andropkg: no field " + c.getName() + "." + name);

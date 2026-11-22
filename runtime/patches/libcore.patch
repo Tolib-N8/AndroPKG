@@ -269,6 +269,332 @@ index 8fdb6a0..868b6cf 100644
      kill(pid, SIGTERM);
  }
  
+diff --git a/ojluni/src/main/native/UnixNativeDispatcher.c b/ojluni/src/main/native/UnixNativeDispatcher.c
+index 6710e13..5844762 100644
+--- a/ojluni/src/main/native/UnixNativeDispatcher.c
++++ b/ojluni/src/main/native/UnixNativeDispatcher.c
+@@ -23,6 +23,9 @@
+  * questions.
+  */
+ 
++#if defined(__APPLE__)
++#include "andropkg/paths.h"  /* andropkg: java.nio.file paths onto the iOS layout */
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <limits.h>
+@@ -350,6 +353,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_fopen0(JNIEnv* env, jclass this,
+ {
+     FILE* fp = NULL;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+     const char* mode = (const char*)jlong_to_ptr(modeAddress);
+ 
+     do {
+@@ -384,6 +391,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_open0(JNIEnv* env, jclass this,
+ {
+     jint fd;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(open64(path, (int)oflags, (mode_t)mode), fd);
+     if (fd == -1) {
+@@ -398,6 +409,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_openat0(JNIEnv* env, jclass this, jint dfd,
+ {
+     jint fd;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     if (my_openat64_func == NULL) {
+         JNU_ThrowInternalError(env, "should not reach here");
+@@ -491,6 +506,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_stat0(JNIEnv* env, jclass this,
+     int err;
+     struct stat64 buf;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(stat64(path, &buf), err);
+     if (err == -1) {
+@@ -505,6 +524,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_stat1(JNIEnv* env, jclass this, jlong pathA
+     int err;
+     struct stat64 buf;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(stat64(path, &buf), err);
+     if (err == -1) {
+@@ -521,6 +544,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_lstat0(JNIEnv* env, jclass this,
+     int err;
+     struct stat64 buf;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(lstat64(path, &buf), err);
+     if (err == -1) {
+@@ -552,6 +579,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_fstatat0(JNIEnv* env, jclass this, jint dfd
+     int err;
+     struct stat64 buf;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     if (my_fstatat64_func == NULL) {
+         JNU_ThrowInternalError(env, "should not reach here");
+@@ -571,6 +602,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_chmod0(JNIEnv* env, jclass this,
+ {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(chmod(path, (mode_t)mode), err);
+     if (err == -1) {
+@@ -597,6 +632,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_chown0(JNIEnv* env, jclass this,
+ {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(chown(path, (uid_t)uid, (gid_t)gid), err);
+     if (err == -1) {
+@@ -609,6 +648,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_lchown0(JNIEnv* env, jclass this, jlong pat
+ {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(lchown(path, (uid_t)uid, (gid_t)gid), err);
+     if (err == -1) {
+@@ -634,6 +677,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_utimes0(JNIEnv* env, jclass this,
+     int err;
+     struct timeval times[2];
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     times[0].tv_sec = accessTime / 1000000;
+     times[0].tv_usec = accessTime % 1000000;
+@@ -680,6 +727,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_opendir0(JNIEnv* env, jclass this,
+ {
+     DIR* dir;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     dir = opendir(path);
+@@ -782,6 +833,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_mkdir0(JNIEnv* env, jclass this,
+     jlong pathAddress, jint mode)
+ {
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (mkdir(path, (mode_t)mode) == -1) {
+@@ -794,6 +849,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_rmdir0(JNIEnv* env, jclass this,
+     jlong pathAddress)
+ {
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (rmdir(path) == -1) {
+@@ -807,7 +866,15 @@ Java_sun_nio_fs_UnixNativeDispatcher_link0(JNIEnv* env, jclass this,
+ {
+     int err;
+     const char* existing = (const char*)jlong_to_ptr(existingAddress);
++#if defined(__APPLE__)
++    char andropkg_existing_buf[1024];
++    existing = andropkg_translate_path(existing, andropkg_existing_buf, sizeof andropkg_existing_buf);  /* andropkg */
++#endif
+     const char* newname = (const char*)jlong_to_ptr(newAddress);
++#if defined(__APPLE__)
++    char andropkg_newname_buf[1024];
++    newname = andropkg_translate_path(newname, andropkg_newname_buf, sizeof andropkg_newname_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(link(existing, newname), err);
+     if (err == -1) {
+@@ -821,6 +888,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_unlink0(JNIEnv* env, jclass this,
+     jlong pathAddress)
+ {
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (unlink(path) == -1) {
+@@ -833,6 +904,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_unlinkat0(JNIEnv* env, jclass this, jint df
+                                                jlong pathAddress, jint flags)
+ {
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     if (my_unlinkat_func == NULL) {
+         JNU_ThrowInternalError(env, "should not reach here");
+@@ -850,7 +925,15 @@ Java_sun_nio_fs_UnixNativeDispatcher_rename0(JNIEnv* env, jclass this,
+     jlong fromAddress, jlong toAddress)
+ {
+     const char* from = (const char*)jlong_to_ptr(fromAddress);
++#if defined(__APPLE__)
++    char andropkg_from_buf[1024];
++    from = andropkg_translate_path(from, andropkg_from_buf, sizeof andropkg_from_buf);  /* andropkg */
++#endif
+     const char* to = (const char*)jlong_to_ptr(toAddress);
++#if defined(__APPLE__)
++    char andropkg_to_buf[1024];
++    to = andropkg_translate_path(to, andropkg_to_buf, sizeof andropkg_to_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (rename(from, to) == -1) {
+@@ -863,7 +946,15 @@ Java_sun_nio_fs_UnixNativeDispatcher_renameat0(JNIEnv* env, jclass this,
+     jint fromfd, jlong fromAddress, jint tofd, jlong toAddress)
+ {
+     const char* from = (const char*)jlong_to_ptr(fromAddress);
++#if defined(__APPLE__)
++    char andropkg_from_buf[1024];
++    from = andropkg_translate_path(from, andropkg_from_buf, sizeof andropkg_from_buf);  /* andropkg */
++#endif
+     const char* to = (const char*)jlong_to_ptr(toAddress);
++#if defined(__APPLE__)
++    char andropkg_to_buf[1024];
++    to = andropkg_translate_path(to, andropkg_to_buf, sizeof andropkg_to_buf);  /* andropkg */
++#endif
+ 
+     if (my_renameat_func == NULL) {
+         JNU_ThrowInternalError(env, "should not reach here");
+@@ -882,6 +973,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_symlink0(JNIEnv* env, jclass this,
+ {
+     const char* target = (const char*)jlong_to_ptr(targetAddress);
+     const char* link = (const char*)jlong_to_ptr(linkAddress);
++#if defined(__APPLE__)
++    char andropkg_link_buf[1024];
++    link = andropkg_translate_path(link, andropkg_link_buf, sizeof andropkg_link_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (symlink(target, link) == -1) {
+@@ -896,6 +991,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_readlink0(JNIEnv* env, jclass this,
+     jbyteArray result = NULL;
+     char target[PATH_MAX+1];
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     int n = readlink(path, target, sizeof(target));
+@@ -923,6 +1022,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_realpath0(JNIEnv* env, jclass this,
+     jbyteArray result = NULL;
+     char resolved[PATH_MAX+1];
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     /* EINTR not listed as a possible error */
+     if (realpath(path, resolved) == NULL) {
+@@ -943,6 +1046,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_access0(JNIEnv* env, jclass this,
+ {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(access(path, (int)amode), err);
+     if (err == -1) {
+@@ -954,6 +1061,10 @@ JNIEXPORT jboolean JNICALL
+ Java_sun_nio_fs_UnixNativeDispatcher_exists0(JNIEnv* env, jclass this, jlong pathAddress) {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+     RESTARTABLE(access(path, F_OK), err);
+     return (err == 0) ? JNI_TRUE : JNI_FALSE;
+ }
+@@ -965,6 +1076,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_statvfs0(JNIEnv* env, jclass this,
+     int err;
+     struct statvfs64 buf;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+ 
+     RESTARTABLE(statvfs64(path, &buf), err);
+@@ -996,6 +1111,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_pathconf0(JNIEnv* env, jclass this,
+ {
+     long err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     err = pathconf(path, (int)name);
+     if (err == -1) {
+@@ -1023,6 +1142,10 @@ Java_sun_nio_fs_UnixNativeDispatcher_mknod0(JNIEnv* env, jclass this,
+ {
+     int err;
+     const char* path = (const char*)jlong_to_ptr(pathAddress);
++#if defined(__APPLE__)
++    char andropkg_path_buf[1024];
++    path = andropkg_translate_path(path, andropkg_path_buf, sizeof andropkg_path_buf);  /* andropkg */
++#endif
+ 
+     RESTARTABLE(mknod(path, (mode_t)mode, (dev_t)dev), err);
+     if (err == -1) {
 diff --git a/ojluni/src/main/native/io_util.h b/ojluni/src/main/native/io_util.h
 index 31088a9..bb05fca 100644
 --- a/ojluni/src/main/native/io_util.h
