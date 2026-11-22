@@ -27,7 +27,7 @@ final class ActivityStack {
     private static final String TAG = "andropkg";
 
     static final class Record {
-        final IBinder token = new Binder();
+        final IBinder token;
         final ActivityInfo info;
         final Intent intent;
         final Record resultTo;
@@ -38,6 +38,7 @@ final class ActivityStack {
         boolean stopped;      // sent StopActivityItem (no longer visible)
 
         Record(ActivityInfo info, Intent intent, Record resultTo, String resultWho, int requestCode) {
+            this.token = new ActivityToken(info.name);
             this.info = info;
             this.intent = intent;
             this.resultTo = resultTo;
