@@ -85,7 +85,7 @@ for want in "focus=1 max=15 rate=48000" "raw duration=600" "raw completed" "file
     "codec audio/vorbis 22050x2 ok=true signal=true async audio/vorbis 22050x2 ok=true signal=true" \
     "codec audio/opus 48000x1 ok=true signal=true" "codec audio/mp4a-latm 22050x1 ok=true signal=true" \
     "codec audio/mpeg 22050x1 ok=true signal=true" "codec audio/raw 22050x1 ok=true signal=true" \
-    "router selected=true router2 routes=1 system=true" "session active controller=Tone" "session onPause" "soundpool loaded 2 status=0" "soundpool playing true true" \
+    "router selected=true router2 routes=1 system=true" "metrics session=true" "session active controller=Tone" "session onPause" "soundpool loaded 2 status=0" "soundpool playing true true" \
     "opus duration=600" "opus completed at 600" "vorbis retriever duration=600 mime=audio/ogg"; do
   grep -q "\[media\] $want" "$log/media.log" || fail "media: $want" media
 done

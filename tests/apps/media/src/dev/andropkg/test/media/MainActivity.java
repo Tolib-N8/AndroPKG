@@ -162,6 +162,12 @@ public class MainActivity extends Activity {
         Log.i(TAG, "[media] router selected=" + (router.getSelectedRoute(android.media.MediaRouter.ROUTE_TYPE_LIVE_AUDIO) != null)
                 + " router2 routes=" + router2.getSystemController().getSelectedRoutes().size()
                 + " system=" + router2.getSystemController().getSelectedRoutes().get(0).isSystemRoute());
+        // MediaMetricsManager: ExoPlayer opens a PlaybackSession per player.
+        android.media.metrics.MediaMetricsManager metrics =
+                (android.media.metrics.MediaMetricsManager) getSystemService(MEDIA_METRICS_SERVICE);
+        try (android.media.metrics.PlaybackSession ps = metrics.createPlaybackSession()) {
+            Log.i(TAG, "[media] metrics session=" + !ps.getSessionId().toString().isEmpty());
+        }
         Log.i(TAG, "[media] session active controller=" + session.getController().getMetadata().getString(MediaMetadata.METADATA_KEY_TITLE));
 
         rawResource();

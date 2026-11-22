@@ -75,7 +75,6 @@ final class DefaultServices {
         {"country_detector", "android.location.ICountryDetector"},
         {"people", "android.app.people.IPeopleManager"},
         {"media_projection", "android.media.projection.IMediaProjectionManager"},
-        {"media_metrics", "android.media.metrics.IMediaMetricsManager"},
         {"uri_grants", "android.app.IUriGrantsManager"},
         {"recovery", "android.os.IRecoverySystem"},
         {"hardware_properties", "android.os.IHardwarePropertiesManager"},
