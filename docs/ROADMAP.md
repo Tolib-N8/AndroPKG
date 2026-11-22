@@ -38,7 +38,7 @@ These questions decided whether the approach could work at all.
 
 ## ✅ M3: Interactive apps
 
-- ✅ Touch input with batched move history, and the iOS keyboard as the IME.
+- ✅ Touch input with batched move history (multi-touch since), and the iOS keyboard as the IME.
 - ✅ Activity lifecycle with results, translucent activities, recreation, and back gestures.
 - ✅ Resources and configuration (density, dark theme), SharedPreferences, SQLite and networking.
 - ✅ Android paths are mapped into the iOS sandbox.
@@ -85,7 +85,8 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
 
 - 🔄 Build a corpus of 10–20 popular APKs (messengers, social, media, games, utilities) and
   fix the shared gaps.
-- ⏳ Multi-touch, gestures and hardware keyboards.
+- ✅ Multi-touch: pointer down/up, moves with every finger, batched history.
+- ⏳ Hardware keyboards and mouse/trackpad pointers.
 - ⏳ Notifications delivered as iOS notifications, and background playback controls.
 - ⏳ Camera (Camera2 on AVCaptureSession) and the photo picker.
 - ⏳ `NsdManager` / service discovery, and Bluetooth basics.

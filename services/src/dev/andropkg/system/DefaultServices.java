@@ -91,6 +91,7 @@ final class DefaultServices {
         {"usb", "android.hardware.usb.IUsbManager"},
         {"wifip2p", "android.net.wifi.p2p.IWifiP2pManager"},
         {"batteryproperties", "android.os.IBatteryPropertiesRegistrar"},
+        {"servicediscovery", "android.net.nsd.INsdManager"},  // NsdManager: no peers are found
     };
 
     private static final Map<String, String> BY_NAME = new HashMap<>();

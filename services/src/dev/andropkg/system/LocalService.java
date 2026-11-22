@@ -73,7 +73,13 @@ final class LocalService {
                     if (any != null) return Hidden.invoke(any, impl, (Object) (args == null ? new Object[0] : args));
                     if (reported.add(name + "/" + arity)) Log.w(TAG, shortName + "." + name + "() -> default");
                     replyToResultReceivers(args);
-                    return Hidden.defaultValue(method.getReturnType());
+                    Class<?> ret = method.getReturnType();
+                    if (ret.isInterface() && IInterface.class.isAssignableFrom(ret)) {
+                        // A sub-service (NsdManager's connect() -> INsdServiceConnector, ...):
+                        // defaults all the way down rather than a null the caller dereferences.
+                        return create(ret.getName(), new Object()).iface;
+                    }
+                    return Hidden.defaultValue(ret);
                 });
         return binder;
     }

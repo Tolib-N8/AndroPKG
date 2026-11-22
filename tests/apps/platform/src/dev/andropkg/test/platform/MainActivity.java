@@ -91,6 +91,9 @@ public class MainActivity extends Activity {
         android.graphics.Bitmap fxTarget = android.graphics.Bitmap.createBitmap(8, 4, android.graphics.Bitmap.Config.ARGB_8888);
         new android.graphics.Canvas(fxTarget).drawRenderNode(fx);
         Log.i(TAG, "[platform] renderNode layer effect " + Integer.toHexString(fxTarget.getPixel(3, 2)));
+        // Network service discovery: a manager (no exception storm), discovery that finds nothing.
+        android.net.nsd.NsdManager nsd = getSystemService(android.net.nsd.NsdManager.class);
+        Log.i(TAG, "[platform] nsd manager=" + (nsd != null));
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();

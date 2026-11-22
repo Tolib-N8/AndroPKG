@@ -48,7 +48,7 @@ the memory of a native app.
 |---|---|
 | **Runtime** | Android 14 ART + libcore on iOS. nterp assembly interpreter, concurrent copying GC with read barriers, JNI, threads, ICU, tzdata. |
 | **Framework** | `framework.jar` and `framework-res` in one process. Activities, fragments, services, broadcasts, content providers, settings, accounts, keystore, notifications. |
-| **UI** | Views and Jetpack Compose. Touch input with batched history, the iOS keyboard as the IME, dialogs and popups, multi-window composition, `RenderNode`, `RenderEffect` blur. |
+| **UI** | Views and Jetpack Compose. Multi-touch with batched history, the iOS keyboard as the IME, dialogs and popups, multi-window composition, `RenderNode`, `RenderEffect` blur. |
 | **Graphics** | hwui draws through **Skia Ganesh on Metal**, double-buffered per window, into a `CAMetalLayer`. GLES 2/3 for NDK and `GLSurfaceView`. `SurfaceView`, `TextureView`, `SurfaceTexture`. |
 | **Native code** | Unmodified NDK `.so` files: ELF in Mach-O, bionic ABI on Darwin, TLS, syscall trampolines, libraries built for 4 KB pages relaid out for 16 KB pages. |
 | **Media** | `MediaCodec`:<br>• AAC, MP3, Opus, Vorbis.<br>• **H.264 and HEVC through VideoToolbox**, zero-copy to the GPU.<br><br>`MediaExtractor` for MP4/Ogg, and `MediaPlayer`/`VideoView`.<br><br>AudioTrack, AAudio and OpenSL ES on Core Audio.<br><br>ExoPlayer/Media3 work. |
@@ -64,7 +64,7 @@ the memory of a native app.
   - video track covers through `TextureView`.
 - **Spotify.** Reaches its first frame in about 2 s and signs in.
 
-A corpus of 16 test apps (`tests/apps/`) covers lifecycle, widgets, input, multi-window, storage,
+A corpus of 17 test apps (`tests/apps/`) covers lifecycle, widgets, input, multi-touch, multi-window, storage,
 media, video, NDK, GLES, WebView and GPU memory. It runs on every change.
 
 ## How it works
@@ -220,7 +220,7 @@ The full list with milestones is in [**docs/ROADMAP.md**](docs/ROADMAP.md). In s
 - 🔜 **Next:**
   - AOT compilation (dex2oat output signed like `.so` files) and a boot image for instant start;
   - wider app compatibility from a corpus of popular APKs;
-  - multi-touch, camera, notifications on iOS.
+  - camera, notifications on iOS.
 
 ## Limitations
 

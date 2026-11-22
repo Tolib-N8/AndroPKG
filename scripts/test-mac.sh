@@ -72,7 +72,7 @@ echo "ok   components checks"
 # Platform services: connectivity, notification channels, asset fds, sensors, startActivities.
 ANDROPKG_TEST_SCRIPT="wait 300; accel 1,2,9.8" run platform "\[platform\] done" $(apk platform)
 for want in "network internet=true" "network callback available" "channel Channel one importance=2" \
-    "asset fd length=25" "accelerometer Accelerometer" "accel 1,2,10" "second created n=1" "second new intent n=2" "hardware bitmap pixel=ff00ff00" "parcel bitmap 4x4 pixel=ff00ff00" "software renderNode ffff0000,ff0000ff" "renderNode layer effect ff00ff00"; do
+    "asset fd length=25" "accelerometer Accelerometer" "accel 1,2,10" "second created n=1" "second new intent n=2" "hardware bitmap pixel=ff00ff00" "parcel bitmap 4x4 pixel=ff00ff00" "software renderNode ffff0000,ff0000ff" "renderNode layer effect ff00ff00" "nsd manager=true"; do
   grep -q "\[platform\] $want" "$log/platform.log" || fail "platform: $want" platform
 done
 echo "ok   platform checks"
