@@ -180,6 +180,7 @@ final class AccountManagerImpl {
     }
 
     public synchronized boolean addAccountExplicitly(Account a, String password, Bundle extras, String op) {
+        Log.i(TAG, "add account " + (a == null ? null : a.type));
         if (a == null || db().containsKey(a)) return false;
         Entry e = new Entry();
         e.password = password;

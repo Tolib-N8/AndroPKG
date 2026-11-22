@@ -30,9 +30,10 @@ final class ActivityStack {
         final IBinder token;
         final ActivityInfo info;
         final Intent intent;
-        final Record resultTo;
-        final String resultWho;
-        final int requestCode;
+        Record resultTo;      // (cleared when FORWARD_RESULT hands the result on)
+        String resultWho;
+        int requestCode;
+        final List<Object> pendingResults = new ArrayList<>();  // ResultInfo, delivered on resume
         boolean finishing;
         boolean translucent;  // windowIsTranslucent / windowIsFloating: what's under it shows
         boolean stopped;      // sent StopActivityItem (no longer visible)
@@ -72,7 +73,7 @@ final class ActivityStack {
         Record top = top();
         if (top == null) return;
         top.stopped = false;
-        AndroPkgSystem.schedule(top.token, null, resumeItem(false));
+        AndroPkgSystem.schedule(top.token, takeResults(top), resumeItem(false));
     }
 
     synchronized boolean isRoot(IBinder token) {
@@ -153,7 +154,15 @@ final class ActivityStack {
             return 3;
         }
         Record caller = resultTo != null ? find(resultTo) : null;
-        Record r = new Record(info, intent, requestCode >= 0 ? caller : null, resultWho, requestCode);
+        Record r;
+        if ((flags & Intent.FLAG_ACTIVITY_FORWARD_RESULT) != 0 && caller != null) {
+            // The caller passes its own result request on: this activity answers the caller's caller.
+            r = new Record(info, intent, caller.resultTo, caller.resultWho, caller.requestCode);
+            caller.resultTo = null;
+            caller.requestCode = -1;
+        } else {
+            r = new Record(info, intent, requestCode >= 0 ? caller : null, resultWho, requestCode);
+        }
         Record prev = top();
         stack.removeAll(doomed);
         stack.add(r);
@@ -192,7 +201,7 @@ final class ActivityStack {
         Log.i(TAG, "clear " + doomed.size() + " above " + newTop.info.name);
         AndroPkgSystem.schedule(prev.token, null, pauseItem(true));
         newTop.stopped = false;
-        AndroPkgSystem.schedule(newTop.token, null, resumeItem(false));
+        AndroPkgSystem.schedule(newTop.token, takeResults(newTop), resumeItem(false));
         for (int i = doomed.size() - 1; i >= 0; i--) destroy(doomed.get(i));
     }
 
@@ -225,16 +234,15 @@ final class ActivityStack {
         Log.i(TAG, "finish " + r.info.name);
         Record next = top();
         AndroPkgSystem.schedule(r.token, null, pauseItem(true));
+        // As ActivityRecord.sendResult: the result waits at the activity that asked for it and
+        // arrives when that one resumes (whichever activity finishes, top or not).
+        if (r.resultTo != null && r.requestCode >= 0 && stack.contains(r.resultTo)) {
+            r.resultTo.pendingResults.add(Hidden.newInstance(Hidden.cls("android.app.ResultInfo"), r.resultWho,
+                    r.requestCode, resultCode, data));
+        }
         if (wasTop && next != null) {
-            Object result = null;
-            if (r.resultTo == next && r.requestCode >= 0) {
-                Object info = Hidden.newInstance(Hidden.cls("android.app.ResultInfo"), r.resultWho, r.requestCode,
-                        resultCode, data);
-                result = Hidden.callStatic(Hidden.cls("android.app.servertransaction.ActivityResultItem"), "obtain",
-                        Collections.singletonList(info));
-            }
             next.stopped = false;
-            AndroPkgSystem.schedule(next.token, result, resumeItem(false));
+            AndroPkgSystem.schedule(next.token, takeResults(next), resumeItem(false));
         }
         AndroPkgSystem.schedule(r.token, null,
                 Hidden.callStatic(Hidden.cls("android.app.servertransaction.DestroyActivityItem"), "obtain", true, 0));
@@ -313,6 +321,14 @@ final class ActivityStack {
             Log.w(TAG, "theme of " + info.name, t);
             return false;
         }
+    }
+
+    /** An ActivityResultItem with the results waiting for `r` (null if none). */
+    private static Object takeResults(Record r) {
+        if (r.pendingResults.isEmpty()) return null;
+        List<Object> results = new ArrayList<>(r.pendingResults);
+        r.pendingResults.clear();
+        return Hidden.callStatic(Hidden.cls("android.app.servertransaction.ActivityResultItem"), "obtain", results);
     }
 
     private static Object stopItem() {

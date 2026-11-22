@@ -33,6 +33,22 @@ JNIEnv* Env() {
   return env;
 }
 
+// For GCD worker threads (which come and go): attached for one call, then detached, since a
+// thread that exits while attached aborts the VM.
+struct ScopedEnv {
+  JNIEnv* env = nullptr;
+  bool attached = false;
+  ScopedEnv() {
+    if (gVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+      JavaVMAttachArgs args = {JNI_VERSION_1_6, "WebKit bridge", nullptr};
+      attached = gVm->AttachCurrentThread(&env, &args) == JNI_OK;
+    }
+  }
+  ~ScopedEnv() {
+    if (attached) gVm->DetachCurrentThread();
+  }
+};
+
 NSString* NS(JNIEnv* env, jstring s) {
   if (s == nullptr) return nil;
   const char* c = env->GetStringUTFChars(s, nullptr);
@@ -53,6 +69,11 @@ void Check(JNIEnv* env) {
 void OnMain(dispatch_block_t b) {
   if (NSThread.isMainThread) b();
   else dispatch_sync(dispatch_get_main_queue(), b);
+}
+
+dispatch_queue_t BridgeQueue() {  // Java calls WebKit waits on: app callbacks, JS interfaces
+  static dispatch_queue_t q = dispatch_queue_create("andropkg.webview.bridge", DISPATCH_QUEUE_SERIAL);
+  return q;
 }
 
 UIView* RootView() {
@@ -109,16 +130,23 @@ UIView* RootView() {
     return;
   }
   if (main || !loadable) {
-    JNIEnv* env = Env();
-    jstring js = J(env, s);
-    jboolean override = env->CallBooleanMethod(peer, gShouldOverride, js, (jboolean)main,
-                                               (jboolean)(a.navigationType == WKNavigationTypeLinkActivated));
-    Check(env);
-    if (js) env->DeleteLocalRef(js);
-    if (override || !loadable) {
-      decide(WKNavigationActionPolicyCancel);
-      return;
-    }
+    // Asked off the main thread (the app answers on its UI thread and may read cookies, which
+    // WebKit's store delivers on the main thread); WebKit waits for the decision.
+    bool gesture = a.navigationType == WKNavigationTypeLinkActivated;
+    jobject p = Env()->NewGlobalRef(peer);  // (kept alive past a destroy while the app answers)
+    dispatch_async(BridgeQueue(), ^{
+      ScopedEnv scoped;
+      JNIEnv* env = scoped.env;
+      jstring js = J(env, s);
+      jboolean override = env->CallBooleanMethod(p, gShouldOverride, js, (jboolean)main, (jboolean)gesture);
+      Check(env);
+      env->DeleteGlobalRef(p);
+      if (js) env->DeleteLocalRef(js);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        decide(override || !loadable ? WKNavigationActionPolicyCancel : WKNavigationActionPolicyAllow);
+      });
+    });
+    return;
   }
   decide(WKNavigationActionPolicyAllow);
 }
@@ -177,13 +205,21 @@ UIView* RootView() {
     completionHandler:(void (^)(NSString*))done {
   static NSString* const kBridge = @"andropkg-bridge:";
   if ([prompt hasPrefix:kBridge]) {
-    JNIEnv* env = Env();
-    jstring call = J(env, [prompt substringFromIndex:kBridge.length]);
-    jstring r = static_cast<jstring>(env->CallObjectMethod(peer, gOnJsCall, call));
-    Check(env);
-    done(r ? NS(env, r) : nil);
-    if (call) env->DeleteLocalRef(call);
-    if (r) env->DeleteLocalRef(r);
+    // On a bridge thread, as Android's JavaBridge thread (the page waits for the answer).
+    NSString* json = [prompt substringFromIndex:kBridge.length];
+    jobject p = Env()->NewGlobalRef(peer);  // (kept alive past a destroy while the app answers)
+    dispatch_async(BridgeQueue(), ^{
+      ScopedEnv scoped;
+      JNIEnv* env = scoped.env;
+      jstring call = J(env, json);
+      jstring r = static_cast<jstring>(env->CallObjectMethod(p, gOnJsCall, call));
+      Check(env);
+      env->DeleteGlobalRef(p);
+      NSString* answer = r ? NS(env, r) : nil;
+      if (call) env->DeleteLocalRef(call);
+      if (r) env->DeleteLocalRef(r);
+      dispatch_async(dispatch_get_main_queue(), ^{ done(answer); });
+    });
     return;
   }
   done(text);

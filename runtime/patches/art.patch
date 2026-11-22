@@ -1564,7 +1564,7 @@ index 36d7d7e..01b30b1 100644
    signals.Add(SIGPIPE);
    // SIGQUIT is used to dump the runtime's state (including stack traces).
 diff --git a/runtime/runtime_common.cc b/runtime/runtime_common.cc
-index c4a695f..5498c18 100644
+index c4a695f..7d5f758 100644
 --- a/runtime/runtime_common.cc
 +++ b/runtime/runtime_common.cc
 @@ -16,6 +16,14 @@
@@ -1641,6 +1641,20 @@ index c4a695f..5498c18 100644
  #else
    os << "Unknown architecture/word size/OS in ucontext dump";
  #endif
+@@ -535,7 +595,13 @@ void InitPlatformSignalHandlersCommon(void (*newact)(int, siginfo_t*, void*),
+   rc += sigaction(SIGBUS, &action, oldact);
+   rc += sigaction(SIGFPE, &action, oldact);
+   rc += sigaction(SIGILL, &action, oldact);
++#if defined(__APPLE__)
++  // andropkg: system frameworks in this process (WebKit, CFNetwork) write to sockets that may
++  // be closed and rely on SIGPIPE being ignored, as iOS apps do; it is not a crash here.
++  signal(SIGPIPE, SIG_IGN);
++#else
+   rc += sigaction(SIGPIPE, &action, oldact);
++#endif
+   rc += sigaction(SIGSEGV, &action, oldact);
+ #if defined(SIGSTKFLT)
+   rc += sigaction(SIGSTKFLT, &action, oldact);
 diff --git a/runtime/stack.cc b/runtime/stack.cc
 index d7d5851..6bc57dd 100644
 --- a/runtime/stack.cc

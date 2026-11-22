@@ -233,8 +233,13 @@ public final class WkWebView implements InvocationHandler {
         }
     }
 
+    private static String brief(String u) {
+        return u == null ? null : u.length() > 160 ? u.substring(0, 160) + "..." : u;
+    }
+
     private void load(String target, Map<String, String> headers) {
         if (handle == 0 || target == null) return;
+        Log.i(TAG, "load " + brief(target));
         syncUserAgent();
         Uri uri = Uri.parse(target);
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase();
@@ -279,6 +284,7 @@ public final class WkWebView implements InvocationHandler {
 
     private void evaluate(String script, ValueCallback<String> callback) {
         if (handle == 0) return;
+        Log.i(TAG, "evaluate " + brief(script));
         int id = 0;
         if (callback != null) {
             synchronized (evalCallbacks) {
@@ -317,6 +323,7 @@ public final class WkWebView implements InvocationHandler {
         for (Method m : obj.getClass().getMethods()) {
             if (m.isAnnotationPresent(JavascriptInterface.class)) methods.put(m.getName());
         }
+        Log.i(TAG, "javascript interface " + name + " " + methods);
         String n = JSONObject.quote(name);
         nativeAddUserScript(handle, "(function(){var n=" + n + ",ms=" + methods + ";"
                 + "var o=(window[n]&&window[n].__andropkg)?window[n]:{__andropkg:true};"
@@ -337,6 +344,7 @@ public final class WkWebView implements InvocationHandler {
             if (obj == null) return null;
             String name = call.getString("m");
             JSONArray args = call.optJSONArray("a");
+            Log.i(TAG, "js -> " + call.getString("o") + "." + name + " " + brief(String.valueOf(args)));
             int n = args == null ? 0 : args.length();
             for (Method m : obj.getClass().getMethods()) {
                 if (!m.getName().equals(name) || m.getParameterCount() != n
@@ -385,12 +393,14 @@ public final class WkWebView implements InvocationHandler {
 
     @SuppressWarnings("unused")
     void onPageStarted(String u) {
+        Log.i(TAG, "started " + brief(u));
         url = u;
         ui.post(() -> client.onPageStarted(view, u, null));
     }
 
     @SuppressWarnings("unused")
     void onPageFinished(String u) {
+        Log.i(TAG, "finished " + brief(u));
         url = u;
         ui.post(() -> client.onPageFinished(view, u));
     }
@@ -418,12 +428,14 @@ public final class WkWebView implements InvocationHandler {
 
     @SuppressWarnings({"unused", "deprecation"})
     void onError(int code, String description, String failingUrl) {
+        Log.w(TAG, "error " + code + " " + description + " " + brief(failingUrl));
         ui.post(() -> client.onReceivedError(view, code, description, failingUrl));
     }
 
     /** Navigations the page starts (links, redirects, scripts): the app may take them over. */
     @SuppressWarnings("unused")
     boolean shouldOverride(String u, boolean mainFrame, boolean gesture) {
+        Log.i(TAG, "navigation " + brief(u) + (mainFrame ? "" : " (subframe)"));
         Uri uri = Uri.parse(u);
         WebResourceRequest request = new WebResourceRequest() {
             @Override public Uri getUrl() { return uri; }
@@ -433,10 +445,14 @@ public final class WkWebView implements InvocationHandler {
             @Override public String getMethod() { return "GET"; }
             @Override public Map<String, String> getRequestHeaders() { return new HashMap<>(); }
         };
+        // On the UI thread, as on Android (the caller, a WebKit bridge thread, waits).
+        java.util.concurrent.FutureTask<Boolean> task = new java.util.concurrent.FutureTask<>(
+                () -> client.shouldOverrideUrlLoading(view, request));
+        if (Looper.myLooper() == Looper.getMainLooper()) task.run(); else ui.post(task);
         try {
-            return client.shouldOverrideUrlLoading(view, request);
-        } catch (Throwable t) {
-            Log.w(TAG, "shouldOverrideUrlLoading " + u, t);
+            return task.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Log.w(TAG, "shouldOverrideUrlLoading " + u, e);
             return false;
         }
     }
