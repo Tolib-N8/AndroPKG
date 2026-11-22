@@ -9,13 +9,23 @@
 //   c2.android.raw.decoder     PCM passthrough
 // They decode an access unit when it is queued, into 16-bit (or float, per pcm-encoding) PCM.
 // Synchronous (dequeue*) and asynchronous (setCallback: events through postEventFromNative)
-// modes. No encoders, no video (VideoToolbox later), no secure codecs.
+// modes. No encoders, no secure codecs.
+//
+// Video (VideoToolbox; VideoDecoder below):
+//   c2.android.avc.decoder     H.264, Annex-B access units; SPS/PPS from csd-0/csd-1 or in-band
+//   c2.android.hevc.decoder    H.265, VPS/SPS/PPS likewise
+// Frames come out in presentation order as CVPixelBuffers (BGRA, Metal-compatible); with an
+// output Surface, releaseOutputBuffer(render) shows one on it (window_jni.cc); ByteBuffer mode
+// returns empty buffers.
 //
 // The extractor demuxes Ogg (Vorbis, Opus) itself, MP4/M4A/AAC/MP3 through Core Audio's
 // AudioFile (compressed packets), and serves anything else ExtAudioFile reads (WAV, FLAC,
 // AIFF, CAF, ALAC...) as an audio/raw track decoded on the fly.
 #import <AudioToolbox/AudioToolbox.h>
+#import <CoreMedia/CoreMedia.h>
+#import <VideoToolbox/VideoToolbox.h>
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include "andropkg/paths.h"
 #include <jni.h>
@@ -194,7 +204,10 @@ const CodecDesc kCodecs[] = {
     {"c2.android.aac.decoder", "audio/mp4a-latm"}, {"c2.android.mp3.decoder", "audio/mpeg"},
     {"c2.android.vorbis.decoder", "audio/vorbis"}, {"c2.android.opus.decoder", "audio/opus"},
     {"c2.android.raw.decoder", "audio/raw"},
+    {"c2.android.avc.decoder", "video/avc"}, {"c2.android.hevc.decoder", "video/hevc"},
 };
+constexpr int kFirstVideoCodec = 5;
+bool IsVideo(int desc) { return desc >= kFirstVideoCodec; }
 constexpr int kNumCodecs = sizeof kCodecs / sizeof *kCodecs;
 
 int CodecByName(const std::string& name) {
@@ -493,6 +506,213 @@ std::unique_ptr<Decoder> MakeDecoder(int codec) {
   return nullptr;
 }
 
+// ---- video: VideoToolbox ------------------------------------------------------------------
+// Annex-B access units in (start codes 00 00 01 / 00 00 00 01), CVPixelBuffers out in
+// presentation order. VideoToolbox emits frames in decode order, so up to kReorder are held
+// back and released lowest-pts first (all of them at end of stream).
+class VideoDecoder {
+ public:
+  explicit VideoDecoder(bool hevc) : hevc_(hevc) {}
+  ~VideoDecoder() {
+    Teardown();
+    for (auto& f : frames_) CVPixelBufferRelease(f.second);
+  }
+
+  bool Init(const Format& f) {
+    width = (int)f.Int("width", 0);
+    height = (int)f.Int("height", 0);
+    for (const char* k : {"csd-0", "csd-1", "csd-2"}) {
+      if (const Bytes* b = f.Buffer(k)) ScanParameterSets(b->data(), b->size());
+    }
+    return true;
+  }
+
+  // One access unit. Parameter sets in it (or config-only buffers) update the session.
+  bool Decode(const uint8_t* data, size_t size, int64_t ptsUs) {
+    std::vector<std::pair<const uint8_t*, size_t>> nals = SplitNals(data, size);
+    Bytes avcc;
+    for (auto& [p, n] : nals) {
+      if (n == 0) continue;
+      int type = hevc_ ? (p[0] >> 1) & 0x3f : p[0] & 0x1f;
+      if (IsParameterSet(type)) {
+        Remember(type, p, n);
+        continue;
+      }
+      if (hevc_ ? type == 35 : type == 9) continue;  // access unit delimiter
+      uint32_t len = CFSwapInt32HostToBig((uint32_t)n);
+      avcc.insert(avcc.end(), reinterpret_cast<uint8_t*>(&len), reinterpret_cast<uint8_t*>(&len) + 4);
+      avcc.insert(avcc.end(), p, p + n);
+    }
+    if (avcc.empty()) return true;
+    if (!session_ && !CreateSession()) return false;
+    CMBlockBufferRef block = nullptr;
+    void* mem = malloc(avcc.size());
+    memcpy(mem, avcc.data(), avcc.size());
+    if (CMBlockBufferCreateWithMemoryBlock(nullptr, mem, avcc.size(), kCFAllocatorMalloc, nullptr, 0, avcc.size(), 0,
+                                           &block) != noErr) {
+      free(mem);
+      return false;
+    }
+    CMSampleTimingInfo timing = {kCMTimeInvalid, CMTimeMake(ptsUs, 1000000), kCMTimeInvalid};
+    size_t sampleSize = avcc.size();
+    CMSampleBufferRef sample = nullptr;
+    OSStatus st = CMSampleBufferCreateReady(nullptr, block, format_, 1, 1, &timing, 1, &sampleSize, &sample);
+    CFRelease(block);
+    if (st != noErr) return false;
+    VTDecodeInfoFlags info = 0;
+    st = VTDecompressionSessionDecodeFrame(session_, sample, 0, nullptr, &info);  // synchronous
+    CFRelease(sample);
+    if (st == kVTInvalidSessionErr) {  // e.g. after the app went to the background: start over
+      Teardown();
+      return true;
+    }
+    return st == noErr;
+  }
+
+  // Next frame in presentation order (retained), if one may go out.
+  bool Take(CVPixelBufferRef* frame, int64_t* ptsUs) {
+    if (frames_.empty() || (!draining_ && frames_.size() <= kReorder)) return false;
+    auto it = frames_.begin();
+    *ptsUs = it->first;
+    *frame = it->second;
+    frames_.erase(it);
+    return true;
+  }
+  void Drain() { draining_ = true; }
+  bool Drained() const { return draining_ && frames_.empty(); }
+  void Flush() {
+    if (session_) VTDecompressionSessionWaitForAsynchronousFrames(session_);
+    for (auto& f : frames_) CVPixelBufferRelease(f.second);
+    frames_.clear();
+    draining_ = false;
+  }
+
+  int width = 0, height = 0;
+  bool sizeChanged = false;
+
+ private:
+  static constexpr size_t kReorder = 4;
+
+  bool IsParameterSet(int type) const { return hevc_ ? (type >= 32 && type <= 34) : (type == 7 || type == 8); }
+
+  static std::vector<std::pair<const uint8_t*, size_t>> SplitNals(const uint8_t* d, size_t n) {
+    std::vector<std::pair<const uint8_t*, size_t>> out;
+    size_t i = 0, start = SIZE_MAX;
+    while (i + 3 <= n) {
+      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
+        if (start != SIZE_MAX) {
+          size_t end = i;
+          while (end > start && d[end - 1] == 0) end--;  // trailing zeros of a 4-byte start code
+          out.push_back({d + start, end - start});
+        }
+        i += 3;
+        start = i;
+      } else {
+        i++;
+      }
+    }
+    if (start != SIZE_MAX && start < n) out.push_back({d + start, n - start});
+    if (out.empty() && n > 4) {  // not Annex-B: length-prefixed (AVCC/HVCC)
+      size_t p = 0;
+      while (p + 4 <= n) {
+        size_t len = (size_t)d[p] << 24 | d[p + 1] << 16 | d[p + 2] << 8 | d[p + 3];
+        if (len == 0 || p + 4 + len > n) break;
+        out.push_back({d + p + 4, len});
+        p += 4 + len;
+      }
+    }
+    return out;
+  }
+
+  void ScanParameterSets(const uint8_t* d, size_t n) {
+    for (auto& [p, len] : SplitNals(d, n)) {
+      if (len == 0) continue;
+      int type = hevc_ ? (p[0] >> 1) & 0x3f : p[0] & 0x1f;
+      if (IsParameterSet(type)) Remember(type, p, len);
+    }
+  }
+
+  void Remember(int type, const uint8_t* p, size_t n) {
+    Bytes& slot = hevc_ ? (type == 32 ? vps_ : type == 33 ? sps_ : pps_) : (type == 7 ? sps_ : pps_);
+    if (slot.size() == n && memcmp(slot.data(), p, n) == 0) return;
+    slot.assign(p, p + n);
+    Teardown();  // new parameters: a new format description and session
+  }
+
+  bool CreateSession() {
+    if (sps_.empty() || pps_.empty() || (hevc_ && vps_.empty())) return false;
+    OSStatus st;
+    if (hevc_) {
+      const uint8_t* sets[] = {vps_.data(), sps_.data(), pps_.data()};
+      size_t sizes[] = {vps_.size(), sps_.size(), pps_.size()};
+      st = CMVideoFormatDescriptionCreateFromHEVCParameterSets(nullptr, 3, sets, sizes, 4, nullptr, &format_);
+    } else {
+      const uint8_t* sets[] = {sps_.data(), pps_.data()};
+      size_t sizes[] = {sps_.size(), pps_.size()};
+      st = CMVideoFormatDescriptionCreateFromH264ParameterSets(nullptr, 2, sets, sizes, 4, &format_);
+    }
+    if (st != noErr) return false;
+    CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(format_);
+    if (dim.width != width || dim.height != height) {
+      width = dim.width;
+      height = dim.height;
+      sizeChanged = true;
+    }
+    NSDictionary* attrs = @{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+      (id)kCVPixelBufferMetalCompatibilityKey : @YES,
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+    };
+    VTDecompressionOutputCallbackRecord cb = {&VideoDecoder::Output, this};
+    st = VTDecompressionSessionCreate(nullptr, format_, nullptr, (__bridge CFDictionaryRef)attrs, &cb, &session_);
+    return st == noErr;
+  }
+
+  void Teardown() {
+    if (session_) {
+      VTDecompressionSessionWaitForAsynchronousFrames(session_);
+      VTDecompressionSessionInvalidate(session_);
+      CFRelease(session_);
+      session_ = nullptr;
+    }
+    if (format_) {
+      CFRelease(format_);
+      format_ = nullptr;
+    }
+  }
+
+  static void Output(void* self, void*, OSStatus status, VTDecodeInfoFlags, CVImageBufferRef image, CMTime pts,
+                     CMTime) {
+    if (status != noErr || image == nullptr) return;
+    auto* d = static_cast<VideoDecoder*>(self);
+    int64_t us = CMTIME_IS_VALID(pts) ? CMTimeConvertScale(pts, 1000000, kCMTimeRoundingMethod_Default).value : 0;
+    CVPixelBufferRetain(image);
+    auto it = d->frames_.find(us);
+    if (it != d->frames_.end()) {  // same pts twice: keep the newer
+      CVPixelBufferRelease(it->second);
+      it->second = image;
+    } else {
+      d->frames_[us] = image;
+    }
+  }
+
+  bool hevc_;
+  Bytes vps_, sps_, pps_;
+  CMVideoFormatDescriptionRef format_ = nullptr;
+  VTDecompressionSessionRef session_ = nullptr;
+  std::map<int64_t, CVPixelBufferRef> frames_;  // decoded, by pts
+  bool draining_ = false;
+};
+
+// window_jni.cc (libandroid_runtime, loaded first): shows a decoded frame on a Surface (its
+// mNativeObject).
+void PostToSurface(int64_t surface, CVPixelBufferRef frame) {
+  using Post = void (*)(int64_t, void*);
+  static Post post = reinterpret_cast<Post>(dlsym(RTLD_DEFAULT, "andropkg_surface_post_pixel_buffer"));
+  if (post) post(surface, frame);
+}
+jfieldID gSurfaceNative;  // android.view.Surface.mNativeObject
+
 // ---- MediaCodec ----------------------------------------------------------------------------
 constexpr int kNumInput = 4, kNumOutput = 8;
 constexpr size_t kInputSize = 128 * 1024, kOutputSize = 128 * 1024;
@@ -521,6 +741,16 @@ struct Codec {
   int64_t pendingPts = 0;
   bool pendingEos = false;
   jobject inBufs = nullptr, outBufs = nullptr;  // (global) ByteBuffer[] views
+  // Video: the decoder, the output Surface (mNativeObject) and the frame each output holds.
+  std::unique_ptr<VideoDecoder> vdec;
+  int64_t surface = 0;
+  CVPixelBufferRef frame[kNumOutput] = {};
+  void DropFrames() {
+    for (auto& f : frame) {
+      if (f) CVPixelBufferRelease(f);
+      f = nullptr;
+    }
+  }
 
   Codec() {
     for (auto& b : in) b.resize(kInputSize);
@@ -550,6 +780,20 @@ jobject BufferInfo(JNIEnv* env, size_t offset, size_t size, int64_t pts, int fla
 
 jobject OutputFormatMap(JNIEnv* env, Codec* c) {
   JMap m(env);
+  if (c->vdec) {
+    int w = c->vdec->width, h = c->vdec->height;
+    m.PutString("mime", "video/raw");
+    m.PutInt("width", w);
+    m.PutInt("height", h);
+    m.PutInt("stride", w);
+    m.PutInt("slice-height", h);
+    m.PutInt("crop-left", 0);
+    m.PutInt("crop-top", 0);
+    m.PutInt("crop-right", w - 1);
+    m.PutInt("crop-bottom", h - 1);
+    m.PutInt("color-format", c->surface ? 0x7F000789 /* Surface */ : 0x7F420888 /* YUV420Flexible */);
+    return m.get();
+  }
   m.PutString("mime", "audio/raw");
   m.PutInt("sample-rate", c->dec ? c->dec->rate : 44100);
   m.PutInt("channel-count", c->dec ? c->dec->channels : 2);
@@ -602,6 +846,38 @@ std::vector<Codec::Ready> FillOutputs(Codec* c) {
   return made;
 }
 
+/// Moves decoded frames into free output buffers (lock held). Returns the newly ready ones.
+std::vector<Codec::Ready> FillVideoOutputs(Codec* c) {
+  std::vector<Codec::Ready> made;
+  for (;;) {
+    int idx = -1;
+    for (int i = 0; i < kNumOutput; i++) if (c->outFree[i]) { idx = i; break; }
+    if (idx < 0) break;
+    CVPixelBufferRef f = nullptr;
+    int64_t pts = 0;
+    int flags = 0;
+    if (!c->vdec->Take(&f, &pts)) {
+      if (!(c->pendingEos && c->vdec->Drained())) break;
+      flags = FLAG_END_OF_STREAM;  // an empty buffer after the last frame
+      c->pendingEos = false;
+      pts = c->pendingPts;
+    }
+    if (c->vdec->sizeChanged) {  // dimensions known (or changed): format change first
+      c->vdec->sizeChanged = false;
+      c->formatPending = true;
+    }
+    c->outFree[idx] = false;
+    c->frame[idx] = f;
+    size_t size = f ? (size_t)c->vdec->width * c->vdec->height * 3 / 2 : 0;
+    c->outSize[idx] = 0;
+    if (f) c->pendingPts = pts;
+    Codec::Ready r{idx, size, pts, flags};
+    c->ready.push_back(r);
+    made.push_back(r);
+  }
+  return made;
+}
+
 void cs_init(JNIEnv*, jclass) {}
 
 void cs_setup(JNIEnv* env, jobject thiz, jstring name, jboolean nameIsType, jboolean encoder, jint, jint) {
@@ -623,6 +899,7 @@ void ReleaseCodec(JNIEnv* env, jobject thiz) {
   if (!c) return;
   env->SetLongField(thiz, gCodecContext, 0);
   if (c->self) env->DeleteGlobalRef(c->self);
+  c->DropFrames();
   if (c->inBufs) env->DeleteGlobalRef(c->inBufs);
   if (c->outBufs) env->DeleteGlobalRef(c->outBufs);
   delete c;
@@ -630,8 +907,8 @@ void ReleaseCodec(JNIEnv* env, jobject thiz) {
 void cs_release(JNIEnv* env, jobject thiz) { ReleaseCodec(env, thiz); }
 void cs_finalize(JNIEnv* env, jobject thiz) { ReleaseCodec(env, thiz); }
 
-void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray values, jobject, jobject crypto, jobject,
-                  jint flags) {
+void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray values, jobject surface, jobject crypto,
+                  jobject, jint flags) {
   Codec* c = GetCodec(env, thiz);
   MLOG("codec configure %p flags=%d crypto=%d", c, flags, crypto != nullptr);
   if (!c) return;
@@ -641,6 +918,14 @@ void cs_configure(JNIEnv* env, jobject thiz, jobjectArray keys, jobjectArray val
   }
   std::lock_guard<std::mutex> g(c->lock);
   c->format = Format::From(env, keys, values);
+  if (IsVideo(c->desc)) {
+    c->vdec = std::make_unique<VideoDecoder>(strcmp(kCodecs[c->desc].mime, "video/hevc") == 0);
+    c->vdec->Init(c->format);
+    c->surface = surface ? env->GetLongField(surface, gSurfaceNative) : 0;
+    MLOG("video codec %s %dx%d surface=%lld", kCodecs[c->desc].name, c->vdec->width, c->vdec->height,
+         (long long)c->surface);
+    return;
+  }
   c->float_out = c->format.Int("pcm-encoding", 2) == 4;
   c->dec = MakeDecoder(c->desc);
   if (!c->dec || !c->dec->Init(c->format)) {
@@ -657,7 +942,7 @@ void cs_start(JNIEnv* env, jobject thiz) {
   Codec* c = GetCodec(env, thiz);
   MLOG("codec start %p", c);
   if (!c) return;
-  if (!c->dec) {
+  if (!c->dec && !c->vdec) {
     Throw(env, "java/lang/IllegalStateException", "not configured");
     return;
   }
@@ -685,6 +970,8 @@ void ResetQueues(Codec* c) {
   c->pending.clear();
   c->pendingEos = false;
   c->eosQueued = false;
+  c->DropFrames();
+  if (c->vdec) c->vdec->Flush();
 }
 
 void cs_stop(JNIEnv* env, jobject thiz) {
@@ -697,7 +984,10 @@ void cs_stop(JNIEnv* env, jobject thiz) {
 }
 void cs_reset(JNIEnv* env, jobject thiz) {
   cs_stop(env, thiz);
-  if (Codec* c = GetCodec(env, thiz)) c->dec.reset();
+  if (Codec* c = GetCodec(env, thiz)) {
+    c->dec.reset();
+    c->vdec.reset();
+  }
 }
 
 void cs_flush(JNIEnv* env, jobject thiz) {
@@ -741,6 +1031,18 @@ void QueueInput(JNIEnv* env, Codec* c, int index, int offset, int size, int64_t 
       Throw(env, "java/lang/IllegalArgumentException", "bad input buffer");
       return;
     }
+    if (c->vdec) {
+      if (size > 0) c->vdec->Decode(c->in[index].data() + offset, (size_t)size, pts);
+      if (flags & FLAG_END_OF_STREAM) {
+        c->vdec->Drain();
+        c->pendingEos = true;
+        c->eosQueued = true;
+        c->pendingPts = pts;
+      }
+      c->inFree[index] = true;
+      inputBack = !c->eosQueued;
+      made = FillVideoOutputs(c);
+    } else {
     std::vector<float> pcm;
     if (!(flags & FLAG_CODEC_CONFIG) && size > 0) c->dec->Decode(c->in[index].data() + offset, (size_t)size, &pcm);
     if (c->pending.empty()) c->pendingPts = pts;
@@ -752,8 +1054,18 @@ void QueueInput(JNIEnv* env, Codec* c, int index, int offset, int size, int64_t 
     c->inFree[index] = true;
     inputBack = !c->eosQueued;
     made = FillOutputs(c);
+    }
   }
   if (c->async) {
+    bool formatNow = false;
+    {
+      std::lock_guard<std::mutex> g(c->lock);
+      if (c->vdec && c->formatPending && !made.empty()) {
+        c->formatPending = false;
+        formatNow = true;
+      }
+    }
+    if (formatNow) Post(env, c, CB_OUTPUT_FORMAT_CHANGE, 0, OutputFormatMap(env, c));
     for (auto& r : made) Post(env, c, CB_OUTPUT_AVAILABLE, r.index, BufferInfo(env, 0, r.size, r.pts, r.flags));
     std::lock_guard<std::mutex> g(c->lock);
     for (auto& r : made) {  // (posted: no longer waiting for dequeueOutputBuffer)
@@ -792,7 +1104,11 @@ jint cs_dequeueOutput(JNIEnv* env, jobject thiz, jobject info, jlong timeoutUs) 
     c->formatPending = false;
     return INFO_OUTPUT_FORMAT_CHANGED;
   }
-  if (c->ready.empty()) FillOutputs(c);
+  if (c->ready.empty()) c->vdec ? (void)FillVideoOutputs(c) : (void)FillOutputs(c);
+  if (c->vdec && c->formatPending) {  // the frame size became known with these outputs
+    c->formatPending = false;
+    return INFO_OUTPUT_FORMAT_CHANGED;
+  }
   if (c->ready.empty()) return INFO_TRY_AGAIN_LATER;
   Codec::Ready r = c->ready.front();
   c->ready.pop_front();
@@ -802,15 +1118,26 @@ jint cs_dequeueOutput(JNIEnv* env, jobject thiz, jobject info, jlong timeoutUs) 
   return r.index;
 }
 
-void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean, jboolean, jlong) {
+void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean render, jboolean, jlong) {
   Codec* c = GetCodec(env, thiz);
   if (!c) return;
   std::vector<Codec::Ready> made;
+  CVPixelBufferRef show = nullptr;
+  int64_t surface = 0;
   {
     std::lock_guard<std::mutex> g(c->lock);
     if (index < 0 || index >= kNumOutput) return;
     c->outFree[index] = true;
-    made = FillOutputs(c);  // decoded PCM waiting for this buffer
+    if (c->vdec) {
+      if (render && c->surface && c->frame[index]) {
+        show = c->frame[index];
+        surface = c->surface;
+      } else if (c->frame[index]) {
+        CVPixelBufferRelease(c->frame[index]);
+      }
+      c->frame[index] = nullptr;
+    }
+    made = c->vdec ? FillVideoOutputs(c) : FillOutputs(c);  // decoded data waiting for this buffer
     if (c->async) {
       for (auto& r : made) {
         auto it = std::find_if(c->ready.begin(), c->ready.end(), [&](const Codec::Ready& x) { return x.index == r.index; });
@@ -818,9 +1145,21 @@ void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean, jboolean,
       }
     }
   }
+  if (show) {
+    PostToSurface(surface, show);
+    CVPixelBufferRelease(show);
+  }
   if (c->async)
     for (auto& r : made) Post(env, c, CB_OUTPUT_AVAILABLE, r.index, BufferInfo(env, 0, r.size, r.pts, r.flags));
 }
+
+void cs_setSurface(JNIEnv* env, jobject thiz, jobject surface) {  // MediaCodec.setOutputSurface
+  Codec* c = GetCodec(env, thiz);
+  if (!c) return;
+  std::lock_guard<std::mutex> g(c->lock);
+  c->surface = surface ? env->GetLongField(surface, gSurfaceNative) : 0;
+}
+void cs_setVideoScalingMode(JNIEnv*, jobject, jint) {}
 
 jobject MakeView(JNIEnv* env, Bytes& b) {
   jobject buf = env->NewDirectByteBuffer(b.data(), (jlong)b.size());
@@ -884,6 +1223,12 @@ jobject cs_getFormat(JNIEnv* env, jobject thiz, jboolean input) {
   if (!input) return OutputFormatMap(env, c);
   JMap m(env);
   m.PutString("mime", kCodecs[c->desc].mime);
+  if (c->vdec) {
+    m.PutInt("width", c->vdec->width);
+    m.PutInt("height", c->vdec->height);
+    m.PutInt("max-input-size", (int)kInputSize);
+    return m.get();
+  }
   m.PutInt("sample-rate", c->dec ? c->dec->rate : 44100);
   m.PutInt("channel-count", c->dec ? c->dec->channels : 2);
   m.PutInt("max-input-size", (int)kInputSize);
@@ -902,14 +1247,43 @@ void cs_signalEos(JNIEnv* env, jobject thiz) {
 // ---- MediaCodecList / MediaCodecInfo ---------------------------------------------------------
 jobject Capabilities(JNIEnv* env, int i) {
   jclass pl = env->FindClass("android/media/MediaCodecInfo$CodecProfileLevel");
-  jobjectArray levels = env->NewObjectArray(0, pl, nullptr);
-  jintArray colors = env->NewIntArray(0);
+  jobjectArray levels;
+  jintArray colors;
   JMap def(env);
   def.PutString("mime", kCodecs[i].mime);
   JMap caps(env);
+  if (IsVideo(i)) {
+    // What VideoToolbox decodes on iPhones: AVC Baseline/Main/High (level 5.2), HEVC Main/Main10 (5.1).
+    bool hevc = strcmp(kCodecs[i].mime, "video/hevc") == 0;
+    std::vector<std::pair<int, int>> pls = hevc ? std::vector<std::pair<int, int>>{{1, 0x10000}, {2, 0x10000}}
+                                                : std::vector<std::pair<int, int>>{{1, 0x10000}, {2, 0x10000}, {8, 0x10000}};
+    levels = env->NewObjectArray((jsize)pls.size(), pl, nullptr);
+    jmethodID ctor = env->GetMethodID(pl, "<init>", "()V");
+    jfieldID fp = env->GetFieldID(pl, "profile", "I"), fl = env->GetFieldID(pl, "level", "I");
+    for (size_t k = 0; k < pls.size(); k++) {
+      jobject o = env->NewObject(pl, ctor);
+      env->SetIntField(o, fp, pls[k].first);
+      env->SetIntField(o, fl, pls[k].second);
+      env->SetObjectArrayElement(levels, (jsize)k, o);
+      env->DeleteLocalRef(o);
+    }
+    jint fmts[] = {0x7F420888, 0x7F000789};  // YUV420Flexible, Surface
+    colors = env->NewIntArray(2);
+    env->SetIntArrayRegion(colors, 0, 2, fmts);
+    caps.PutString("size-range", "2x2-4096x4096");
+    caps.PutString("alignment", "2x2");
+    caps.PutString("block-size", "16x16");
+    caps.PutString("blocks-per-second-range", "1-1958400");
+    caps.PutString("frame-rate-range", "1-240");
+    caps.PutString("bitrate-range", "1-240000000");
+    caps.PutString("feature-adaptive-playback", "1");
+  } else {
+  levels = env->NewObjectArray(0, pl, nullptr);
+  colors = env->NewIntArray(0);
   caps.PutString("max-channel-count", "8");
   caps.PutString("sample-rate-ranges", "7350-192000");
   caps.PutString("bitrate-range", "8000-960000");
+  }
   jclass cc = env->FindClass("android/media/MediaCodecInfo$CodecCapabilities");
   jobject r = env->NewObject(cc,
                              env->GetMethodID(cc, "<init>",
@@ -1419,6 +1793,9 @@ void RegisterCodecs(JNIEnv* env) {
   gCodecContext = env->GetFieldID(mc, "mNativeContext", "J");
   gPostEvent = env->GetMethodID(mc, "postEventFromNative", "(IIILjava/lang/Object;)V");
   env->DeleteLocalRef(mc);
+  jclass sf = env->FindClass("android/view/Surface");
+  gSurfaceNative = env->GetFieldID(sf, "mNativeObject", "J");
+  env->DeleteLocalRef(sf);
   jclass me = env->FindClass("android/media/MediaExtractor");
   gExtractorContext = env->GetFieldID(me, "mNativeContext", "J");
   env->DeleteLocalRef(me);
@@ -1453,6 +1830,8 @@ void RegisterCodecs(JNIEnv* env) {
       M("getOwnCodecInfo", "()Landroid/media/MediaCodecInfo;", cs_getOwnCodecInfo),
       M("setParameters", "([Ljava/lang/String;[Ljava/lang/Object;)V", cs_setParameters),
       M("signalEndOfInputStream", "()V", cs_signalEos),
+      M("native_setSurface", "(Landroid/view/Surface;)V", cs_setSurface),
+      M("setVideoScalingMode", "(I)V", cs_setVideoScalingMode),
   };
   RegisterDeclared(env, "android/media/MediaCodec", kCodec, sizeof kCodec / sizeof *kCodec);
   static const JNINativeMethod kList[] = {

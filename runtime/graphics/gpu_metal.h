@@ -17,6 +17,7 @@
 
 class GrDirectContext;
 class SkCanvas;
+class SkImage;
 class SkSurface;
 
 namespace andropkg_gpu {
@@ -43,6 +44,10 @@ void EndFrame(uint32_t* readback);
 
 /// Whether frames reach the screen without a readback (the host gave us a layer).
 bool PresentsToLayer();
+
+/// A GPU image of a decoded video frame (a 32BGRA, Metal-compatible CVPixelBufferRef), without
+/// copying it; nullptr if it can't be wrapped.
+sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer);
 
 }  // namespace andropkg_gpu
 

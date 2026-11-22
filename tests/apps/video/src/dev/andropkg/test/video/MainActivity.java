@@ -1,0 +1,120 @@
+package dev.andropkg.test.video;
+
+import android.app.Activity;
+import android.media.MediaCodec;
+import android.media.MediaFormat;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.widget.LinearLayout;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Video decoding through MediaCodec onto SurfaceViews: an H.264 stream (green frames, with
+ * B-frames) on top, an HEVC stream (red frames) below. Both are Annex-B elementary streams with
+ * access unit delimiters and in-band parameter sets, fed one access unit at a time.
+ */
+public class MainActivity extends Activity {
+    static final String TAG = "VideoTest";
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.addView(player("video/avc", "green_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(player("video/hevc", "red_hevc.bin", 35), new LinearLayout.LayoutParams(-1, 0, 1));
+        setContentView(root);
+    }
+
+    SurfaceView player(String mime, String asset, int audType) {
+        SurfaceView view = new SurfaceView(this);
+        view.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override public void surfaceCreated(SurfaceHolder holder) {
+                new Thread(() -> play(mime, asset, audType, holder), mime).start();
+            }
+            @Override public void surfaceChanged(SurfaceHolder h, int f, int w, int hh) {}
+            @Override public void surfaceDestroyed(SurfaceHolder h) {}
+        });
+        return view;
+    }
+
+    void play(String mime, String asset, int audType, SurfaceHolder holder) {
+        try {
+            List<byte[]> units = accessUnits(read(asset), mime.equals("video/hevc"), audType);
+            MediaFormat format = MediaFormat.createVideoFormat(mime, 320, 240);
+            MediaCodec codec = MediaCodec.createDecoderByType(mime);
+            codec.configure(format, holder.getSurface(), null, 0);
+            codec.start();
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            int next = 0, rendered = 0;
+            String outFormat = "";
+            boolean eos = false;
+            for (int spins = 0; !eos && spins < 2000; spins++) {
+                if (next <= units.size()) {
+                    int in = codec.dequeueInputBuffer(10000);
+                    if (in >= 0) {
+                        ByteBuffer buf = codec.getInputBuffer(in);
+                        buf.clear();
+                        if (next < units.size()) {
+                            buf.put(units.get(next));
+                            codec.queueInputBuffer(in, 0, units.get(next).length, next * 33333L, 0);
+                        } else {
+                            codec.queueInputBuffer(in, 0, 0, next * 33333L, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        }
+                        next++;
+                    }
+                }
+                int out = codec.dequeueOutputBuffer(info, 10000);
+                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    MediaFormat f = codec.getOutputFormat();
+                    outFormat = f.getInteger(MediaFormat.KEY_WIDTH) + "x" + f.getInteger(MediaFormat.KEY_HEIGHT);
+                } else if (out >= 0) {
+                    boolean last = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                    codec.releaseOutputBuffer(out, info.size > 0);
+                    if (info.size > 0) rendered++;
+                    eos = last;
+                }
+            }
+            codec.stop();
+            codec.release();
+            Log.i(TAG, "[video] " + mime + " units=" + units.size() + " rendered=" + rendered + " format=" + outFormat);
+        } catch (Exception e) {
+            Log.e(TAG, "[video] " + mime + " failed", e);
+        }
+    }
+
+    byte[] read(String asset) throws Exception {
+        try (InputStream in = getAssets().open(asset)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] b = new byte[8192];
+            for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+            return out.toByteArray();
+        }
+    }
+
+    /** Splits an Annex-B stream at access unit delimiters (NAL type audType). */
+    static List<byte[]> accessUnits(byte[] s, boolean hevc, int audType) {
+        List<Integer> starts = new ArrayList<>();
+        for (int i = 0; i + 4 < s.length; i++) {
+            if (s[i] == 0 && s[i + 1] == 0 && s[i + 2] == 1) {
+                int type = hevc ? (s[i + 3] >> 1) & 0x3f : s[i + 3] & 0x1f;
+                if (type == audType) starts.add(i > 0 && s[i - 1] == 0 ? i - 1 : i);
+            }
+        }
+        List<byte[]> units = new ArrayList<>();
+        for (int k = 0; k < starts.size(); k++) {
+            int a = starts.get(k), b = k + 1 < starts.size() ? starts.get(k + 1) : s.length;
+            byte[] u = new byte[b - a];
+            System.arraycopy(s, a, u, 0, u.length);
+            units.add(u);
+        }
+        return units;
+    }
+}

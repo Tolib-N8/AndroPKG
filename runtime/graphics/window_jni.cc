@@ -29,6 +29,7 @@
 
 #include "android_os_MessageQueue.h"
 #include "gpu_metal.h"
+#include <CoreVideo/CoreVideo.h>
 #include "include/core/SkSurface.h"
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
@@ -402,14 +403,50 @@ void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
     s->gpuFrame = s->gpu->makeImageSnapshot();
     s->frames++;
     s->lock.unlock();
-    PostFrame(s);
+    // Before composing: PostFrame takes the window manager's lock, then the GPU's.
     andropkg_gpu::Mutex().unlock();
+    PostFrame(s);
     return;
   }
   android::graphics::Canvas canvas(env, canvasObj);
   canvas.setBuffer(nullptr, ADATASPACE_UNKNOWN);
   s->frames++;
   s->lock.unlock();
+  PostFrame(s);
+}
+
+// ---- video frames (media_codec.mm: MediaCodec.releaseOutputBuffer(render)) -----------------
+// A decoded frame (32BGRA CVPixelBufferRef) becomes the surface's frame: a GPU image of it, or
+// its pixels converted to RGBA. The surface's buffer takes the frame's size; its layer scales it.
+extern "C" __attribute__((visibility("default"))) void andropkg_surface_post_pixel_buffer(int64_t surface,
+                                                                                        void* pixel_buffer) {
+  auto* s = reinterpret_cast<WindowSurface*>(surface);
+  auto pb = static_cast<CVPixelBufferRef>(pixel_buffer);
+  if (s == nullptr || pb == nullptr) return;
+  int w = (int)CVPixelBufferGetWidth(pb), h = (int)CVPixelBufferGetHeight(pb);
+  sk_sp<SkImage> image = andropkg_gpu::Enabled() ? andropkg_gpu::ImageFromPixelBuffer(pb) : nullptr;
+  {
+    std::lock_guard<std::mutex> g(s->lock);
+    if (image) {
+      s->gpuFrame = image;
+    } else if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) == kCVReturnSuccess) {
+      const auto* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(pb));
+      size_t stride = CVPixelBufferGetBytesPerRow(pb);
+      s->pixels.resize(static_cast<size_t>(w) * h);
+      for (int y = 0; y < h; y++) {
+        const uint8_t* src = base + y * stride;
+        uint32_t* dst = &s->pixels[static_cast<size_t>(y) * w];
+        for (int x = 0; x < w; x++) {  // BGRA -> RGBA (opaque)
+          dst[x] = 0xFF000000u | uint32_t(src[x * 4 + 2]) | uint32_t(src[x * 4 + 1]) << 8 | uint32_t(src[x * 4]) << 16;
+        }
+      }
+      CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+      s->gpuFrame.reset();
+    }
+    s->drawnW = w;
+    s->drawnH = h;
+    s->frames++;
+  }
   PostFrame(s);
 }
 
@@ -533,6 +570,7 @@ NDK_EXPORT int32_t ANativeWindow_unlockAndPost(ANativeWindow* w) {
       for (uint32_t& p : s->pixels) p |= 0xFF000000u;
     }
   }
+  s->gpuFrame.reset();  // drawn on the CPU this time
   s->frames++;
   s->lock.unlock();
   PostFrame(s);

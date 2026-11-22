@@ -2,12 +2,15 @@
 #include "gpu_metal.h"
 
 #import <Metal/Metal.h>
+#import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <stdlib.h>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColorSpace.h"
+#include "include/core/SkImage.h"
+#include "include/gpu/mtl/GrMtlTypes.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkSurface.h"
 #include "include/gpu/GrBackendSurface.h"
@@ -28,6 +31,7 @@ struct State {
   // stores it (retained) here: the slot must outlive the surface's instantiation.
   GrMTLHandle drawable = nullptr;
   sk_sp<SkSurface> offscreen;  // reused when there is no layer
+  CVMetalTextureCacheRef textures = nullptr;  // video frames as Metal textures
 };
 
 State& S() {
@@ -106,6 +110,29 @@ void EndFrame(uint32_t* readback) {
   if (s.frame != s.offscreen) s.frame.reset();
   // Keep the GPU's memory in check: textures of bitmaps no longer drawn are purged.
   s.context->performDeferredCleanup(std::chrono::seconds(5));
+}
+
+sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer) {
+  std::lock_guard<std::recursive_mutex> g(Mutex());
+  State& s = S();
+  auto pb = static_cast<CVPixelBufferRef>(pixel_buffer);
+  if (!s.context || pb == nullptr || CVPixelBufferGetPixelFormatType(pb) != kCVPixelFormatType_32BGRA) return nullptr;
+  if (s.textures == nullptr && CVMetalTextureCacheCreate(nullptr, nullptr, s.device, nullptr, &s.textures) != kCVReturnSuccess) {
+    return nullptr;
+  }
+  int w = (int)CVPixelBufferGetWidth(pb), h = (int)CVPixelBufferGetHeight(pb);
+  CVMetalTextureRef tex = nullptr;
+  if (CVMetalTextureCacheCreateTextureFromImage(nullptr, s.textures, pb, nullptr, MTLPixelFormatBGRA8Unorm, w, h, 0,
+                                                &tex) != kCVReturnSuccess) {
+    return nullptr;
+  }
+  GrMtlTextureInfo info;
+  info.fTexture.retain((__bridge GrMTLHandle)CVMetalTextureGetTexture(tex));
+  GrBackendTexture backend(w, h, GrMipmapped::kNo, info);
+  // The CVMetalTexture (and the pixel buffer it keeps) lives until Skia is done with the image.
+  return SkImage::MakeFromTexture(s.context.get(), backend, kTopLeft_GrSurfaceOrigin, kBGRA_8888_SkColorType,
+                                  kOpaque_SkAlphaType, nullptr,
+                                  [](void* t) { CFRelease(static_cast<CVMetalTextureRef>(t)); }, tex);
 }
 
 }  // namespace andropkg_gpu
