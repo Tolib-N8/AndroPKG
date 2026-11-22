@@ -1,4 +1,7 @@
-// andropkg: libmedia_jni — android.media.MediaPlayer on AVPlayer (audio; video comes later).
+// andropkg: libmedia_jni — android.media.MediaPlayer on AVPlayer.
+//
+// Video: an AVPlayerItemVideoOutput (BGRA, Metal-compatible) is polled at 60 Hz and new frames
+// are shown on the Surface given to setDisplay/setSurface (window_jni.cc, as MediaCodec does).
 //
 // Data sources: a FileDescriptor (MediaPlayer opens paths, assets and content: URIs itself
 // and hands us the fd) is resolved to its host file with F_GETPATH; a sub-range of a file
@@ -7,8 +10,11 @@
 // extension. Events go back through MediaPlayer.postEventFromNative, like the real player's.
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <CoreVideo/CoreVideo.h>
+#import <QuartzCore/QuartzCore.h>
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <jni.h>
 #include <sys/param.h>
@@ -46,7 +52,7 @@ jmethodID gPostEvent;     // static postEventFromNative(Object, int, int, int, O
 
 enum {
   MEDIA_PREPARED = 1, MEDIA_PLAYBACK_COMPLETE = 2, MEDIA_SEEK_COMPLETE = 4, MEDIA_STARTED = 6,
-  MEDIA_PAUSED = 7, MEDIA_STOPPED = 8, MEDIA_ERROR = 100,
+  MEDIA_PAUSED = 7, MEDIA_STOPPED = 8, MEDIA_ERROR = 100, MEDIA_SET_VIDEO_SIZE = 5,
 };
 constexpr int kErrorUnknown = 1, kErrorIo = -1004, kErrorUnsupported = -1010;
 
@@ -288,11 +294,23 @@ class PcmBackend {
   Ended ended_;
 };
 
+// window_jni.cc (libandroid_runtime): shows a decoded frame on a Surface (its mNativeObject).
+static void PostToSurface(int64_t surface, CVPixelBufferRef frame) {
+  using Post = void (*)(int64_t, void*);
+  static Post post = reinterpret_cast<Post>(dlsym(RTLD_DEFAULT, "andropkg_surface_post_pixel_buffer"));
+  if (post) post(surface, frame);
+}
+
 @interface AndropkgPlayer : NSObject {
  @public
   std::shared_ptr<PcmBackend> pcm_;  // set instead of `player` for Ogg
   jobject weak_;  // global ref to the WeakReference<MediaPlayer>
+  std::atomic<int64_t> surface_;  // Surface.mNativeObject frames go to (0: none)
+  dispatch_source_t videoTimer_;
 }
+@property(nonatomic, strong) AVPlayerItemVideoOutput* videoOutput;
+@property(nonatomic) int videoWidth;
+@property(nonatomic) int videoHeight;
 @property(nonatomic, strong) NSURL* url;
 @property(nonatomic, strong) NSString* mime;
 @property(nonatomic, strong) NSString* tempPath;
@@ -334,6 +352,9 @@ class PcmBackend {
 }
 
 - (void)teardown {
+  if (videoTimer_) dispatch_source_cancel(videoTimer_);
+  videoTimer_ = nil;
+  _videoOutput = nil;
   if (pcm_) pcm_->Stop();
   pcm_.reset();
   if (_endObserver) [[NSNotificationCenter defaultCenter] removeObserver:_endObserver];
@@ -387,6 +408,7 @@ class PcmBackend {
   CMTime d = asset.duration;
   _durationMs = CMTIME_IS_NUMERIC(d) ? int64_t(CMTimeGetSeconds(d) * 1000) : -1;
   _item = [AVPlayerItem playerItemWithAsset:asset];
+  [self setUpVideo:asset];
   _player = [AVPlayer playerWithPlayerItem:_item];
   _player.actionAtItemEnd = AVPlayerActionAtItemEndPause;
   _player.volume = _volume;
@@ -406,6 +428,41 @@ class PcmBackend {
     if (CMTimeGetSeconds(t) * 1000 >= me.durationMs - 1) [me itemEnded];
   }];
   return 0;
+}
+
+// Video tracks: size (as displayed, after the track's transform) and a pixel buffer output
+// polled for new frames.
+- (void)setUpVideo:(AVAsset*)asset {
+  AVAssetTrack* track = [asset tracksWithMediaType:AVMediaTypeVideo].firstObject;
+  if (!track) return;
+  CGSize size = CGSizeApplyAffineTransform(track.naturalSize, track.preferredTransform);
+  _videoWidth = (int)fabs(size.width);
+  _videoHeight = (int)fabs(size.height);
+  NSDictionary* attrs = @{
+    (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+    (id)kCVPixelBufferMetalCompatibilityKey : @YES,
+    (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+  };
+  _videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:attrs];
+  [_item addOutput:_videoOutput];
+  videoTimer_ = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, [AndropkgPlayer queue]);
+  dispatch_source_set_timer(videoTimer_, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, NSEC_PER_SEC / 600);
+  __weak AndropkgPlayer* weakSelf = self;
+  dispatch_source_set_event_handler(videoTimer_, ^{ [weakSelf pollVideo]; });
+  dispatch_resume(videoTimer_);
+}
+
+// On the player queue, 60 times a second.
+- (void)pollVideo {
+  int64_t surface = surface_.load();
+  AVPlayerItemVideoOutput* out = _videoOutput;
+  if (!surface || !out) return;
+  CMTime t = [out itemTimeForHostTime:CACurrentMediaTime()];
+  if (![out hasNewPixelBufferForItemTime:t]) return;
+  CVPixelBufferRef pb = [out copyPixelBufferForItemTime:t itemTimeForDisplay:nullptr];
+  if (!pb) return;
+  PostToSurface(surface, pb);
+  CVPixelBufferRelease(pb);
 }
 
 // On the player queue.
@@ -579,6 +636,8 @@ jint mp_prepare(JNIEnv* env, jobject thiz, jobject) {
     char msg[64];
     snprintf(msg, sizeof msg, "Prepare failed.: status=0x%x", err == kErrorUnsupported ? 0x80000000 : 1);
     Throw(env, "java/io/IOException", msg);
+  } else if (p.videoOutput) {
+    [p post:MEDIA_SET_VIDEO_SIZE arg1:p.videoWidth arg2:p.videoHeight];
   }
   return 0;
 }
@@ -590,6 +649,7 @@ jint mp_prepareAsync(JNIEnv* env, jobject thiz, jobject) {
     if (int err = [p prepare]) {
       [p post:MEDIA_ERROR arg1:kErrorUnknown arg2:err];
     } else {
+      if (p.videoOutput) [p post:MEDIA_SET_VIDEO_SIZE arg1:p.videoWidth arg2:p.videoHeight];
       [p post:MEDIA_PREPARED arg1:0 arg2:0];
     }
   });
@@ -720,6 +780,26 @@ jint mp_invoke(JNIEnv* env, jobject, jobject /*request*/, jobject reply) {
 }
 
 jint mp_getAudioStreamType(JNIEnv*, jobject) { return 3; /* STREAM_MUSIC */ }
+
+jfieldID gSurfaceNative;  // android.view.Surface.mNativeObject
+void mp_setVideoSurface(JNIEnv* env, jobject thiz, jobject surface) {
+  AndropkgPlayer* p = Get(env, thiz);
+  if (!p) return;
+  if (surface && !gSurfaceNative) {
+    jclass c = env->FindClass("android/view/Surface");
+    gSurfaceNative = env->GetFieldID(c, "mNativeObject", "J");
+    env->DeleteLocalRef(c);
+  }
+  p->surface_ = surface ? env->GetLongField(surface, gSurfaceNative) : 0;
+}
+jint mp_getVideoWidth(JNIEnv* env, jobject thiz) {
+  AndropkgPlayer* p = Get(env, thiz);
+  return p ? p.videoWidth : 0;
+}
+jint mp_getVideoHeight(JNIEnv* env, jobject thiz) {
+  AndropkgPlayer* p = Get(env, thiz);
+  return p ? p.videoHeight : 0;
+}
 jint mp_getAudioSessionId(JNIEnv*, jobject) { return 1; }
 
 #define M(name, sig, fn) {const_cast<char*>(name), const_cast<char*>(sig), reinterpret_cast<void*>(fn)}
@@ -749,6 +829,9 @@ const JNINativeMethod kMediaPlayer[] = {
     M("native_invoke", "(Landroid/os/Parcel;Landroid/os/Parcel;)I", mp_invoke),
     M("_getAudioStreamType", "()I", mp_getAudioStreamType),
     M("getAudioSessionId", "()I", mp_getAudioSessionId),
+    M("_setVideoSurface", "(Landroid/view/Surface;)V", mp_setVideoSurface),
+    M("getVideoWidth", "()I", mp_getVideoWidth),
+    M("getVideoHeight", "()I", mp_getVideoHeight),
 };
 #undef M
 }  // namespace

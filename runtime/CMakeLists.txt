@@ -227,7 +227,7 @@ endforeach()
 # Each dylib carries its own copy of the Ogg decoders (Tremolo, libopus).
 andropkg_jni_dylib(libmedia_jni andropkg_media_player libvorbisidec libopus)
 target_link_libraries(libmedia_jni_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework CoreMedia"
-                      "-framework AudioToolbox" "-framework VideoToolbox" "-framework CoreVideo")
+                      "-framework AudioToolbox" "-framework VideoToolbox" "-framework CoreVideo" "-framework QuartzCore")
 andropkg_jni_dylib(libsoundpool andropkg_soundpool libvorbisidec libopus)
 target_link_libraries(libsoundpool_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework AudioToolbox"
                       "-framework CoreMedia" "-framework VideoToolbox" "-framework CoreVideo")

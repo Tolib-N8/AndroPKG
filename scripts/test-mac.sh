@@ -135,18 +135,21 @@ for want in "540,200 = ffffff" "50,520 = 00ff00" "540,1500 = ff0000" "1000,2300 
 done
 echo "ok   surfaceview checks"
 # Video: MediaCodec (VideoToolbox) H.264 with B-frames and HEVC onto two SurfaceViews, H.264
-# through a TextureView's SurfaceTexture, and an MP4 (H.264 + AAC) demuxed by MediaExtractor.
-ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,350; pixel 540,850; pixel 540,1350; pixel 540,1850" \
+# through a TextureView's SurfaceTexture, an MP4 (H.264 + AAC) demuxed by MediaExtractor, and
+# an MP4 played by MediaPlayer in a VideoView (which keeps 4:3, at the left).
+ANDROPKG_TEST_SCRIPT="wait 3500; pixel 540,300; pixel 540,690; pixel 540,1080; pixel 540,1850; pixel 200,2150" \
   run video "test: script done" $(apk video)
 for want in "video/avc units=30 rendered=30 format=320x240" "video/hevc units=30 rendered=30 format=320x240" \
             "video/avc (texture) units=30 rendered=30 format=320x240" \
-            "extractor tracks=video/avc audio/mp4a-latm size=320x240 csd=true samples=30 sync=2 rendered=30"; do
+            "extractor tracks=video/avc audio/mp4a-latm size=320x240 csd=true samples=30 sync=2 rendered=30" \
+            "videoview prepared 320x240 duration=2000" "videoview completed"; do
   grep -qF "[video] $want" "$log/video.log" || fail "video: $want" video
 done
-grep -qE "test: pixel 540,350 = 0[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: AVC frame not green" video
-grep -qE "test: pixel 540,850 = f[0-9a-f]0[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: HEVC frame not red" video
-grep -qE "test: pixel 540,1350 = 0[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: TextureView frame not blue" video
+grep -qE "test: pixel 540,300 = 0[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: AVC frame not green" video
+grep -qE "test: pixel 540,690 = f[0-9a-f]0[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: HEVC frame not red" video
+grep -qE "test: pixel 540,1080 = 0[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: TextureView frame not blue" video
 grep -qE "test: pixel 540,1850 = f[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: MP4 frame not yellow" video
+grep -qE "test: pixel 200,2150 = f[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: VideoView frame not magenta" video
 echo "ok   video checks"
 ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)
 for want in "\[glsv\] center=ff00ff error=0" "\[glsv\] fps=(5[5-9]|6[0-5])" "test: pixel 540,1200 = ff00ff" \

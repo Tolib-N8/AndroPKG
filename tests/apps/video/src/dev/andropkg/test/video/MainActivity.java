@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
         root.addView(player("video/hevc", "red_hevc.bin", 35), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(texturePlayer("video/avc", "blue_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(extractorPlayer("yellow.mp4.bin"), new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(videoView("magenta.mp4.bin"), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
     }
 
@@ -133,6 +134,26 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             Log.e(TAG, "[video] extractor failed", e);
         }
+    }
+
+    /** VideoView: MediaPlayer onto its SurfaceView. */
+    android.widget.VideoView videoView(String asset) {
+        android.widget.VideoView view = new android.widget.VideoView(this);
+        try {
+            java.io.File f = new java.io.File(getCacheDir(), asset.replace(".bin", ""));
+            try (InputStream in = getAssets().open(asset); java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+                byte[] b = new byte[8192];
+                for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+            }
+            view.setOnPreparedListener(mp -> Log.i(TAG, "[video] videoview prepared " + mp.getVideoWidth() + "x"
+                    + mp.getVideoHeight() + " duration=" + (mp.getDuration() / 100) * 100));
+            view.setOnCompletionListener(mp -> Log.i(TAG, "[video] videoview completed"));
+            view.setVideoPath(f.getPath());
+            view.start();
+        } catch (Exception e) {
+            Log.e(TAG, "[video] videoview failed", e);
+        }
+        return view;
     }
 
     void play(String mime, String asset, int audType, SurfaceHolder holder) {
