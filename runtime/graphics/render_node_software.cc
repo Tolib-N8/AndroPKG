@@ -56,7 +56,9 @@ public:
             return;
         }
         SkSurface* surface = node->getLayerSurface();
-        if (surface == nullptr || surface->width() != w || surface->height() != h) {
+        // (a layer made for a GPU canvas is remade for one in memory, and the other way round)
+        if (surface == nullptr || surface->width() != w || surface->height() != h ||
+            surface->recordingContext() != gpu) {
             SkImageInfo info = SkImageInfo::MakeN32Premul(w, h);
             node->setLayerSurface(gpu ? SkSurface::MakeRenderTarget(gpu, skgpu::Budgeted::kYes, info)
                                       : SkSurface::MakeRaster(info));

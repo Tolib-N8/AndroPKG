@@ -1717,6 +1717,13 @@ void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
     }
   }
   if (!image) return;
+  if (image->isTextureBacked() && sk->recordingContext() == nullptr) {
+    // A canvas in memory (a view snapshot, a software layer): read the GPU frame back first,
+    // holding the GPU lock (the context is not thread-safe; the compositor may be using it).
+    std::lock_guard<std::recursive_mutex> gpu(andropkg_gpu::Mutex());
+    image = image->makeRasterImage();
+    if (!image) return;
+  }
   sk->save();
   jobject matrix = env->GetObjectField(view, gTex.tvMatrix);
   if (matrix) {
