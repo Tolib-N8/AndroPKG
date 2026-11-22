@@ -406,6 +406,39 @@ index da6fc85..4df2685 100644
    if (filename.c_str() == nullptr) {
      return nullptr;
    }
+diff --git a/runtime/arch/arm64/asm_support_arm64.S b/runtime/arch/arm64/asm_support_arm64.S
+index 4ef6ce0..cc33a9c 100644
+--- a/runtime/arch/arm64/asm_support_arm64.S
++++ b/runtime/arch/arm64/asm_support_arm64.S
+@@ -121,8 +121,28 @@
+ #ifdef USE_HEAP_POISONING
+     neg \rRef, \rRef
+ #endif  // USE_HEAP_POISONING
++#ifdef ANDROPKG
++    ANDROPKG_DECOMPRESS_REF \rRef
++#endif
+ .endm
+ 
++#ifdef ANDROPKG
++// andropkg: heap references are 32-bit offsets into the reference arena (andropkg/ref_arena.h).
++// Code that runs with it at its preferred 4 GB-aligned base (nterp; see nterp_impl.cc) gets a
++// pointer back by ORing the base in; null stays 0. Takes the W register name every heap
++// reference load site already passes to UNPOISON_HEAP_REF and rewrites the X register.
++#define ANDROPKG_REF_BASE 0x7000000000
++.macro ANDROPKG_DECOMPRESS_REF wRef
++    .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
++    .ifc \wRef, w\n
++    cbz     w\n, Landropkg_dref\@
++    orr     x\n, x\n, #ANDROPKG_REF_BASE
++Landropkg_dref\@:
++    .endif
++    .endr
++.endm
++#endif
++
+ .macro INCREASE_FRAME frame_adjustment
+     sub sp, sp, #(\frame_adjustment)
+     .cfi_adjust_cfa_offset (\frame_adjustment)
 diff --git a/runtime/arch/arm64/context_arm64.cc b/runtime/arch/arm64/context_arm64.cc
 index eca9ed7..31103fd 100644
 --- a/runtime/arch/arm64/context_arm64.cc
@@ -520,6 +553,61 @@ index 3878b57..03bb183 100644
  
    uintptr_t sp = mc->sp;
    VLOG(signals) << "sp: " << std::hex << sp;
+diff --git a/runtime/arch/arm64/quick_entrypoints_arm64.S b/runtime/arch/arm64/quick_entrypoints_arm64.S
+index 18ec810..910de6a 100644
+--- a/runtime/arch/arm64/quick_entrypoints_arm64.S
++++ b/runtime/arch/arm64/quick_entrypoints_arm64.S
+@@ -998,6 +998,10 @@ END art_quick_check_instance_of
+ 
+ ENTRY art_quick_aput_obj
+     cbz x2, .Laput_obj_null
++#ifdef ANDROPKG
++    UNPOISON_HEAP_REF w0                               // the array and value arrive compressed
++    UNPOISON_HEAP_REF w2
++#endif
+ #if defined(USE_READ_BARRIER) && !defined(USE_BAKER_READ_BARRIER)
+     READ_BARRIER_SLOW x3, w3, x0, MIRROR_OBJECT_CLASS_OFFSET
+     READ_BARRIER_SLOW x3, w3, x3, MIRROR_CLASS_COMPONENT_TYPE_OFFSET
+@@ -2130,6 +2134,9 @@ END art_quick_string_builder_append
+ ENTRY \name
+     // Reference is null, no work to do at all.
+     cbz \wreg, .Lret_rb_\name
++#ifdef ANDROPKG
++    UNPOISON_HEAP_REF \wreg  // the reference may arrive compressed; returns a pointer
++#endif
+     // Use wIP0 as temp and check the mark bit of the reference. wIP0 is not used by the compiler.
+     ldr   wIP0, [\xreg, #MIRROR_OBJECT_LOCK_WORD_OFFSET]
+     tbz   wIP0, #LOCK_WORD_MARK_BIT_SHIFT, .Lnot_marked_rb_\name
+@@ -2174,11 +2181,19 @@ ENTRY \name
+     stp   d30, d31, [sp, #336]
+ 
+     .ifnc \wreg, w0
++#ifdef ANDROPKG
++      mov   x0, \xreg                   // Pass arg1 - obj (a pointer) from `xreg`
++#else
+       mov   w0, \wreg                   // Pass arg1 - obj from `wreg`
++#endif
+     .endif
+     bl    artReadBarrierMark            // artReadBarrierMark(obj)
+     .ifnc \wreg, w0
++#ifdef ANDROPKG
++      mov   \xreg, x0                   // Return the pointer into `xreg`
++#else
+       mov   \wreg, w0                   // Return result into `wreg`
++#endif
+     .endif
+ 
+     // Restore core regs, except `xreg`, as `wreg` is used to return the
+@@ -2213,6 +2228,9 @@ ENTRY \name
+     // Shift left by the forwarding address shift. This clears out the state bits since they are
+     // in the top 2 bits of the lock word.
+     lsl   \wreg, wIP0, #LOCK_WORD_STATE_FORWARDING_ADDRESS_SHIFT
++#ifdef ANDROPKG
++    UNPOISON_HEAP_REF \wreg  // forwarding addresses are stored base-relative
++#endif
+     ret
+ END \name
+ .endm
 diff --git a/runtime/art_method-inl.h b/runtime/art_method-inl.h
 index 3ea5130..a392e5f 100644
 --- a/runtime/art_method-inl.h
@@ -947,6 +1035,37 @@ index 7e96f29..da2d4de 100644
    ScopedQuickEntrypointChecks sqec(self);
  
    Runtime* runtime = Runtime::Current();
+diff --git a/runtime/fault_handler.cc b/runtime/fault_handler.cc
+index a3c1f3b..acb07bc 100644
+--- a/runtime/fault_handler.cc
++++ b/runtime/fault_handler.cc
+@@ -100,8 +100,14 @@ static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
+ }
+ 
+ static bool InstallSigbusHandler() {
++#if defined(__APPLE__)
++  // andropkg: Darwin reports some faults ART expects as SIGSEGV as SIGBUS, e.g. a probe of a
++  // thread's stack guard page (nterp's implicit stack overflow check).
++  return true;
++#else
+   return gUseUserfaultfd &&
+          Runtime::Current()->GetHeap()->MarkCompactCollector()->IsUsingSigbusFeature();
++#endif
+ }
+ 
+ void FaultManager::Init(bool use_sig_chain) {
+@@ -225,6 +231,11 @@ bool FaultManager::HandleFaultByOtherHandlers(int sig, siginfo_t* info, void* co
+ 
+ bool FaultManager::HandleSigbusFault(int sig, siginfo_t* info, void* context ATTRIBUTE_UNUSED) {
+   DCHECK_EQ(sig, SIGBUS);
++#if defined(__APPLE__)
++  if (!gUseUserfaultfd) {
++    return HandleSigsegvFault(sig, info, context);
++  }
++#endif
+   if (VLOG_IS_ON(signals)) {
+     PrintSignalInfo(VLOG_STREAM(signals) << "Handling SIGBUS fault:\n", info);
+   }
 diff --git a/runtime/gc/heap.cc b/runtime/gc/heap.cc
 index f27bddb..bb8f6c3 100644
 --- a/runtime/gc/heap.cc
@@ -1034,6 +1153,410 @@ index ac9980f..b087282 100644
      new_shadow_frame->SetVRegReference(dest_reg, o);
    } else {
      new_shadow_frame->SetVReg(dest_reg, src_value);
+diff --git a/runtime/interpreter/mterp/arm64ng/array.S b/runtime/interpreter/mterp/arm64ng/array.S
+index 1689b01..553762f 100644
+--- a/runtime/interpreter/mterp/arm64ng/array.S
++++ b/runtime/interpreter/mterp/arm64ng/array.S
+@@ -11,6 +11,7 @@
+     GET_VREG w0, w2                     // w0<- vBB (array object)
+     GET_VREG w1, w3                     // w1<- vCC (requested index)
+     cbz     x0, common_errNullObject    // bail if null array object.
++    DREF    x0, w0
+     ldr     w3, [x0, #MIRROR_ARRAY_LENGTH_OFFSET]    // w3<- arrayObj->length
+     add     x0, x0, w1, uxtw #$shift    // w0<- arrayObj + index*width
+     cmp     w1, w3                      // compare unsigned index, length
+@@ -28,6 +29,7 @@
+     SET_VREG_OBJECT w2, w9              // vAA<- w2
+     GOTO_OPCODE x10                     // jump to next instruction
+ 2:
++    DREF    x2, w2
+     bl art_quick_read_barrier_mark_reg02
+     b 1b
+     .else
+@@ -67,6 +69,7 @@
+     GET_VREG w0, w2                     // w0<- vBB (array object)
+     GET_VREG w1, w3                     // w1<- vCC (requested index)
+     cbz     w0, common_errNullObject    // bail if null
++    DREF    x0, w0
+     ldr     w3, [x0, #MIRROR_ARRAY_LENGTH_OFFSET]     // w3<- arrayObj->length
+     .if !$is_object
+     add     x0, x0, w1, uxtw #$shift    // w0<- arrayObj + index*width
+@@ -118,6 +121,7 @@
+     ubfx    w2, wINST, #8, #4           // w2<- A
+     GET_VREG w0, w1                     // w0<- vB (object ref)
+     cbz     w0, common_errNullObject    // bail if null
++    DREF    x0, w0
+     FETCH_ADVANCE_INST 1                // advance rPC, load rINST
+     ldr     w3, [x0, #MIRROR_ARRAY_LENGTH_OFFSET]    // w3<- array length
+     GET_INST_OPCODE ip                  // extract opcode from rINST
+@@ -132,6 +136,7 @@
+     lsr     w3, wINST, #8               // w3<- AA
+     orr     x0, x0, x1, lsl #16         // x0<- ssssssssBBBBbbbb
+     GET_VREG w1, w3                     // w1<- vAA (array object)
++    DREF    x1, w1
+     add     x0, xPC, x0, lsl #1         // x0<- PC + ssssssssBBBBbbbb*2 (array data off.)
+     bl      art_quick_handle_fill_data
+     FETCH_ADVANCE_INST 3                // advance rPC, load rINST
+diff --git a/runtime/interpreter/mterp/arm64ng/control_flow.S b/runtime/interpreter/mterp/arm64ng/control_flow.S
+index 7873ca6..fd26b51 100644
+--- a/runtime/interpreter/mterp/arm64ng/control_flow.S
++++ b/runtime/interpreter/mterp/arm64ng/control_flow.S
+@@ -158,6 +158,9 @@
+         // In case we're going back to compiled code, put the
+         // result also in s0.
+         fmov s0, w0
++        .else
++        // andropkg: callers outside nterp (the invoke stub's JValue) read a pointer.
++        DREF x0, w0
+         .endif
+       .endif
+     .endif
+@@ -183,6 +186,7 @@
+   EXPORT_PC
+   lsr      w2, wINST, #8               // r2<- AA
+   GET_VREG w0, w2                      // r0<- vAA (exception object)
++  DREF     x0, w0
+   mov x1, xSELF
+   bl art_quick_deliver_exception
+   brk 0
+diff --git a/runtime/interpreter/mterp/arm64ng/invoke.S b/runtime/interpreter/mterp/arm64ng/invoke.S
+index 9dd7b64..ae6c97a 100644
+--- a/runtime/interpreter/mterp/arm64ng/invoke.S
++++ b/runtime/interpreter/mterp/arm64ng/invoke.S
+@@ -80,8 +80,10 @@
+    and w1, w1, #0xf
+    .endif
+    GET_VREG w1, w1
++   DREF x1, w1
+    // Note: if w1 is null, this will be handled by our SIGSEGV handler.
+    ldr w2, [x1, #MIRROR_OBJECT_CLASS_OFFSET]
++   DREF x2, w2
+    // Test the first two bits of the fetched ArtMethod:
+    // - If the first bit is set, this is a method on j.l.Object
+    // - If the second bit is set, this is a default method.
+@@ -104,7 +106,7 @@
+    b 2b
+ 4:
+    lsr w26, w26, #16
+-   add w2, w2, #MIRROR_CLASS_VTABLE_OFFSET_64
++   add x2, x2, #MIRROR_CLASS_VTABLE_OFFSET_64
+    ldr x0, [x2, w26, uxtw #3]
+    .if $range
+    b NterpCommonInvokeInstanceRange
+@@ -153,9 +155,11 @@
+    and w1, w1, #0xf
+    .endif
+    GET_VREG w1, w1
++   DREF x1, w1
+    // Note: if w1 is null, this will be handled by our SIGSEGV handler.
+    ldr w0, [x1, #MIRROR_OBJECT_CLASS_OFFSET]
+-   add w0, w0, #MIRROR_CLASS_VTABLE_OFFSET_64
++   DREF x0, w0
++   add x0, x0, #MIRROR_CLASS_VTABLE_OFFSET_64
+    ldr x0, [x0, w2, uxtw #3]
+    b $helper
+ 2:
+diff --git a/runtime/interpreter/mterp/arm64ng/main.S b/runtime/interpreter/mterp/arm64ng/main.S
+index 424d060..909641a 100644
+--- a/runtime/interpreter/mterp/arm64ng/main.S
++++ b/runtime/interpreter/mterp/arm64ng/main.S
+@@ -367,6 +367,17 @@ END \name
+ 5:
+ .endm
+ 
++// andropkg: references are 32-bit offsets into the reference arena, which sits at
++// kAndropkgRefArenaPreferredBase (4 GB-aligned; nterp only runs when it got that address):
++// the offset is the pointer's low 32 bits and decompression ORs the base back in. Null stays
++// 0 so runtime calls and implicit null checks see a real null. Idempotent.
++#define ANDROPKG_REF_BASE 0x7000000000
++.macro DREF xreg, wreg
++    cbz     \wreg, Ldref\@
++    orr     \xreg, \xreg, #ANDROPKG_REF_BASE
++Ldref\@:
++.endm
++
+ .macro TEST_IF_MARKING label
+     cbnz wMR, \label
+ .endm
+@@ -1020,6 +1031,7 @@ END \name
+    LOOP_OVER_SHORTY_LOADING_GPRS x5, w5, x11, x9, x10, .Lgpr_setup_finished_\suffix
+ .Lgpr_setup_finished_\suffix:
+    .if \is_polymorphic
++   DREF x1, w1
+    bl art_quick_invoke_polymorphic
+    .elseif \is_custom
+    bl art_quick_invoke_custom
+@@ -1375,6 +1387,7 @@ END \name
+    LOOP_RANGE_OVER_INTs x9, w10, w11, .Lgpr_setup_finished_range_\suffix
+ .Lgpr_setup_finished_range_\suffix:
+    .if \is_polymorphic
++   DREF x1, w1
+    bl art_quick_invoke_polymorphic
+    .elseif \is_custom
+    bl art_quick_invoke_custom
+@@ -1404,11 +1417,12 @@ END \name
+    GOTO_OPCODE ip
+ .endm
+ 
++// andropkg: \holder is the 64-bit (decompressed) address: cards are indexed by address.
+ .macro WRITE_BARRIER_IF_OBJECT is_object, value, holder, label
+    .if \is_object
+    cbz     \value, \label
+    ldr     ip, [xSELF, #THREAD_CARD_TABLE_OFFSET]
+-   lsr     wip2, \holder, #CARD_TABLE_CARD_SHIFT
++   lsr     ip2, \holder, #CARD_TABLE_CARD_SHIFT
+    strb    wip, [ip, ip2]
+ \label:
+    .endif
+@@ -1597,6 +1611,7 @@ OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
+     // on art_quick_resolution_trampoline to always have a suspend point before
+     // calling back here.
+     ldr wip, [x0, #ART_METHOD_DECLARING_CLASS_OFFSET]
++    DREF ip, wip
+     ldrb wip2, [ip, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET]
+     cmp ip2, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_VALUE
+     b.hs ExecuteNterpImpl
+diff --git a/runtime/interpreter/mterp/arm64ng/object.S b/runtime/interpreter/mterp/arm64ng/object.S
+index b6a6e24..8b83c20 100644
+--- a/runtime/interpreter/mterp/arm64ng/object.S
++++ b/runtime/interpreter/mterp/arm64ng/object.S
+@@ -6,6 +6,7 @@
+    lsr     w2, wINST, #8               // w2<- A
+    GET_VREG w0, w2                     // w0<- vA (object)
+    cbz     w0, .L${opcode}_resume
++   DREF    x0, w0
+    ldr     w2, [x0, #MIRROR_OBJECT_CLASS_OFFSET]
+    // Fast path: do a comparison without read barrier.
+    cmp     w1, w2
+@@ -34,6 +35,7 @@
+    ldr     w3, [x1, #MIRROR_CLASS_COMPONENT_TYPE_OFFSET]
+    cbnz    w3, 5f
+ 1:
++   DREF    x2, w2
+    ldr     w2, [x2, #MIRROR_CLASS_SUPER_CLASS_OFFSET]
+    cmp     w1, w2
+    beq     .L${opcode}_resume
+@@ -49,9 +51,12 @@
+    b       3b
+ 5:
+    // Class in w1 is an array, w3 is the component type.
++   DREF    x2, w2
+    ldr     w2, [x2, #MIRROR_CLASS_COMPONENT_TYPE_OFFSET]
+    // Check if object is an array.
+    cbz     w2, 2b
++   DREF    x2, w2
++   DREF    x3, w3
+    ldr     w4, [x3, #MIRROR_CLASS_SUPER_CLASS_OFFSET]
+    // If the super class of the component type is not null, go slow path.
+    cbnz    w4, 2b
+@@ -73,6 +78,7 @@
+    lsr     w2, wINST, #12              // w2<- B
+    GET_VREG w0, w2                     // w0<- vB (object)
+    cbz     w0, .L${opcode}_resume
++   DREF    x0, w0
+    ldr     w2, [x0, #MIRROR_OBJECT_CLASS_OFFSET]
+    // Fast path: do a comparison without read barrier.
+    cmp     w1, w2
+@@ -103,6 +109,7 @@
+    ldr     w3, [x1, #MIRROR_CLASS_COMPONENT_TYPE_OFFSET]
+    cbnz    w3, 3f
+ 1:
++   DREF    x2, w2
+    ldr     w2, [x2, #MIRROR_CLASS_SUPER_CLASS_OFFSET]
+    cmp     w1, w2
+    beq     .L${opcode}_set_one
+@@ -112,9 +119,12 @@
+    b       .L${opcode}_resume
+ 3:
+    // Class in x1 is an array, x3 is the component type of x1, and x2 is the class of the object.
++   DREF    x2, w2
+    ldr     w2, [x2, #MIRROR_CLASS_COMPONENT_TYPE_OFFSET]
+    // Check if object is an array.
+    cbz     w2, 2b
++   DREF    x2, w2
++   DREF    x3, w3
+    // Check of x1 is Object[]
+    ldr     w4, [x3, #MIRROR_CLASS_SUPER_CLASS_OFFSET]
+    // If the super class is not Object, go to slow path.
+@@ -156,6 +166,7 @@
+    GET_VREG w3, w2                     // w3<- object we're operating on
+    ubfx    w2, wINST, #8, #4           // w2<- A
+    cbz     w3, common_errNullObject    // object was null
++   DREF    x3, w3
+    .if $wide
+    $load   x0, [x3, x0]
+    SET_VREG_WIDE x0, w2                // fp[A] <- value
+@@ -173,6 +184,7 @@
+    GOTO_OPCODE ip
+    .if $is_object
+ .L${opcode}_read_barrier:
++   DREF    x0, w0
+    bl      art_quick_read_barrier_mark_reg00
+    b       .L${opcode}_resume_after_read_barrier
+    .endif
+@@ -190,6 +202,7 @@
+    GET_VREG w3, w2                     // w3<- object we're operating on
+    ubfx    w2, wINST, #8, #4           // w2<- A
+    cbz     w3, common_errNullObject    // object was null
++   DREF    x3, w3
+    add     x3, x3, x0
+    .if $wide
+    $volatile_load x0, [x3]
+@@ -239,11 +252,12 @@
+    lsr     w2, wINST, #12              // w2<- B
+    GET_VREG w2, w2                     // vB (object we're operating on)
+    cbz w2, common_errNullObject
++   DREF    x2, w2
+    .if $wide
+    $store  x26, [x2, x0]
+    .else
+    $store  w26, [x2, x0]
+-   WRITE_BARRIER_IF_OBJECT $is_object, w26, w2, .L${opcode}_skip_write_barrier
++   WRITE_BARRIER_IF_OBJECT $is_object, w26, x2, .L${opcode}_skip_write_barrier
+    .endif
+    FETCH_ADVANCE_INST 2
+    GET_INST_OPCODE ip
+@@ -270,12 +284,13 @@
+    lsr     w2, wINST, #12              // w2<- B
+    GET_VREG w2, w2                     // vB (object we're operating on)
+    cbz     w2, common_errNullObject
++   DREF    x2, w2
+    add     x3, x2, x0
+    .if $wide
+    $volatile_store x26, [x3]
+    .else
+    $volatile_store w26, [x3]
+-   WRITE_BARRIER_IF_OBJECT $is_object, w26, w2, .L${opcode}_slow_path_skip_write_barrier
++   WRITE_BARRIER_IF_OBJECT $is_object, w26, x2, .L${opcode}_slow_path_skip_write_barrier
+    .endif
+    FETCH_ADVANCE_INST 2
+    GET_INST_OPCODE ip
+@@ -307,6 +322,7 @@
+    ldr     w1, [x0, #ART_FIELD_OFFSET_OFFSET]
+    lsr     w2, wINST, #8               // w2 <- A
+    ldr     w0, [x0, #ART_FIELD_DECLARING_CLASS_OFFSET]
++   DREF    x0, w0
+    TEST_IF_MARKING .L${opcode}_read_barrier
+ .L${opcode}_resume_after_read_barrier:
+    .if $wide
+@@ -330,6 +346,7 @@
+    $load   w0, [x0, x1]
+ .L${opcode}_mark_after_load:
+    // Here, we know the marking register is set.
++   DREF    x0, w0
+    bl      art_quick_read_barrier_mark_reg00
+    b       .L${opcode}_after_reference_load
+    .else
+@@ -348,6 +365,7 @@
+    ldr     w1, [x0, #ART_FIELD_OFFSET_OFFSET]
+    lsr     w2, wINST, #8               // w2 <- A
+    ldr     w0, [x0, #ART_FIELD_DECLARING_CLASS_OFFSET]
++   DREF    x0, w0
+    TEST_IF_MARKING .L${opcode}_slow_path_read_barrier
+ .L${opcode}_slow_path_resume_after_read_barrier:
+    add     x0, x0, x1
+@@ -401,13 +419,14 @@
+ .L${opcode}_resume:
+    ldr     w1, [x0, #ART_FIELD_OFFSET_OFFSET]
+    ldr     w0, [x0, #ART_FIELD_DECLARING_CLASS_OFFSET]
++   DREF    x0, w0
+    TEST_IF_MARKING .L${opcode}_read_barrier
+ .L${opcode}_resume_after_read_barrier:
+    .if $wide
+    $store  x26, [x0, x1]
+    .else
+    $store  w26, [x0, x1]
+-   WRITE_BARRIER_IF_OBJECT $is_object, w26, w0, .L${opcode}_skip_write_barrier
++   WRITE_BARRIER_IF_OBJECT $is_object, w26, x0, .L${opcode}_skip_write_barrier
+    .endif
+    FETCH_ADVANCE_INST 2
+    GET_INST_OPCODE ip
+@@ -436,6 +455,7 @@
+    CLEAR_STATIC_VOLATILE_MARKER x0
+    ldr     w1, [x0, #ART_FIELD_OFFSET_OFFSET]
+    ldr     w0, [x0, #ART_FIELD_DECLARING_CLASS_OFFSET]
++   DREF    x0, w0
+    TEST_IF_MARKING .L${opcode}_slow_path_read_barrier
+ .L${opcode}_slow_path_resume_after_read_barrier:
+    add     x1, x0, x1
+@@ -443,7 +463,7 @@
+    $volatile_store    x26, [x1]
+    .else
+    $volatile_store    w26, [x1]
+-   WRITE_BARRIER_IF_OBJECT $is_object, w26, w0, .L${opcode}_slow_path_skip_write_barrier
++   WRITE_BARRIER_IF_OBJECT $is_object, w26, x0, .L${opcode}_slow_path_skip_write_barrier
+    .endif
+    FETCH_ADVANCE_INST 2
+    GET_INST_OPCODE ip
+diff --git a/runtime/interpreter/mterp/arm64ng/other.S b/runtime/interpreter/mterp/arm64ng/other.S
+index 3470ee8..787fed9 100644
+--- a/runtime/interpreter/mterp/arm64ng/other.S
++++ b/runtime/interpreter/mterp/arm64ng/other.S
+@@ -135,6 +135,7 @@
+     EXPORT_PC
+     lsr      w2, wINST, #8               // w2<- AA
+     GET_VREG w0, w2
++    DREF     x0, w0
+     bl art_quick_lock_object
+     FETCH_ADVANCE_INST 1
+     GET_INST_OPCODE ip                   // extract opcode from rINST
+@@ -152,6 +153,7 @@
+     EXPORT_PC
+     lsr      w2, wINST, #8               // w2<- AA
+     GET_VREG w0, w2
++    DREF     x0, w0
+     bl art_quick_unlock_object
+     FETCH_ADVANCE_INST 1
+     GET_INST_OPCODE ip                   // extract opcode from rINST
+diff --git a/runtime/interpreter/mterp/nterp.h b/runtime/interpreter/mterp/nterp.h
+index 4d5af39..ab95aba 100644
+--- a/runtime/interpreter/mterp/nterp.h
++++ b/runtime/interpreter/mterp/nterp.h
+@@ -40,7 +40,12 @@ constexpr uint16_t kNterpHotnessValue = 0;
+ constexpr size_t kNterpMaxFrame = 3 * KB;
+ 
+ // The maximum size for each nterp opcode handler.
++#ifdef ANDROPKG
++// andropkg: reference decompression (mterp/arm64ng DREF) makes some handlers outgrow 128 bytes.
++constexpr size_t kNterpHandlerSize = 256;
++#else
+ constexpr size_t kNterpHandlerSize = 128;
++#endif
+ 
+ }  // namespace interpreter
+ }  // namespace art
+diff --git a/runtime/interpreter/mterp/nterp_impl.cc b/runtime/interpreter/mterp/nterp_impl.cc
+index f2a9855..8dfdacf 100644
+--- a/runtime/interpreter/mterp/nterp_impl.cc
++++ b/runtime/interpreter/mterp/nterp_impl.cc
+@@ -18,6 +18,11 @@
+ #include "interpreter/interpreter_common.h"
+ #include "nterp.h"
+ 
++#ifdef ANDROPKG
++#include <stdlib.h>
++#include "andropkg/ref_arena.h"
++#endif
++
+ /*
+  * Definitions for targets that support nterp.
+  */
+@@ -37,6 +42,15 @@ bool CanRuntimeUseNterp() REQUIRES_SHARED(Locks::mutator_lock_) {
+   // If the runtime is interpreter only, we currently don't use nterp as some
+   // parts of the runtime (like instrumentation) make assumption on an
+   // interpreter-only runtime to always be in a switch-like interpreter.
++#ifdef ANDROPKG
++  // andropkg: nterp decompresses references with `orr xN, xN, #base` (mterp/arm64ng), which
++  // needs the reference arena at its preferred base. Opt-in (ANDROPKG_NTERP=1) while the port
++  // is young.
++  static const bool enabled = getenv("ANDROPKG_NTERP") != nullptr;
++  if (!enabled || gAndropkgRefBase != kAndropkgRefArenaPreferredBase) {
++    return false;
++  }
++#endif
+   return IsNterpSupported() && !runtime->IsJavaDebuggable() && !instr->EntryExitStubsInstalled() &&
+          !instr->InterpretOnly() && !runtime->IsAotCompiler() &&
+          !instr->NeedsSlowInterpreterForListeners() &&
 diff --git a/runtime/interpreter/unstarted_runtime.cc b/runtime/interpreter/unstarted_runtime.cc
 index 32ed430..7e3621e 100644
 --- a/runtime/interpreter/unstarted_runtime.cc

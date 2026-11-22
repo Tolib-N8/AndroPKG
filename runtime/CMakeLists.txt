@@ -85,6 +85,8 @@ if(DEFINED ANDROPKG_ASM_DEFINES_OWNER)
     COMMAND ${CMAKE_CXX_COMPILER} ${_target_flags} ${ANDROPKG_OPT_FLAGS}
             -include ${CMAKE_CURRENT_SOURCE_DIR}/compat/include/andropkg_darwin_compat.h ${ANDROPKG_CXXFLAGS_${_o}}
             -I${CMAKE_CURRENT_SOURCE_DIR}/compat/include ${_incs} -S ${ANDROPKG_ASM_DEFINES_SRC} -o ${_s}
+            -MD -MT ${_s} -MF ${_s}.d
+    DEPFILE ${_s}.d  # the constants come from ART headers (e.g. nterp.h's handler size)
     DEPENDS ${ANDROPKG_ASM_DEFINES_SRC} VERBATIM COMMAND_EXPAND_LISTS)
   add_custom_command(OUTPUT ${ANDROPKG_ASM_DEFINES_DIR}/asm_defines.h
     COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/redirect.py ${ANDROPKG_ASM_DEFINES_DIR}/asm_defines.h
@@ -111,6 +113,16 @@ function(andropkg_port_asm target)
   add_custom_command(OUTPUT ${_ported} ${_root}/.stamp
     COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/elf2macho_asm.py ${ANDROPKG_AOSP} ${_root} ${ANDROPKG_ASM_PORT_DIRS_${target}}
     DEPENDS ${_deps} ${ANDROPKG_TOOLS}/elf2macho_asm.py VERBATIM)
+  if(target STREQUAL "libart")
+    # nterp: generated from the arm64ng templates (gen_mterp.py), then ported (nterp_macho.py).
+    set(_nterp ${_root}/art/runtime/interpreter/mterp/mterp_arm64ng.S)
+    file(GLOB _nterp_src ${ANDROPKG_AOSP}/art/runtime/interpreter/mterp/arm64ng/*.S)
+    add_custom_command(OUTPUT ${_nterp}
+      COMMAND ${Python3_EXECUTABLE} ${ANDROPKG_TOOLS}/nterp_macho.py ${ANDROPKG_AOSP} ${_nterp}
+      DEPENDS ${_nterp_src} ${ANDROPKG_AOSP}/art/runtime/interpreter/mterp/gen_mterp.py
+              ${ANDROPKG_TOOLS}/nterp_macho.py ${ANDROPKG_TOOLS}/elf2macho_asm.py ${_root}/.stamp VERBATIM)
+    list(APPEND _ported ${_nterp})
+  endif()
   set(_incs ${_root}/art/runtime ${ANDROPKG_INCLUDES_${target}})
   set_source_files_properties(${_ported} PROPERTIES LANGUAGE ASM)
 

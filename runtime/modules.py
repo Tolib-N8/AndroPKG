@@ -72,15 +72,14 @@ TARGETS = [
          exclude_srcs=["libnativehelper/JniInvocation.c", "libnativehelper/DlHelp.c"]),
     dict(name="libodrstatslog", bp="libodrstatslog", art=True),
     dict(name="libart", bp="libart", art=True,
-         exclude_srcs=["art/runtime/interpreter/mterp/nterp_impl.cc",
-                       "art/runtime/backtrace_helper.cc",
+         exclude_srcs=["art/runtime/backtrace_helper.cc",
                        "art/runtime/native_stack_dump.cc"],
          skip_generated=["libart_mterp.arm64ng"],
-         # ELF/GNU-as sources ported to Mach-O at build time (tools/elf2macho_asm.py).
+         # ELF/GNU-as sources ported to Mach-O at build time (tools/elf2macho_asm.py); nterp's
+         # assembly is generated and ported by tools/nterp_macho.py (runtime/CMakeLists.txt).
          asm_port=["art/runtime/arch/arm64", "art/runtime/arch/quick_alloc_entrypoints.S",
                    "art/runtime/interpreter/cfi_asm_support.h"],
-         andropkg_srcs=[f"{ANDROPKG}/runtime/art/nterp_disabled.cc",
-                        f"{ANDROPKG}/runtime/art/native_stack_darwin.cc",
+         andropkg_srcs=[f"{ANDROPKG}/runtime/art/native_stack_darwin.cc",
                         f"{ANDROPKG}/runtime/art/jni_invocation_inproc.cc"]),
     dict(name="libopenjdkjvm", bp="libopenjdkjvm", art=True),
 

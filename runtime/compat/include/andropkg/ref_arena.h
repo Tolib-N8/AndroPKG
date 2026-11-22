@@ -19,6 +19,9 @@ extern uintptr_t gAndropkgRefEnd;
 
 constexpr size_t kAndropkgRefArenaSize = size_t{4} << 30;
 constexpr size_t kAndropkgRefArenaGuard = 64 * 1024;
+// Where the arena goes when the address space allows (it does on iOS 27 and macOS): 4 GB
+// aligned, so ref == low 32 bits of the pointer, and encodable as an AArch64 logical immediate.
+constexpr uintptr_t kAndropkgRefArenaPreferredBase = uintptr_t{0x70} << 32;
 
 /// Reserves the arena (PROT_NONE). Idempotent; aborts if the OS refuses.
 void AndropkgReserveRefArena();

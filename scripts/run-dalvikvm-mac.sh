@@ -47,6 +47,9 @@ done
 export ANDROID_ROOT="$fs/system" ANDROID_ART_ROOT="$fs/apex/com.android.art" \
        ANDROID_I18N_ROOT="$fs/apex/com.android.i18n" ANDROID_TZDATA_ROOT="$fs/apex/com.android.tzdata" \
        ANDROID_DATA="$fs/data" ANDROPKG_ANDROID_ROOT="$fs"
+# -Xint keeps every method in the switch interpreter; nterp (ANDROPKG_NTERP=1) needs it off.
+xint=-Xint
+[ -n "${ANDROPKG_NTERP:-}" ] && xint=
 exec "$bin/dalvikvm" -Xbootclasspath:"$bcp" -Xbootclasspath-locations:"$bcp" \
-  -Xusejit:false -Xint -Xms8m -Xmx512m -XX:HeapGrowthLimit=256m -XX:HeapTargetUtilization=0.75 \
+  -Xusejit:false $xint -Xms8m -Xmx512m -XX:HeapGrowthLimit=256m -XX:HeapTargetUtilization=0.75 \
   -XX:HeapMinFree=2m -XX:HeapMaxFree=8m "$@"
