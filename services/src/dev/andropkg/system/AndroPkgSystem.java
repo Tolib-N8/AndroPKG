@@ -33,6 +33,7 @@ public final class AndroPkgSystem {
 
     static String apkPath;
     static String dataDir;
+    static String hostDataDir;  // the app's data directory on the host (dataDir is its Android path)
     static volatile Throwable lastFatal;
     static String launchActivity;
     static Object parsedPackage;     // android.content.pm.PackageParser.Package
@@ -160,6 +161,7 @@ public final class AndroPkgSystem {
         // /data/user_de/0/<pkg>; path translation maps them onto the host directory (dataDir),
         // whose iOS container path changes when the app is reinstalled. Apps store these paths.
         String hostData = dataDir;
+        hostDataDir = hostData;
         try {
             android.system.Os.setenv("ANDROPKG_APP_DATA_HOST", hostData, true);
             android.system.Os.setenv("ANDROPKG_APP_DATA_PKG", appInfo.packageName, true);
@@ -272,6 +274,7 @@ public final class AndroPkgSystem {
         services.put("media_session", LocalService.create("android.media.session.ISessionManager", mediaSessions));
         services.put("media_router", LocalService.create("android.media.IMediaRouterService", new MediaRouterImpl()));
         services.put("media_metrics", LocalService.create("android.media.metrics.IMediaMetricsManager", new MediaMetricsImpl()));
+        services.put("account", LocalService.create("android.accounts.IAccountManager", new AccountManagerImpl()));
         services.put("input_method", LocalService.create("com.android.internal.view.IInputMethodManager",
                 new InputMethodManagerImpl()));
         activityClientController =

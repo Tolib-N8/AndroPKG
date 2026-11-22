@@ -34,6 +34,8 @@ final class ActivityStack {
         final String resultWho;
         final int requestCode;
         boolean finishing;
+        boolean translucent;  // windowIsTranslucent / windowIsFloating: what's under it shows
+        boolean stopped;      // sent StopActivityItem (no longer visible)
 
         Record(ActivityInfo info, Intent intent, Record resultTo, String resultWho, int requestCode) {
             this.info = info;
@@ -60,13 +62,16 @@ final class ActivityStack {
         Record top = top();
         if (top == null) return;
         AndroPkgSystem.schedule(top.token, null, pauseItem(false));
+        top.stopped = true;
         AndroPkgSystem.schedule(top.token, null, stopItem());
     }
 
     /** Back to front: the top activity restarts and resumes. */
     synchronized void foreground() {
         Record top = top();
-        if (top != null) AndroPkgSystem.schedule(top.token, null, resumeItem(false));
+        if (top == null) return;
+        top.stopped = false;
+        AndroPkgSystem.schedule(top.token, null, resumeItem(false));
     }
 
     synchronized boolean isRoot(IBinder token) {
@@ -162,7 +167,18 @@ final class ActivityStack {
                 true /* isForward */, null, new Binder() /* assistToken */,
                 AndroPkgSystem.activityClientController, new Binder() /* shareableActivityToken */, false, null);
         AndroPkgSystem.schedule(r.token, launch, resumeItem(true));
-        if (prev != null && !doomed.contains(prev)) AndroPkgSystem.schedule(prev.token, null, stopItem());
+        // As ActivityRecord.occludesParent: a translucent or floating activity (dialogs, login
+        // overlays, trampolines) leaves the ones under it visible (paused, not stopped) down to
+        // the first opaque one; an opaque one stops everything under it that is still visible.
+        r.translucent = isTranslucentOrFloating(info);
+        if (!r.translucent) {
+            for (Record below : stack) {
+                if (below != r && !below.stopped && !doomed.contains(below)) {
+                    below.stopped = true;
+                    AndroPkgSystem.schedule(below.token, null, stopItem());
+                }
+            }
+        }
         for (Record d : doomed) destroy(d);
         return 0;
     }
@@ -174,6 +190,7 @@ final class ActivityStack {
         stack.removeAll(doomed);
         Log.i(TAG, "clear " + doomed.size() + " above " + newTop.info.name);
         AndroPkgSystem.schedule(prev.token, null, pauseItem(true));
+        newTop.stopped = false;
         AndroPkgSystem.schedule(newTop.token, null, resumeItem(false));
         for (int i = doomed.size() - 1; i >= 0; i--) destroy(doomed.get(i));
     }
@@ -191,6 +208,7 @@ final class ActivityStack {
                 intent, AndroPkgSystem.appInfo.packageName);
         Object item = Hidden.callStatic(Hidden.cls("android.app.servertransaction.NewIntentItem"), "obtain",
                 Collections.singletonList(referrer), true);
+        r.stopped = false;
         AndroPkgSystem.schedule(r.token, item, resumeItem(false));
     }
 
@@ -214,6 +232,7 @@ final class ActivityStack {
                 result = Hidden.callStatic(Hidden.cls("android.app.servertransaction.ActivityResultItem"), "obtain",
                         Collections.singletonList(info));
             }
+            next.stopped = false;
             AndroPkgSystem.schedule(next.token, result, resumeItem(false));
         }
         AndroPkgSystem.schedule(r.token, null,
@@ -267,6 +286,32 @@ final class ActivityStack {
     private static Object resumeItem(boolean forward) {
         return Hidden.callStatic(Hidden.cls("android.app.servertransaction.ResumeActivityItem"), "obtain",
                 forward, false);
+    }
+
+    /** ActivityInfo.isTranslucentOrFloating, from the activity's theme. */
+    static boolean isTranslucentOrFloating(ActivityInfo info) {
+        try {
+            android.content.Context app = (android.content.Context) Hidden.callStatic(
+                    Hidden.cls("android.app.ActivityThread"), "currentApplication");
+            if (app == null) return false;
+            Resources.Theme theme = app.getResources().newTheme();
+            int themeRes = info.getThemeResource();
+            if (themeRes != 0) theme.applyStyle(themeRes, true);
+            android.content.res.TypedArray a = theme.obtainStyledAttributes(new int[] {
+                    android.R.attr.windowIsTranslucent, android.R.attr.windowIsFloating,
+                    android.R.attr.windowSwipeToDismiss});
+            try {
+                boolean translucent = a.getBoolean(0, false);
+                boolean floating = a.getBoolean(1, false);
+                boolean swipe = !a.hasValue(0) && a.getBoolean(2, false);
+                return translucent || floating || swipe;
+            } finally {
+                a.recycle();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "theme of " + info.name, t);
+            return false;
+        }
     }
 
     private static Object stopItem() {

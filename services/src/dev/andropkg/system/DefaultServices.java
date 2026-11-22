@@ -37,7 +37,6 @@ final class DefaultServices {
         {"location", "android.location.ILocationManager"},
         {"wifi", "android.net.wifi.IWifiManager"},
         {"mount", "android.os.storage.IStorageManager"},
-        {"account", "android.accounts.IAccountManager"},
         {"content", "android.content.IContentService"},
         {"telephony.registry", "com.android.internal.telephony.ITelephonyRegistry"},
         {"phone", "com.android.internal.telephony.ITelephony"},
