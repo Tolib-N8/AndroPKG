@@ -201,6 +201,9 @@ public class MainActivity extends Activity {
                     MediaFormat f = codec.getOutputFormat();
                     outFormat = f.getInteger(MediaFormat.KEY_WIDTH) + "x" + f.getInteger(MediaFormat.KEY_HEIGHT);
                 } else if (out >= 0) {
+                    // As ExoPlayer does: the output buffer (none with a Surface) sized by the info.
+                    ByteBuffer ob = codec.getOutputBuffer(out);
+                    if (ob != null) ob.limit(info.offset + info.size);
                     boolean last = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                     codec.releaseOutputBuffer(out, info.size > 0);
                     if (info.size > 0) rendered++;

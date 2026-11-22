@@ -1213,6 +1213,9 @@ jobject cs_getBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index) {
   Codec* c = GetCodec(env, thiz);
   if (!c) return nullptr;
   if (index < 0 || index >= (input ? kNumInput : kNumOutput)) return nullptr;
+  // Video frames stay in the decoder's pixel buffers: as on Android with an output Surface,
+  // there is no output ByteBuffer (players then size nothing by the frame's bytes).
+  if (!input && c->vdec) return nullptr;
   jobject buf = MakeView(env, input ? c->in[index] : c->out[index]);
   if (!input) {  // the valid part: [0, size)
     size_t size;
@@ -1231,6 +1234,12 @@ jobject cs_getBuffer(JNIEnv* env, jobject thiz, jboolean input, jint index) {
 jobjectArray cs_getBuffers(JNIEnv* env, jobject thiz, jboolean input) {
   Codec* c = GetCodec(env, thiz);
   if (!c) return nullptr;
+  if (!input && c->vdec) {  // (see cs_getBuffer) an array of nulls
+    jclass bbc = env->FindClass("java/nio/ByteBuffer");
+    jobjectArray a = env->NewObjectArray(kNumOutput, bbc, nullptr);
+    env->DeleteLocalRef(bbc);
+    return a;
+  }
   jobject& cache = input ? c->inBufs : c->outBufs;
   if (!cache) {
     int n = input ? kNumInput : kNumOutput;
