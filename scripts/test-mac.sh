@@ -21,7 +21,7 @@ run() {  # run <name> <expected-regex> <dalvikvm args...>
   ANDROPKG_BCP=full timeout 300 scripts/run-dalvikvm-mac.sh "$@" >"$log/$name.log" 2>&1 || true
   # POSIX sh: "VAR=x run ..." assignments outlive the function call; reset them per test.
   unset ANDROPKG_TEST_TAP ANDROPKG_TEST_TYPE ANDROPKG_TEST_SWIPE ANDROPKG_TEST_BACK ANDROPKG_TEST_BACKGROUND \
-        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME
+        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME ANDROPKG_LOG_MEMORY
   grep -qE "$want" "$log/$name.log" || fail "$name" "$name"
   echo "ok   $name"
 }
@@ -153,6 +153,14 @@ grep -qE "test: pixel 540,1080 = 0[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" |
 grep -qE "test: pixel 540,1850 = f[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: MP4 frame not yellow" video
 grep -qE "test: pixel 200,2150 = f[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: VideoView frame not magenta" video
 echo "ok   video checks"
+# GPU memory: a window redrawn as fast as it can (no video) must not grow the Metal allocation
+# (autoreleased Metal objects on ART threads once leaked a display-sized texture per frame).
+ANDROPKG_LOG_MEMORY=1 ANDROPKG_TEST_SCRIPT="wait 6000" run gpu-memory "test: script done" \
+  -Dandropkg.video.soak=anim $(apk video)
+first=$(grep -m1 -oE "device [0-9]+ MB" "$log/gpu-memory.log" | grep -oE "[0-9]+")
+last=$(grep -oE "device [0-9]+ MB" "$log/gpu-memory.log" | tail -1 | grep -oE "[0-9]+")
+[ -n "$first" ] && [ -n "$last" ] && [ $((last - first)) -lt 64 ] || fail "gpu-memory: Metal allocation grew ${first} -> ${last} MB" gpu-memory
+echo "ok   gpu memory (${first} -> ${last} MB)"
 ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)
 for want in "\[glsv\] center=ff00ff error=0" "\[glsv\] fps=(5[5-9]|6[0-5])" "test: pixel 540,1200 = ff00ff" \
     "test: pixel 30,1200 = 00ff00"; do

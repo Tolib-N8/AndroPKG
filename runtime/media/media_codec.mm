@@ -530,6 +530,12 @@ class VideoDecoder {
 
   // One access unit. Parameter sets in it (or config-only buffers) update the session.
   bool Decode(const uint8_t* data, size_t size, int64_t ptsUs) {
+    @autoreleasepool {  // (called on app threads, which have no autorelease pool to drain)
+      return DecodeUnit(data, size, ptsUs);
+    }
+  }
+
+  bool DecodeUnit(const uint8_t* data, size_t size, int64_t ptsUs) {
     std::vector<std::pair<const uint8_t*, size_t>> nals = SplitNals(data, size);
     Bytes avcc;
     for (auto& [p, n] : nals) {

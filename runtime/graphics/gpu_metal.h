@@ -50,6 +50,23 @@ bool PresentsToLayer();
 /// copying it; nullptr if it can't be wrapped.
 sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer);
 
+/// The Metal device's allocated memory (diagnostics).
+int64_t AllocatedKB();
+
+/// A window's GPU target, double-buffered: the app draws into the back texture while the front
+/// one is composed. Textures we own, wrapped as a surface and as an image each (no snapshots,
+/// so no copy-on-write per frame). Use under Mutex().
+struct Buffers {
+  Buffers();
+  ~Buffers();
+  /// The back buffer's surface, (re)created at width x height. A resize drops `front`.
+  SkSurface* Back(int width, int height);
+  /// The back buffer's image becomes the front; the buffers swap.
+  sk_sp<SkImage> Swap();
+  struct Impl;
+  Impl* impl;
+};
+
 }  // namespace andropkg_gpu
 
 /// Host: the CAMetalLayer (CAMetalLayer*) frames are presented to.

@@ -73,6 +73,7 @@ sk_sp<SkSurface> MakeSurface(int width, int height) {
 bool PresentsToLayer() { return S().layer != nil; }
 
 SkCanvas* BeginFrame(int width, int height, bool readback) {
+  @autoreleasepool {
   State& s = S();
   if (!s.context) return nullptr;
   s.frame.reset();
@@ -91,9 +92,14 @@ SkCanvas* BeginFrame(int width, int height, bool readback) {
     s.frame = s.offscreen;
   }
   return s.frame ? s.frame->getCanvas() : nullptr;
+  }  // @autoreleasepool
 }
 
 void EndFrame(uint32_t* readback) {
+  // Metal hands out autoreleased objects (command buffers, encoders, drawables); ART threads
+  // have no autorelease pool to drain, so without one every frame's objects (and the memory
+  // they hold) stayed alive forever.
+  @autoreleasepool {
   State& s = S();
   if (!s.frame) return;
   if (readback != nullptr) {
@@ -109,7 +115,9 @@ void EndFrame(uint32_t* readback) {
     }
   }
   if (!s.frame) return;
-  s.frame->flushAndSubmit();
+  // All pending work, not just the frame's: window surfaces' copy-on-write copies and their
+  // old textures only go once the work referencing them is submitted.
+  s.context->flushAndSubmit();
   if (s.drawable != nullptr) {
     id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)s.drawable;  // balances Skia's retain
     s.drawable = nullptr;
@@ -121,11 +129,14 @@ void EndFrame(uint32_t* readback) {
   // Keep the GPU's memory in check: textures of bitmaps no longer drawn are purged, and the
   // video frame texture cache lets go of frames no longer referenced (it never does unless
   // flushed).
+  // Finished command buffers give back what they used (old window copies, video frames) only
+  // when the client checks for them: without this every frame's resources stayed allocated.
+  s.context->checkAsyncWorkCompletion();
   s.context->performDeferredCleanup(std::chrono::seconds(5));
   if (s.textures) CVMetalTextureCacheFlush(s.textures, 0);
   static const bool logMemory = getenv("ANDROPKG_LOG_MEMORY") != nullptr;
   static int frames = 0;
-  if (logMemory && ++frames % 300 == 0) {
+  if (logMemory && ++frames % 120 == 0) {
     int count = 0;
     size_t bytes = 0;
     s.context->getResourceCacheUsage(&count, &bytes);
@@ -133,9 +144,11 @@ void EndFrame(uint32_t* readback) {
             count, bytes >> 20, s.context->getResourceCachePurgeableBytes() >> 20,
             (unsigned long long)s.device.currentAllocatedSize >> 20);
   }
+  }  // @autoreleasepool
 }
 
 sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer) {
+  @autoreleasepool {
   std::lock_guard<std::recursive_mutex> g(Mutex());
   State& s = S();
   auto pb = static_cast<CVPixelBufferRef>(pixel_buffer);
@@ -156,7 +169,76 @@ sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer) {
   return SkImage::MakeFromTexture(s.context.get(), backend, kTopLeft_GrSurfaceOrigin, kBGRA_8888_SkColorType,
                                   kOpaque_SkAlphaType, nullptr,
                                   [](void* t) { CFRelease(static_cast<CVMetalTextureRef>(t)); }, tex);
+  }  // @autoreleasepool
 }
+
+struct Buffers::Impl {
+  GrBackendTexture tex[2];
+  sk_sp<SkSurface> surface[2];
+  sk_sp<SkImage> image[2];
+  int back = 0, width = 0, height = 0;
+  void Release() {
+    State& s = S();
+    for (int i = 0; i < 2; i++) {
+      surface[i].reset();
+      image[i].reset();
+    }
+    if (s.context && (tex[0].isValid() || tex[1].isValid())) {
+      s.context->flushAndSubmit(true);  // the GPU done with them before they go
+      for (auto& t : tex) {
+        if (t.isValid()) s.context->deleteBackendTexture(t);
+        t = GrBackendTexture();
+      }
+    }
+    width = height = 0;
+  }
+};
+
+Buffers::Buffers() : impl(new Impl) {}
+Buffers::~Buffers() {
+  std::lock_guard<std::recursive_mutex> g(Mutex());
+  impl->Release();
+  delete impl;
+}
+
+SkSurface* Buffers::Back(int width, int height) {
+  State& s = S();
+  Impl& b = *impl;
+  if (!s.context || width <= 0 || height <= 0) return nullptr;
+  if (b.width != width || b.height != height) {
+    b.Release();
+    for (int i = 0; i < 2; i++) {
+      b.tex[i] = s.context->createBackendTexture(width, height, kRGBA_8888_SkColorType, GrMipmapped::kNo,
+                                                 GrRenderable::kYes);
+      if (!b.tex[i].isValid()) {
+        b.Release();
+        return nullptr;
+      }
+      b.surface[i] = SkSurface::MakeFromBackendTexture(s.context.get(), b.tex[i], kTopLeft_GrSurfaceOrigin, 0,
+                                                       kRGBA_8888_SkColorType, SkColorSpace::MakeSRGB(), nullptr);
+      b.image[i] = SkImage::MakeFromTexture(s.context.get(), b.tex[i], kTopLeft_GrSurfaceOrigin,
+                                            kRGBA_8888_SkColorType, kPremul_SkAlphaType, SkColorSpace::MakeSRGB());
+      if (!b.surface[i] || !b.image[i]) {
+        b.Release();
+        return nullptr;
+      }
+    }
+    b.width = width;
+    b.height = height;
+    b.back = 0;
+  }
+  return b.surface[b.back].get();
+}
+
+sk_sp<SkImage> Buffers::Swap() {
+  Impl& b = *impl;
+  if (!b.image[b.back]) return nullptr;
+  sk_sp<SkImage> front = b.image[b.back];
+  b.back ^= 1;
+  return front;
+}
+
+int64_t AllocatedKB() { return S().device ? (int64_t)(S().device.currentAllocatedSize >> 10) : 0; }
 
 }  // namespace andropkg_gpu
 

@@ -156,7 +156,7 @@ struct WindowSurface {
   uint64_t frames = 0;
   // GPU rendering: Surface.lockCanvas draws into `gpu`; `gpuFrame` is its last frame.
   // A surface drawn on the CPU (the NDK's ANativeWindow) has none and keeps `pixels`.
-  sk_sp<SkSurface> gpu;
+  std::unique_ptr<andropkg_gpu::Buffers> gpu;
   sk_sp<SkImage> gpuFrame;
   // A SurfaceTexture's buffer: frames posted here notify it instead of a window.
   struct Texture* texture = nullptr;
@@ -348,13 +348,15 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
     // Held until unlockCanvasAndPost (same thread).
     andropkg_gpu::Mutex().lock();
     s->lock.lock();
-    if (!s->gpu || s->gpu->width() != s->width || s->gpu->height() != s->height) {
-      s->gpu = andropkg_gpu::MakeSurface(s->width, s->height);
+    if (!s->gpu) s->gpu = std::make_unique<andropkg_gpu::Buffers>();
+    SkSurface* back = s->gpu->Back(s->width, s->height);
+    if (back && s->gpuFrame && (s->gpuFrame->width() != s->width || s->gpuFrame->height() != s->height)) {
+      s->gpuFrame.reset();  // (its texture went with the resize)
     }
-    if (s->gpu) {
+    if (back) {
       s->drawnW = s->width;
       s->drawnH = s->height;
-      SkCanvas* c = s->gpu->getCanvas();
+      SkCanvas* c = back->getCanvas();
       c->restoreToCount(1);
       c->resetMatrix();
       android::andropkg_bind_skcanvas(env, canvasObj, c);
@@ -413,7 +415,7 @@ void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
   WindowSurface* s = Ptr<WindowSurface>(ptr);
   if (s->gpu && andropkg_gpu::Enabled()) {
     android::andropkg_bind_skcanvas(env, canvasObj, nullptr);
-    s->gpuFrame = s->gpu->makeImageSnapshot();
+    s->gpuFrame = s->gpu->Swap();
     s->frames++;
     s->lock.unlock();
     // Before composing: PostFrame takes the window manager's lock, then the GPU's.

@@ -29,6 +29,22 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        String soak = System.getProperty("andropkg.video.soak");
+        if ("anim".equals(soak)) {  // a window redrawn every frame, no video (memory checks)
+            setContentView(new android.view.View(this) {
+                int frame;
+                @Override protected void onDraw(android.graphics.Canvas c) {
+                    c.drawColor(0xff000000 | (frame++ * 0x010203 & 0xffffff));
+                    if (frame % 60 == 0) Log.i(TAG, "[soak] anim frames=" + frame);
+                    invalidate();
+                }
+            });
+            return;
+        }
+        if (soak != null) {  // a long stream in real time through a TextureView (memory checks)
+            setContentView(soakPlayer(soak));
+            return;
+        }
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.addView(player("video/avc", "green_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
@@ -75,6 +91,60 @@ public class MainActivity extends Activity {
             @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
         });
         return view;
+    }
+
+    TextureView soakPlayer(String path) {
+        TextureView view = new TextureView(this);
+        view.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                Surface surface = new Surface(st);
+                new Thread(() -> soak(path, surface), "soak").start();
+            }
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) {}
+            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { return true; }
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
+        });
+        return view;
+    }
+
+    void soak(String path, Surface surface) {
+        try {
+            byte[] data = java.nio.file.Files.readAllBytes(new java.io.File(path).toPath());
+            List<byte[]> units = accessUnits(data, false, 9);
+            MediaCodec codec = MediaCodec.createDecoderByType("video/avc");
+            codec.configure(MediaFormat.createVideoFormat("video/avc", 720, 1280), surface, null, 0);
+            codec.start();
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            long start = System.nanoTime();
+            int next = 0, rendered = 0;
+            while (rendered < units.size() - 4) {
+                if (next < units.size()) {
+                    int in = codec.dequeueInputBuffer(1000);
+                    if (in >= 0) {
+                        ByteBuffer b = codec.getInputBuffer(in);
+                        b.clear();
+                        b.put(units.get(next));
+                        codec.queueInputBuffer(in, 0, units.get(next).length, next * 33333L, 0);
+                        next++;
+                    }
+                }
+                int out = codec.dequeueOutputBuffer(info, 1000);
+                if (out >= 0) {
+                    long due = start + info.presentationTimeUs * 1000;  // show at its time
+                    long wait = due - System.nanoTime();
+                    if (wait > 0) Thread.sleep(wait / 1000000, (int) (wait % 1000000));
+                    codec.releaseOutputBuffer(out, true);
+                    if (++rendered % 60 == 0) {
+                        Runtime rt = Runtime.getRuntime();
+                        Log.i(TAG, "[soak] frames=" + rendered + " javaHeapMB=" + (rt.totalMemory() - rt.freeMemory()) / (1 << 20));
+                    }
+                }
+            }
+            codec.release();
+            Log.i(TAG, "[soak] done frames=" + rendered);
+        } catch (Exception e) {
+            Log.e(TAG, "[soak] failed", e);
+        }
     }
 
     /** An MP4 (H.264 with B-frames + AAC) demuxed by MediaExtractor. */
