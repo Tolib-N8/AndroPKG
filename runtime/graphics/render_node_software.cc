@@ -16,6 +16,7 @@
 #include "pipeline/skia/RenderNodeDrawable.h"
 #include "pipeline/skia/SkiaLayer.h"
 #include "include/core/SkSurface.h"
+#include "include/gpu/GrRecordingContext.h"
 #include <stdlib.h>
 
 namespace android {
@@ -36,15 +37,16 @@ public:
         }
     }
     static SkCanvas* SkCanvasOf(SkiaCanvas* canvas) { return canvas->asSkCanvas(); }
+    static void Bind(SkiaCanvas* canvas, SkCanvas* sk) { canvas->reset(sk); }
 
     // Nodes that are layers (RenderEffect blur, Offscreen compositing, alpha over overlapping
     // content, LAYER_TYPE_HARDWARE) get a raster SkSurface and are rendered into it, innermost
     // first, as SkiaPipeline::renderLayers does on the render thread. RenderNodeDrawable then
     // composites them with their image filter, alpha and stretch.
-    static void RenderLayers(RenderNode* node, int depth) {
+    static void RenderLayers(RenderNode* node, int depth, GrRecordingContext* gpu) {
         if (depth > 256) return;
         if (auto& displayList = node->getDisplayList()) {
-            displayList.updateChildren([depth](RenderNode* child) { RenderLayers(child, depth + 1); });
+            displayList.updateChildren([depth, gpu](RenderNode* child) { RenderLayers(child, depth + 1, gpu); });
         }
         const RenderProperties& props = node->properties();
         const int w = props.getWidth(), h = props.getHeight();
@@ -55,7 +57,9 @@ public:
         }
         SkSurface* surface = node->getLayerSurface();
         if (surface == nullptr || surface->width() != w || surface->height() != h) {
-            node->setLayerSurface(SkSurface::MakeRaster(SkImageInfo::MakeN32Premul(w, h)));
+            SkImageInfo info = SkImageInfo::MakeN32Premul(w, h);
+            node->setLayerSurface(gpu ? SkSurface::MakeRenderTarget(gpu, skgpu::Budgeted::kYes, info)
+                                      : SkSurface::MakeRaster(info));
             surface = node->getLayerSurface();
             if (surface == nullptr) return;
         }
@@ -97,7 +101,7 @@ void Canvas_drawRenderNode(JNIEnv* env, jobject jcanvas, jobject jnode) {
     if (sk == nullptr) return;
     uirenderer::AndropkgSoftwareRenderNode::Sync(node, 0);
     if (!node->getDisplayList()) return;  // nothing recorded yet
-    uirenderer::AndropkgSoftwareRenderNode::RenderLayers(node, 0);
+    uirenderer::AndropkgSoftwareRenderNode::RenderLayers(node, 0, sk->recordingContext());
     static const bool dump = getenv("ANDROPKG_LOG_RENDERNODES") != nullptr;
     static int calls = 0;
     if (dump && calls++ % 300 == 0) uirenderer::AndropkgSoftwareRenderNode::Dump(node, 0);
@@ -106,6 +110,17 @@ void Canvas_drawRenderNode(JNIEnv* env, jobject jcanvas, jobject jnode) {
 }
 
 }  // namespace
+
+// window_jni.cc (GPU): Surface.lockCanvas binds the Java Canvas to a window's GPU SkCanvas.
+void andropkg_bind_skcanvas(JNIEnv* env, jobject jcanvas, SkCanvas* sk) {
+    auto* canvas = reinterpret_cast<Canvas*>(env->GetLongField(jcanvas, gCanvasNative));
+    if (canvas == nullptr) return;
+    if (sk != nullptr) {
+        uirenderer::AndropkgSoftwareRenderNode::Bind(static_cast<SkiaCanvas*>(canvas), sk);
+    } else {
+        canvas->setBitmap(SkBitmap());
+    }
+}
 
 int register_andropkg_software_render_node(JNIEnv* env) {
     jclass base = env->FindClass("android/graphics/BaseCanvas");

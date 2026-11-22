@@ -88,6 +88,7 @@ class Gen:
         excl = {os.path.join(self.root, x) for x in t.get("exclude_srcs", [])}
         srcs = [s for s in srcs if s not in excl and not any(s.endswith(x) for x in t.get("exclude_suffixes", []))]
         srcs += [os.path.join(self.root, x) for x in t.get("extra_srcs", [])]
+        srcs = list(dict.fromkeys(srcs))  # extra_srcs may repeat a base source
         asm = []
         if t.get("asm_port"):
             asm = [x for x in srcs if x.endswith(".S")]

@@ -28,6 +28,8 @@
 #include <vector>
 
 #include "android_os_MessageQueue.h"
+#include "gpu_metal.h"
+#include "include/core/SkSurface.h"
 #include "include/core/SkBitmap.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
@@ -48,6 +50,11 @@ __asm__(
     "  mov x0, #0\n"
     "  fmov d0, xzr\n"
     "  ret\n");
+
+// render_node_software.cc: binds the Java Canvas `canvas` to `sk` (nullptr: back to a bitmap).
+namespace android {
+void andropkg_bind_skcanvas(JNIEnv* env, jobject canvas, SkCanvas* sk);
+}
 
 // ---- host frame sink ------------------------------------------------------------------
 
@@ -146,6 +153,10 @@ struct WindowSurface {
   std::vector<uint32_t> pixels;
   int drawnW = 0, drawnH = 0;  // the size of `pixels`' last frame
   uint64_t frames = 0;
+  // GPU rendering: Surface.lockCanvas draws into `gpu`; `gpuFrame` is its last frame.
+  // A surface drawn on the CPU (the NDK's ANativeWindow) has none and keeps `pixels`.
+  sk_sp<SkSurface> gpu;
+  sk_sp<SkImage> gpuFrame;
 };
 
 struct Layer {  // SurfaceControl
@@ -319,6 +330,31 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
     jniThrowException(env, "java/lang/IllegalArgumentException", "surface has no size");
     return 0;
   }
+  if (andropkg_gpu::Enabled()) {
+    // Held until unlockCanvasAndPost (same thread).
+    andropkg_gpu::Mutex().lock();
+    s->lock.lock();
+    if (!s->gpu || s->gpu->width() != s->width || s->gpu->height() != s->height) {
+      s->gpu = andropkg_gpu::MakeSurface(s->width, s->height);
+    }
+    if (s->gpu) {
+      s->drawnW = s->width;
+      s->drawnH = s->height;
+      SkCanvas* c = s->gpu->getCanvas();
+      c->restoreToCount(1);
+      c->resetMatrix();
+      android::andropkg_bind_skcanvas(env, canvasObj, c);
+      if (dirtyRect) {  // a fresh frame every time: the view hierarchy redraws it all
+        env->SetIntField(dirtyRect, gJni.rectLeft, 0);
+        env->SetIntField(dirtyRect, gJni.rectTop, 0);
+        env->SetIntField(dirtyRect, gJni.rectRight, s->width);
+        env->SetIntField(dirtyRect, gJni.rectBottom, s->height);
+      }
+      return ptr;
+    }
+    s->lock.unlock();
+    andropkg_gpu::Mutex().unlock();
+  }
   s->lock.lock();
   size_t n = static_cast<size_t>(s->width) * s->height;
   // The buffer keeps the last frame, so (as Surface does with its back buffer's copy-back) only
@@ -361,6 +397,15 @@ jlong s_lockCanvas(JNIEnv* env, jclass, jlong ptr, jobject canvasObj, jobject di
 
 void s_unlockCanvasAndPost(JNIEnv* env, jclass, jlong ptr, jobject canvasObj) {
   WindowSurface* s = Ptr<WindowSurface>(ptr);
+  if (s->gpu && andropkg_gpu::Enabled()) {
+    android::andropkg_bind_skcanvas(env, canvasObj, nullptr);
+    s->gpuFrame = s->gpu->makeImageSnapshot();
+    s->frames++;
+    s->lock.unlock();
+    PostFrame(s);
+    andropkg_gpu::Mutex().unlock();
+    return;
+  }
   android::graphics::Canvas canvas(env, canvasObj);
   canvas.setBuffer(nullptr, ADATASPACE_UNKNOWN);
   s->frames++;
@@ -911,11 +956,15 @@ std::vector<ChildLayer> ChildLayersLocked(Layer* window) {
 void DrawChildLocked(SkCanvas* canvas, const ChildLayer& c, int ox, int oy) {
   WindowSurface* s = c.layer->surface;
   std::lock_guard<std::mutex> g(s->lock);
-  if (s->drawnW <= 0 || s->pixels.size() < static_cast<size_t>(s->drawnW) * s->drawnH) return;
-  SkBitmap bm;
-  bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
-                   s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
-  bm.setImmutable();
+  sk_sp<SkImage> image = s->gpuFrame;  // drawn through the GPU (Surface.lockCanvas)
+  if (!image) {
+    if (s->drawnW <= 0 || s->pixels.size() < static_cast<size_t>(s->drawnW) * s->drawnH) return;
+    SkBitmap bm;
+    bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
+                     s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
+    bm.setImmutable();
+    image = bm.asImage();
+  }
   float w = c.layer->destW > 0 ? c.layer->destW : s->drawnW * c.layer->scaleX;
   float h = c.layer->destH > 0 ? c.layer->destH : s->drawnH * c.layer->scaleY;
   canvas->save();
@@ -923,7 +972,7 @@ void DrawChildLocked(SkCanvas* canvas, const ChildLayer& c, int ox, int oy) {
   if (c.cropped) canvas->clipRect(c.clip);
   SkPaint paint;
   paint.setAlphaf(c.alpha);
-  canvas->drawImageRect(bm.asImage(), SkRect::MakeXYWH(c.x, c.y, w, h), SkSamplingOptions(SkFilterMode::kLinear),
+  canvas->drawImageRect(image, SkRect::MakeXYWH(c.x, c.y, w, h), SkSamplingOptions(SkFilterMode::kLinear),
                         &paint);
   canvas->restore();
 }
@@ -940,6 +989,44 @@ void ComposeLocked() {
   for (HostWindow* w : drawn) {
     children[w] = ChildLayersLocked(w->layer);
     anyChildren |= !children[w].empty();
+  }
+  if (andropkg_gpu::Enabled()) {
+    std::lock_guard<std::recursive_mutex> gpuLock(andropkg_gpu::Mutex());
+    SkCanvas* canvas = andropkg_gpu::BeginFrame(gDisplayW, gDisplayH);
+    if (canvas != nullptr) {
+      canvas->clear(SK_ColorBLACK);
+      for (HostWindow* w : drawn) {
+        if (w->dim > 0) canvas->drawColor(SkColorSetARGB(static_cast<U8CPU>(w->dim * 255), 0, 0, 0));
+        const std::vector<ChildLayer>& kids = children[w];
+        for (const ChildLayer& c : kids) {
+          if (c.z < 0) DrawChildLocked(canvas, c, w->sx, w->sy);
+        }
+        WindowSurface* s = w->layer->surface;
+        {
+          std::lock_guard<std::mutex> g(s->lock);
+          if (s->gpuFrame) {
+            canvas->drawImage(s->gpuFrame, w->sx, w->sy);
+          } else if (s->drawnW > 0 && s->pixels.size() >= static_cast<size_t>(s->drawnW) * s->drawnH) {
+            SkBitmap bm;
+            bm.installPixels(SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
+                             s->pixels.data(), static_cast<size_t>(s->drawnW) * 4);
+            canvas->drawImage(bm.asImage(), w->sx, w->sy);
+          }
+        }
+        for (const ChildLayer& c : kids) {
+          if (c.z >= 0) DrawChildLocked(canvas, c, w->sx, w->sy);
+        }
+      }
+      // A copy in memory only when someone looks at it: no layer (the Mac), tests, the first
+      // frame (the runner checks it), test taps.
+      static uint64_t gpuFrames = 0;
+      static const bool keepFrames = TestsEnabled() || getenv("ANDROPKG_TEST_TAP") || getenv("ANDROPKG_FRAME_PNG");
+      bool readback = !andropkg_gpu::PresentsToLayer() || keepFrames || gpuFrames++ == 0;
+      if (readback) gScreen.assign(static_cast<size_t>(gDisplayW) * gDisplayH, 0);
+      andropkg_gpu::EndFrame(readback ? gScreen.data() : nullptr);
+      if (readback) Present(gScreen.data(), gDisplayW, gDisplayH, gDisplayW * 4);
+      return;
+    }
   }
   if (drawn.size() == 1 && !anyChildren && drawn[0]->dim == 0 && drawn[0]->sx == 0 && drawn[0]->sy == 0) {
     WindowSurface* s = drawn[0]->layer->surface;

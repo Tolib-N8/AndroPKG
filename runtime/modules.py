@@ -5,6 +5,21 @@ ANDROPKG = os.path.normpath(os.path.join(AOSP, "..", ".."))
 
 VARIANT = dict(arch="arm64", targets=("host", "darwin", "not_windows"), codegen=())
 
+def _skia_ganesh_srcs():
+    """libskia's GPU sources from its Android-only srcs in external/skia/Android.bp."""
+    import re
+    bp = open(os.path.join(AOSP, "external/skia/Android.bp")).read()
+    block = bp[bp.index('name: "libskia"'):]
+    android = block[block.index("android: {"):]
+    srcs = re.findall(r'"([^"]+)"', android[:android.index("],")])
+    skip = ("/gl/", "/vk/", "/android/", "AHardwareBuffer")
+    keep = ("src/gpu/", "src/image/SkImage_Gpu", "src/image/SkSurface_Gpu", "src/text/gpu/",
+            "src/sksl/codegen/",  # Ganesh links every backend's code generator
+            "src/core/SkGpuBlurUtils", "src/effects/imagefilters/", "src/shaders/")
+    out = [x for x in srcs if x.startswith(keep) and not any(k in x for k in skip)]
+    return ["external/skia/" + x for x in out]
+
+
 # Soong's global defaults that matter for this code base.
 GLOBAL_CFLAGS = [
     "-D__STDC_FORMAT_MACROS", "-D__STDC_CONSTANT_MACROS", "-D_FILE_OFFSET_BITS=64",
@@ -118,6 +133,9 @@ TARGETS = [
     # RAW (dng_sdk/piex) decoding is left out: not portable to Darwin's int64_t, rarely used.
     dict(name="libskia", bp="libskia", remove_cflags=["-DSK_CODEC_DECODES_RAW"],
          exclude_srcs=["external/skia/src/codec/SkRawCodec.cpp"],
+         # Ganesh (GPU) as Android builds it, minus GL/Vulkan/AHardwareBuffer; the Metal backend's
+         # Objective-C++ sources are the andropkg_skia_metal target (runtime/CMakeLists.txt).
+         extra_srcs=_skia_ganesh_srcs(),
          andropkg_srcs=[f"{ANDROPKG}/runtime/graphics/skia_raw_disabled.cc"]),
     dict(name="libminikin", bp="libminikin"),
     dict(name="libmodpb64", bp="libmodpb64"),

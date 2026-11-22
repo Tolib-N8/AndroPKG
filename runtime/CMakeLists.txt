@@ -232,10 +232,17 @@ andropkg_jni_dylib(libsoundpool andropkg_soundpool libvorbisidec libopus)
 target_link_libraries(libsoundpool_dylib PRIVATE "-framework Foundation" "-framework AVFoundation" "-framework AudioToolbox")
 
 # android.webkit.WebView on WKWebView (natives of services' WkWebView).
+# Skia's Metal backend (Ganesh): Objective-C++ with ARC, built with libskia's flags.
+file(GLOB ANDROPKG_SKIA_MTL_SRCS ${ANDROPKG_AOSP}/external/skia/src/gpu/ganesh/mtl/*.mm
+     ${ANDROPKG_AOSP}/external/skia/src/image/SkSurface_GpuMtl.mm)
+add_library(andropkg_skia_metal OBJECT ${ANDROPKG_SKIA_MTL_SRCS} ${CMAKE_CURRENT_SOURCE_DIR}/graphics/gpu_metal.mm)
+target_include_directories(andropkg_skia_metal PRIVATE $<TARGET_PROPERTY:libskia,INCLUDE_DIRECTORIES>)
+target_compile_options(andropkg_skia_metal PRIVATE $<TARGET_PROPERTY:libskia,COMPILE_OPTIONS> -fobjc-arc -std=gnu++17 -fno-rtti)
+
 add_library(andropkg_webview OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/webview/wkwebview.mm)
 target_compile_options(andropkg_webview PRIVATE -fobjc-arc -std=gnu++17)
 target_include_directories(andropkg_webview PRIVATE ${ANDROPKG_AOSP}/libnativehelper/include_jni)
-andropkg_jni_dylib(libandroid_runtime andropkg_audio andropkg_webview libandroid_runtime libandroidfw libincfs-utils libutils libcutils
+andropkg_jni_dylib(libandroid_runtime andropkg_audio andropkg_webview andropkg_skia_metal libandroid_runtime libandroidfw libincfs-utils libutils libcutils
     libhwui libskia libminikin libharfbuzz_ng libft2 libpng libjpeg libwebp-decode libwebp-encode libwuffs
     libsfntly libultrahdr libjpegencoder libjpegdecoder libimage_io libmodpb64 libexpat libinput
     libsqlite libsqlite3_android)
@@ -248,7 +255,7 @@ endif()
 target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundation" "-framework CoreGraphics"
                       "-framework CoreText" "-framework ImageIO" ${_uti_fw}
                       "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation"
-                      "-framework MediaPlayer")
+                      "-framework MediaPlayer" "-framework Metal" "-framework QuartzCore")
 if(ANDROPKG_PLATFORM STREQUAL "ios")
   target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit" "-framework WebKit")
 else()

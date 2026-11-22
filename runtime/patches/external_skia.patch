@@ -1,8 +1,23 @@
 diff --git a/mac/include/config/SkUserConfig.h b/mac/include/config/SkUserConfig.h
-index 44ca9dd..ed4f9a7 100644
+index 44ca9dd..7a50ae9 100644
 --- a/mac/include/config/SkUserConfig.h
 +++ b/mac/include/config/SkUserConfig.h
-@@ -89,13 +89,21 @@
+@@ -9,6 +9,14 @@
+ 
+ #ifndef SK_ASSUME_GL
+ #define SK_ASSUME_GL 1
++
++// andropkg: hwui renders through Ganesh on Metal (iOS and macOS).
++#ifndef SK_GANESH
++#define SK_GANESH
++#endif
++#ifndef SK_METAL
++#define SK_METAL
++#endif
+ #endif
+ 
+ #ifndef SK_CODEC_DECODES_JPEG
+@@ -89,13 +97,21 @@
  
  // Correct SK_BUILD_FOR flags that may have been set by
  // SkTypes.h/Android.bp

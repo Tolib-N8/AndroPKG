@@ -1,9 +1,12 @@
 // andropkg runner (M1): boots ART + Android 14 libcore inside an iOS app and runs a dex's
 // main(). Output goes to stdout (devicectl --console) and to the screen.
 #import <CoreMotion/CoreMotion.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <UIKit/UIKit.h>
 
 #include <dlfcn.h>
+#include <mach/mach.h>
+#include <os/proc.h>
 #include <jni.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -26,6 +29,13 @@ static void Log(NSString* s) {
 // ---- Android window frames -> screen ----------------------------------------------------
 // The Android display is the native screen (same pixel size), so a frame maps 1:1.
 static UIImageView* g_frame_view;
+// The runtime renders with Metal and presents to this layer (over g_frame_view's image, which
+// then stays empty); frames reach FrameSink only when they are kept. ANDROPKG_NO_GPU: CPU.
+static CAMetalLayer* g_metal_layer;
+static bool GpuRendering() {
+  static const bool on = getenv("ANDROPKG_NO_GPU") == nullptr;
+  return on;
+}
 static void (*g_inject_touch)(int action, float x, float y);
 static void (*g_ime_insert_text)(const char* utf8);
 static void (*g_ime_delete_backward)();
@@ -36,14 +46,24 @@ static void (*g_inject_key)(int action, int keycode);
 // until multi-touch lands).
 @interface AndroidWindowView : UIImageView <UIKeyInput>
 @end
+
+// A view backed by a CAMetalLayer (GPU rendering).
+@interface MetalView : UIView
+@end
+@implementation MetalView
++ (Class)layerClass {
+  return [CAMetalLayer class];
+}
+@end
 @implementation AndroidWindowView {
   UITouch* _tracked;
 }
 - (void)send:(int)action touch:(UITouch*)t {
-  if (!g_inject_touch || !self.image) return;
+  if (!g_inject_touch || self.hidden) return;
   CGPoint p = [t locationInView:self];
-  CGFloat sx = self.image.size.width * self.image.scale / self.bounds.size.width;
-  CGFloat sy = self.image.size.height * self.image.scale / self.bounds.size.height;
+  // The view shows the Android display (g_screen_w x g_screen_h pixels) scaled to its bounds.
+  CGFloat sx = g_screen_w / self.bounds.size.width;
+  CGFloat sy = g_screen_h / self.bounds.size.height;
   g_inject_touch(action, static_cast<float>(p.x * sx), static_cast<float>(p.y * sy));
 }
 // The iOS keyboard types into the focused Android text editor (andropkg's host IME).
@@ -117,7 +137,7 @@ static void FrameSink(const void* rgba, int w, int h, int stride, void*) {
     if (frames == 1) Log([NSString stringWithFormat:@"first frame %dx%d", w, h]);
   }
   dispatch_async(dispatch_get_main_queue(), ^{
-    g_frame_view.image = image;
+    if (!g_metal_layer) g_frame_view.image = image;  // with Metal the layer shows the frames
     g_frame_view.hidden = NO;
     g_status_label.hidden = YES;  // windows may be translucent: no "starting ART…" behind them
   });
@@ -255,6 +275,13 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   if (auto set_sink = reinterpret_cast<SetSink>(dlsym(RTLD_DEFAULT, "andropkg_set_frame_sink"))) {
     set_sink(FrameSink, nullptr);
   }
+  if (GpuRendering()) {
+    if (auto set_layer = reinterpret_cast<void (*)(void*)>(dlsym(RTLD_DEFAULT, "andropkg_set_metal_layer"))) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_metal_layer) set_layer((__bridge void*)g_metal_layer);
+      });
+    }
+  }
   g_inject_touch = reinterpret_cast<void (*)(int, float, float)>(dlsym(RTLD_DEFAULT, "andropkg_inject_touch"));
   g_ime_insert_text = reinterpret_cast<void (*)(const char*)>(dlsym(RTLD_DEFAULT, "andropkg_ime_insert_text"));
   g_ime_delete_backward = reinterpret_cast<void (*)()>(dlsym(RTLD_DEFAULT, "andropkg_ime_delete_backward"));
@@ -374,6 +401,14 @@ static void SetAppVisible(int visible) {
   g_frame_view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
   g_frame_view.contentMode = UIViewContentModeScaleToFill;
   g_frame_view.hidden = YES;
+  if (GpuRendering()) {
+    MetalView* metal = [[MetalView alloc] initWithFrame:g_frame_view.bounds];
+    metal.userInteractionEnabled = NO;  // touches go to g_frame_view
+    metal.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    g_metal_layer = (CAMetalLayer*)metal.layer;
+    g_metal_layer.opaque = YES;
+    [g_frame_view addSubview:metal];
+  }
   [root addSubview:g_frame_view];
   self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
   [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidEnterBackgroundNotification object:scene
@@ -407,6 +442,22 @@ static void SetAppVisible(int visible) {
   if (safe.top == 0) safe = UIEdgeInsetsMake(59, 0, 34, 0);
   g_inset_top = static_cast<int>(safe.top * scale);
   g_inset_bottom = static_cast<int>(safe.bottom * scale);
+  if (getenv("ANDROPKG_LOG_MEMORY")) {  // the app's footprint (what jetsam counts) every 2 s
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                     dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 2 * NSEC_PER_SEC, NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(timer, ^{
+      task_vm_info_data_t vm = {};
+      mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+      if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm), &count) == KERN_SUCCESS) {
+        Log([NSString stringWithFormat:@"memory: footprint %llu MB, limit left %llu MB", vm.phys_footprint >> 20,
+                                       static_cast<unsigned long long>(os_proc_available_memory()) >> 20]);
+      }
+    });
+    dispatch_resume(timer);
+    static dispatch_source_t keep;
+    keep = timer;
+  }
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack
