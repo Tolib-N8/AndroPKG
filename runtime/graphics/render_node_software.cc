@@ -111,6 +111,12 @@ void Canvas_drawRenderNode(JNIEnv* env, jobject jcanvas, jobject jnode) {
 
 }  // namespace
 
+// window_jni.cc (TextureView): the SkCanvas a Java Canvas draws into.
+SkCanvas* andropkg_skcanvas_of(JNIEnv* env, jobject jcanvas) {
+    auto* canvas = reinterpret_cast<Canvas*>(env->GetLongField(jcanvas, gCanvasNative));
+    return canvas ? uirenderer::AndropkgSoftwareRenderNode::SkCanvasOf(static_cast<SkiaCanvas*>(canvas)) : nullptr;
+}
+
 // window_jni.cc (GPU): Surface.lockCanvas binds the Java Canvas to a window's GPU SkCanvas.
 void andropkg_bind_skcanvas(JNIEnv* env, jobject jcanvas, SkCanvas* sk) {
     auto* canvas = reinterpret_cast<Canvas*>(env->GetLongField(jcanvas, gCanvasNative));

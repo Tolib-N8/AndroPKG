@@ -5,7 +5,10 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
 import android.util.Log;
+import android.graphics.SurfaceTexture;
+import android.view.Surface;
 import android.view.SurfaceHolder;
+import android.view.TextureView;
 import android.view.SurfaceView;
 import android.widget.LinearLayout;
 
@@ -30,6 +33,7 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.addView(player("video/avc", "green_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(player("video/hevc", "red_hevc.bin", 35), new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(texturePlayer("video/avc", "blue_avc.bin", 9), new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
     }
 
@@ -45,12 +49,32 @@ public class MainActivity extends Activity {
         return view;
     }
 
+    /** The same through a TextureView: its SurfaceTexture, wrapped in a Surface (as ExoPlayer does). */
+    TextureView texturePlayer(String mime, String asset, int audType) {
+        TextureView view = new TextureView(this);
+        view.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                Log.i(TAG, "[video] texture available " + w + "x" + h);
+                Surface surface = new Surface(st);
+                new Thread(() -> play(mime + " (texture)", mime, asset, audType, surface), "texture").start();
+            }
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) {}
+            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { return true; }
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture st) {}
+        });
+        return view;
+    }
+
     void play(String mime, String asset, int audType, SurfaceHolder holder) {
+        play(mime, mime, asset, audType, holder.getSurface());
+    }
+
+    void play(String label, String mime, String asset, int audType, Surface surface) {
         try {
             List<byte[]> units = accessUnits(read(asset), mime.equals("video/hevc"), audType);
             MediaFormat format = MediaFormat.createVideoFormat(mime, 320, 240);
             MediaCodec codec = MediaCodec.createDecoderByType(mime);
-            codec.configure(format, holder.getSurface(), null, 0);
+            codec.configure(format, surface, null, 0);
             codec.start();
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             int next = 0, rendered = 0;
@@ -84,9 +108,9 @@ public class MainActivity extends Activity {
             }
             codec.stop();
             codec.release();
-            Log.i(TAG, "[video] " + mime + " units=" + units.size() + " rendered=" + rendered + " format=" + outFormat);
+            Log.i(TAG, "[video] " + label + " units=" + units.size() + " rendered=" + rendered + " format=" + outFormat);
         } catch (Exception e) {
-            Log.e(TAG, "[video] " + mime + " failed", e);
+            Log.e(TAG, "[video] " + label + " failed", e);
         }
     }
 

@@ -158,7 +158,20 @@ struct WindowSurface {
   // A surface drawn on the CPU (the NDK's ANativeWindow) has none and keeps `pixels`.
   sk_sp<SkSurface> gpu;
   sk_sp<SkImage> gpuFrame;
+  // A SurfaceTexture's buffer: frames posted here notify it instead of a window.
+  struct Texture* texture = nullptr;
 };
+
+// android.graphics.SurfaceTexture: a consumer with its own buffer (WindowSurface, the producer
+// side a Surface(SurfaceTexture) draws into: lockCanvas, MediaCodec, the NDK). Each new frame
+// is reported through onFrameAvailable; TextureView draws the latest one (tv_draw). There is no
+// GL texture: updateTexImage latches nothing and GL consumers see no frames.
+struct Texture {
+  WindowSurface* surface = nullptr;
+  jobject weakSelf = nullptr;  // (global) WeakReference<SurfaceTexture>, for postEventFromNative
+  int64_t timestampNs = 0;
+};
+std::mutex gTextureLock;  // Texture lifetime vs producers notifying it
 
 struct Layer {  // SurfaceControl
   std::string name;
@@ -1101,7 +1114,13 @@ void ComposeLocked() {
   Present(gScreen.data(), gDisplayW, gDisplayH, gDisplayW * 4);
 }
 
+void NotifyTexture(WindowSurface* s);
+
 void PostFrame(WindowSurface* s) {
+  if (s->texture) {  // a SurfaceTexture's buffer: no window shows it
+    NotifyTexture(s);
+    return;
+  }
   std::lock_guard<std::mutex> g(gWmLock);
   bool anyPlaced = false;
   for (auto& [id, w] : gWindows) {
@@ -1561,6 +1580,206 @@ jlong hr_createProxy(JNIEnv*, jclass, jboolean, jlong) {
 }  // namespace
 
 namespace android {
+SkCanvas* andropkg_skcanvas_of(JNIEnv* env, jobject canvas);  // render_node_software.cc
+}
+
+namespace {
+struct {
+  jclass clazz;
+  jfieldID texture, producer;  // SurfaceTexture.mSurfaceTexture, mProducer
+  jmethodID postEvent;         // static postEventFromNative(WeakReference)
+  jmethodID ctor;              // SurfaceTexture(boolean singleBufferMode)
+  jmethodID setListener;       // setOnFrameAvailableListener(OnFrameAvailableListener)
+  jmethodID setDefaultSize;    // setDefaultBufferSize(int, int)
+  jfieldID tvSurface, tvListener, tvUpdateListener, tvMatrix;  // TextureView.mSurface, ...
+  jmethodID onAvailable;       // SurfaceTextureListener.onSurfaceTextureAvailable
+  jmethodID getWidth, getHeight;
+  jfieldID matrixNative;       // Matrix.native_instance
+} gTex;
+
+Texture* TextureOf(JNIEnv* env, jobject st) {
+  return reinterpret_cast<Texture*>(env->GetLongField(st, gTex.texture));
+}
+
+void NotifyTexture(WindowSurface* s) {
+  JavaVM* vm = android::AndroidRuntime::getJavaVM();
+  JNIEnv* env = nullptr;
+  bool attached = false;
+  if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+    if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    attached = true;
+  }
+  jobject weak = nullptr;
+  {
+    std::lock_guard<std::mutex> g(gTextureLock);
+    if (s->texture) {
+      s->texture->timestampNs = systemTime(SYSTEM_TIME_MONOTONIC);
+      weak = env->NewLocalRef(s->texture->weakSelf);
+    }
+  }
+  if (weak) {
+    env->CallStaticVoidMethod(gTex.clazz, gTex.postEvent, weak);
+    env->ExceptionClear();
+    env->DeleteLocalRef(weak);
+  }
+  if (attached) vm->DetachCurrentThread();
+}
+
+void st_init(JNIEnv* env, jobject thiz, jboolean, jint, jboolean, jobject weakSelf) {
+  auto* t = new Texture;
+  t->surface = new WindowSurface;
+  t->surface->width = t->surface->height = 1;
+  t->weakSelf = env->NewGlobalRef(weakSelf);
+  t->surface->texture = t;
+  env->SetLongField(thiz, gTex.texture, reinterpret_cast<jlong>(t));
+  env->SetLongField(thiz, gTex.producer, reinterpret_cast<jlong>(t->surface));
+}
+void st_release(JNIEnv* env, jobject thiz) {
+  Texture* t = TextureOf(env, thiz);
+  if (!t) return;
+  env->SetLongField(thiz, gTex.texture, 0);
+  {
+    std::lock_guard<std::mutex> g(gTextureLock);
+    // The buffer stays (a producer may still hold its Surface), detached and emptied.
+    t->surface->texture = nullptr;
+    std::lock_guard<std::mutex> sg(t->surface->lock);
+    t->surface->pixels.clear();
+    t->surface->gpuFrame.reset();
+  }
+  env->DeleteGlobalRef(t->weakSelf);
+  delete t;
+}
+void st_setDefaultBufferSize(JNIEnv* env, jobject thiz, jint w, jint h) {
+  if (Texture* t = TextureOf(env, thiz)) {
+    std::lock_guard<std::mutex> g(t->surface->lock);
+    t->surface->width = std::max(1, (int)w);
+    t->surface->height = std::max(1, (int)h);
+  }
+}
+void st_noop(JNIEnv*, jobject) {}
+jint st_zeroInt(JNIEnv*, jobject) { return 0; }
+jint st_attach(JNIEnv*, jobject, jint) { return 0; }
+void st_getTransformMatrix(JNIEnv* env, jobject, jfloatArray m) {
+  static const float kIdentity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  if (m && env->GetArrayLength(m) >= 16) env->SetFloatArrayRegion(m, 0, 16, kIdentity);
+}
+jlong st_getTimestamp(JNIEnv* env, jobject thiz) {
+  Texture* t = TextureOf(env, thiz);
+  return t ? t->timestampNs : 0;
+}
+jboolean st_isReleased(JNIEnv* env, jobject thiz) { return TextureOf(env, thiz) == nullptr; }
+jlong s_createFromSurfaceTexture(JNIEnv* env, jclass, jobject st) {
+  Texture* t = st ? TextureOf(env, st) : nullptr;
+  if (!t) {
+    jniThrowException(env, "android/view/Surface$OutOfResourcesException", "SurfaceTexture has been released");
+    return 0;
+  }
+  return reinterpret_cast<jlong>(t->surface);
+}
+
+// TextureView.draw(Canvas) (ART makes it native, class_linker.cc kOverrides): what the hardware
+// renderer's texture layer does. The SurfaceTexture is created when the view first draws with a
+// size (TextureView.getTextureLayer) and announced to the listener; then the latest frame is
+// drawn over the view's bounds, through setTransform's matrix.
+void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
+  int w = env->CallIntMethod(view, gTex.getWidth), h = env->CallIntMethod(view, gTex.getHeight);
+  if (w <= 0 || h <= 0) return;
+  jobject st = env->GetObjectField(view, gTex.tvSurface);
+  if (st == nullptr) {
+    st = env->NewObject(gTex.clazz, gTex.ctor, JNI_FALSE);
+    if (env->ExceptionCheck() || st == nullptr) return;
+    env->SetObjectField(view, gTex.tvSurface, st);
+    env->CallVoidMethod(st, gTex.setDefaultSize, w, h);
+    jobject update = env->GetObjectField(view, gTex.tvUpdateListener);
+    env->CallVoidMethod(st, gTex.setListener, update);  // -> updateLayer(): invalidate on new frames
+    if (update) env->DeleteLocalRef(update);
+    jobject listener = env->GetObjectField(view, gTex.tvListener);
+    if (listener) {
+      env->CallVoidMethod(listener, gTex.onAvailable, st, w, h);
+      env->DeleteLocalRef(listener);
+    }
+    if (env->ExceptionCheck()) return;  // the app's exception, thrown from draw as on Android
+  }
+  Texture* t = TextureOf(env, st);
+  env->DeleteLocalRef(st);
+  SkCanvas* sk = android::andropkg_skcanvas_of(env, canvas);
+  if (!t || !sk) return;
+  sk_sp<SkImage> image;
+  {
+    std::lock_guard<std::mutex> g(t->surface->lock);
+    WindowSurface* s = t->surface;
+    if (s->gpuFrame) {
+      image = s->gpuFrame;
+    } else if (s->drawnW > 0 && s->pixels.size() >= static_cast<size_t>(s->drawnW) * s->drawnH) {
+      SkImageInfo info = SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+      image = SkImage::MakeRasterCopy(SkPixmap(info, s->pixels.data(), static_cast<size_t>(s->drawnW) * 4));
+    }
+  }
+  if (!image) return;
+  sk->save();
+  jobject matrix = env->GetObjectField(view, gTex.tvMatrix);
+  if (matrix) {
+    if (auto* m = reinterpret_cast<SkMatrix*>(env->GetLongField(matrix, gTex.matrixNative))) sk->concat(*m);
+    env->DeleteLocalRef(matrix);
+  }
+  sk->drawImageRect(image, SkRect::MakeWH(w, h), SkSamplingOptions(SkFilterMode::kLinear), nullptr);
+  sk->restore();
+}
+
+void RegisterSurfaceTexture(JNIEnv* env) {
+  jclass st = env->FindClass("android/graphics/SurfaceTexture");
+  gTex.clazz = static_cast<jclass>(env->NewGlobalRef(st));
+  gTex.texture = env->GetFieldID(st, "mSurfaceTexture", "J");
+  gTex.producer = env->GetFieldID(st, "mProducer", "J");
+  gTex.postEvent = env->GetStaticMethodID(st, "postEventFromNative", "(Ljava/lang/ref/WeakReference;)V");
+  gTex.ctor = env->GetMethodID(st, "<init>", "(Z)V");
+  gTex.setListener = env->GetMethodID(st, "setOnFrameAvailableListener",
+                                      "(Landroid/graphics/SurfaceTexture$OnFrameAvailableListener;)V");
+  gTex.setDefaultSize = env->GetMethodID(st, "setDefaultBufferSize", "(II)V");
+  static const JNINativeMethod kSurfaceTexture[] = {
+      {"nativeInit", "(ZIZLjava/lang/ref/WeakReference;)V", reinterpret_cast<void*>(st_init)},
+      {"nativeFinalize", "()V", reinterpret_cast<void*>(st_release)},
+      {"nativeRelease", "()V", reinterpret_cast<void*>(st_release)},
+      {"nativeSetDefaultBufferSize", "(II)V", reinterpret_cast<void*>(st_setDefaultBufferSize)},
+      {"nativeUpdateTexImage", "()V", reinterpret_cast<void*>(st_noop)},
+      {"nativeReleaseTexImage", "()V", reinterpret_cast<void*>(st_noop)},
+      {"nativeDetachFromGLContext", "()I", reinterpret_cast<void*>(st_zeroInt)},
+      {"nativeAttachToGLContext", "(I)I", reinterpret_cast<void*>(st_attach)},
+      {"nativeGetTransformMatrix", "([F)V", reinterpret_cast<void*>(st_getTransformMatrix)},
+      {"nativeGetTimestamp", "()J", reinterpret_cast<void*>(st_getTimestamp)},
+      {"nativeGetDataSpace", "()I", reinterpret_cast<void*>(st_zeroInt)},
+      {"nativeIsReleased", "()Z", reinterpret_cast<void*>(st_isReleased)},
+  };
+  if (env->RegisterNatives(st, kSurfaceTexture, sizeof kSurfaceTexture / sizeof *kSurfaceTexture) != JNI_OK) {
+    env->ExceptionClear();
+    ALOGW("andropkg: SurfaceTexture natives not registered");
+  }
+  env->DeleteLocalRef(st);
+
+  jclass tv = env->FindClass("android/view/TextureView");
+  gTex.tvSurface = env->GetFieldID(tv, "mSurface", "Landroid/graphics/SurfaceTexture;");
+  gTex.tvListener = env->GetFieldID(tv, "mListener", "Landroid/view/TextureView$SurfaceTextureListener;");
+  gTex.tvUpdateListener =
+      env->GetFieldID(tv, "mUpdateListener", "Landroid/graphics/SurfaceTexture$OnFrameAvailableListener;");
+  gTex.tvMatrix = env->GetFieldID(tv, "mMatrix", "Landroid/graphics/Matrix;");
+  jclass view = env->FindClass("android/view/View");
+  gTex.getWidth = env->GetMethodID(view, "getWidth", "()I");
+  gTex.getHeight = env->GetMethodID(view, "getHeight", "()I");
+  jclass lst = env->FindClass("android/view/TextureView$SurfaceTextureListener");
+  gTex.onAvailable = env->GetMethodID(lst, "onSurfaceTextureAvailable", "(Landroid/graphics/SurfaceTexture;II)V");
+  jclass matrix = env->FindClass("android/graphics/Matrix");
+  gTex.matrixNative = env->GetFieldID(matrix, "native_instance", "J");
+  static const JNINativeMethod kTextureView[] = {
+      {"draw", "(Landroid/graphics/Canvas;)V", reinterpret_cast<void*>(tv_draw)},
+  };
+  if (env->ExceptionCheck() || env->RegisterNatives(tv, kTextureView, 1) != JNI_OK) {
+    env->ExceptionClear();
+    ALOGW("andropkg: TextureView.draw stays Java (no TextureView frames)");
+  }
+}
+}  // namespace
+
+namespace android {
 int register_android_view_ThreadedRenderer(JNIEnv* env);
 int register_andropkg_software_render_node(JNIEnv* env);
 
@@ -1657,6 +1876,7 @@ int register_andropkg_window(JNIEnv* env) {
       M("nativeGetFromBlastBufferQueue", "(JJ)J", s_fromBlastBufferQueue),
       M("nativeLockCanvas", "(JLandroid/graphics/Canvas;Landroid/graphics/Rect;)J", s_lockCanvas),
       M("nativeUnlockCanvasAndPost", "(JLandroid/graphics/Canvas;)V", s_unlockCanvasAndPost),
+      M("nativeCreateFromSurfaceTexture", "(Landroid/graphics/SurfaceTexture;)J", s_createFromSurfaceTexture),
   };
   static const JNINativeMethod kDisplayEventReceiver[] = {
       M("nativeInit", "(Ljava/lang/ref/WeakReference;Ljava/lang/ref/WeakReference;Landroid/os/MessageQueue;IIJ)J",
@@ -1670,6 +1890,7 @@ int register_andropkg_window(JNIEnv* env) {
   REGISTER("android/view/SurfaceSession", kSurfaceSession);
   REGISTER("android/graphics/BLASTBufferQueue", kBlast);
   REGISTER("android/view/Surface", kSurface);
+  RegisterSurfaceTexture(env);
   REGISTER("android/view/DisplayEventReceiver", kDisplayEventReceiver);
 
   jclass me = env->FindClass("android/view/MotionEvent");

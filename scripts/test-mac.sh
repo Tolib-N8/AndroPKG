@@ -134,13 +134,16 @@ for want in "540,200 = ffffff" "50,520 = 00ff00" "540,1500 = ff0000" "1000,2300 
   grep -q "test: pixel $want" "$log/surfaceview.log" || fail "surfaceview: pixel $want" surfaceview
 done
 echo "ok   surfaceview checks"
-# Video: MediaCodec (VideoToolbox) H.264 with B-frames and HEVC onto two SurfaceViews.
-ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,400; pixel 540,1500" run video "test: script done" $(apk video)
-for want in "video/avc units=30 rendered=30 format=320x240" "video/hevc units=30 rendered=30 format=320x240"; do
-  grep -q "\[video\] $want" "$log/video.log" || fail "video: $want" video
+# Video: MediaCodec (VideoToolbox) H.264 with B-frames and HEVC onto two SurfaceViews, and
+# H.264 through a TextureView's SurfaceTexture.
+ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,300; pixel 540,1000; pixel 540,1700" run video "test: script done" $(apk video)
+for want in "video/avc units=30 rendered=30 format=320x240" "video/hevc units=30 rendered=30 format=320x240" \
+            "video/avc (texture) units=30 rendered=30 format=320x240"; do
+  grep -qF "[video] $want" "$log/video.log" || fail "video: $want" video
 done
-grep -qE "test: pixel 540,400 = 0[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: AVC frame not green" video
-grep -qE "test: pixel 540,1500 = f[0-9a-f]0[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: HEVC frame not red" video
+grep -qE "test: pixel 540,300 = 0[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: AVC frame not green" video
+grep -qE "test: pixel 540,1000 = f[0-9a-f]0[0-9a-f]0[0-9a-f]" "$log/video.log" || fail "video: HEVC frame not red" video
+grep -qE "test: pixel 540,1700 = 0[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: TextureView frame not blue" video
 echo "ok   video checks"
 ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)
 for want in "\[glsv\] center=ff00ff error=0" "\[glsv\] fps=(5[5-9]|6[0-5])" "test: pixel 540,1200 = ff00ff" \
