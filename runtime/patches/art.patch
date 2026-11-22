@@ -1689,7 +1689,7 @@ index 0083b91..621a967 100644
            length += str->GetLength();
            compressible = compressible && str->IsCompressed();
 diff --git a/runtime/thread.cc b/runtime/thread.cc
-index 6b1934c..516eef8 100644
+index 6b1934c..f004983 100644
 --- a/runtime/thread.cc
 +++ b/runtime/thread.cc
 @@ -16,6 +16,10 @@
@@ -1724,7 +1724,7 @@ index 6b1934c..516eef8 100644
  #endif
  }
  
-@@ -4723,9 +4735,34 @@ bool Thread::ObserveAsyncException() {
+@@ -4723,9 +4735,35 @@ bool Thread::ObserveAsyncException() {
    }
  }
  
@@ -1733,8 +1733,9 @@ index 6b1934c..516eef8 100644
 +// find where an app fails when its own logging is stripped. ClassNotFoundException (class
 +// loading's normal path) is left out.
 +static void AndropkgLogThrow(ObjPtr<mirror::Throwable> t) REQUIRES_SHARED(Locks::mutator_lock_) {
-+  static const bool enabled = getenv("ANDROPKG_LOG_THROWS") != nullptr;
-+  if (!enabled) return;
++  static const char* env = getenv("ANDROPKG_LOG_THROWS");  // "1", or the number of lines to log
++  static const int max_lines = env == nullptr ? 0 : std::max(10, atoi(env));
++  if (max_lines == 0) return;
 +  static thread_local mirror::Throwable* last = nullptr;
 +  if (t.Ptr() == last) return;  // rethrown / re-set while unwinding
 +  last = t.Ptr();
@@ -1742,7 +1743,7 @@ index 6b1934c..516eef8 100644
 +  if (desc == "java.lang.ClassNotFoundException") return;
 +  std::string dump = t->Dump();
 +  size_t pos = 0;
-+  for (int lines = 0; lines < 10 && pos != std::string::npos; lines++) {
++  for (int lines = 0; lines < max_lines && pos != std::string::npos; lines++) {
 +    pos = dump.find('\n', pos + 1);
 +  }
 +  if (pos != std::string::npos) dump.resize(pos);

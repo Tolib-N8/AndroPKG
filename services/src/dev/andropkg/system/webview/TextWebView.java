@@ -189,6 +189,7 @@ public final class TextWebView implements InvocationHandler {
     // ---- content ------------------------------------------------------------------------
 
     private void load(String target) {
+        Log.i(TAG, "load " + (target != null && target.length() > 200 ? target.substring(0, 200) + "..." : target));
         String html;
         String mime = "text/html";
         try {
