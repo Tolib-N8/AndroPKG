@@ -38,7 +38,7 @@ if [ "${1:-}" = --apk ]; then
   [ -n "${ANDROPKG_INTERACTIVE:-}" ] || envs="$envs, \"ANDROPKG_AUTOFINISH\": \"1\""
   # Test hooks (ANDROPKG_TEST_TAP=x,y in window pixels, _TYPE, _SWIPE, _BACK, _BACKGROUND)
   # are passed through to the app.
-  for v in $(env | sed -En 's/^(ANDROPKG_((TEST|LOG)_[A-Z_]*|RENDER_SCALE|DIRTY_RECTS|VERBOSE|NTERP))=.*/\1/p'); do
+  for v in $(env | sed -En 's/^(ANDROPKG_((TEST|LOG)_[A-Z_]*|RENDER_SCALE|DIRTY_RECTS|VERBOSE|NO_NTERP))=.*/\1/p'); do
     envs="$envs, \"$v\": \"$(printenv "$v")\""
   done
 else

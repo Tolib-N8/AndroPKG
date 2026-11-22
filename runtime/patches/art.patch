@@ -1526,7 +1526,7 @@ index 4d5af39..ab95aba 100644
  }  // namespace interpreter
  }  // namespace art
 diff --git a/runtime/interpreter/mterp/nterp_impl.cc b/runtime/interpreter/mterp/nterp_impl.cc
-index f2a9855..8dfdacf 100644
+index f2a9855..56414f2 100644
 --- a/runtime/interpreter/mterp/nterp_impl.cc
 +++ b/runtime/interpreter/mterp/nterp_impl.cc
 @@ -18,6 +18,11 @@
@@ -1547,9 +1547,9 @@ index f2a9855..8dfdacf 100644
    // interpreter-only runtime to always be in a switch-like interpreter.
 +#ifdef ANDROPKG
 +  // andropkg: nterp decompresses references with `orr xN, xN, #base` (mterp/arm64ng), which
-+  // needs the reference arena at its preferred base. Opt-in (ANDROPKG_NTERP=1) while the port
-+  // is young.
-+  static const bool enabled = getenv("ANDROPKG_NTERP") != nullptr;
++  // needs the reference arena at its preferred base. ANDROPKG_NO_NTERP=1 keeps the switch
++  // interpreter.
++  static const bool enabled = getenv("ANDROPKG_NO_NTERP") == nullptr;
 +  if (!enabled || gAndropkgRefBase != kAndropkgRefArenaPreferredBase) {
 +    return false;
 +  }

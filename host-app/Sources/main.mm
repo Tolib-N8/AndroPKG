@@ -222,8 +222,8 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   }
   std::vector<std::string> opts = {
       "-Xbootclasspath:" + bcp, "-Xbootclasspath-locations:" + bcp, "-Xusejit:false",
-      // -Xint keeps every method in the switch interpreter; nterp (ANDROPKG_NTERP) needs it off.
-      getenv("ANDROPKG_NTERP") ? "-Xusejit:false" : "-Xint",
+      // -Xint keeps every method in the switch interpreter (ANDROPKG_NO_NTERP); nterp needs it off.
+      getenv("ANDROPKG_NO_NTERP") ? "-Xint" : "-Xusejit:false",
       // A phone's heap configuration (dalvik.vm.heapgrowthlimit / heapsize).
       "-Xms8m", "-Xmx512m", "-XX:HeapGrowthLimit=256m", "-XX:HeapTargetUtilization=0.75",
       "-XX:HeapMinFree=2m", "-XX:HeapMaxFree=8m",
