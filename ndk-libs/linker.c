@@ -162,7 +162,16 @@ static void *resolve(const apk_image *img, const char *name, const Elf64_Sym *sy
 static ndk_lib *load_locked2(const char *elf_path, char *err, size_t errlen, bool run_init);
 static ndk_lib *load_locked(const char *elf_path, char *err, size_t errlen) { return load_locked2(elf_path, err, errlen, true); }
 
-static ndk_lib *load_locked2(const char *elf_path, char *err, size_t errlen, bool run_init) {
+static ndk_lib *load_locked2(const char *elf_path_in, char *err, size_t errlen, bool run_init) {
+    // lib<x>.dylib (the name System.mapLibraryName gives, which JNA and others dlopen
+    // directly) is a link to lib<x>.so: load the ELF it names, once, whichever name is used.
+    char resolved[PATH_MAX];
+    const char *elf_path = elf_path_in;
+    size_t path_len = strlen(elf_path_in);
+    if (path_len > 6 && strcmp(elf_path_in + path_len - 6, ".dylib") == 0 && realpath(elf_path_in, resolved) &&
+        strcmp(resolved, elf_path_in) != 0) {
+        elf_path = resolved;
+    }
     ndk_lib *l = find_loaded(elf_path);
     if (l) return l;
     char wrapped[PATH_MAX];

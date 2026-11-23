@@ -94,7 +94,7 @@ echo "ok   media checks"
 scripts/prepare-native-libs.sh build/apps/ndk.apk build/android-root/data/app/ndk/lib macos >/dev/null
 run ndk "\[ndk\] done" $(apk ndk)
 for want in "hello: n=42 d=2.50 hex=0x2a str=ok big=1099511627776" "callback: 36" "threads: 10000" \
-    "files: stat=0 size=27 reg=1 entries>0=1 enoent=1" \
+    "files: stat=0 size=27 reg=1 entries>0=1 enoent=1 fallocate=0 grown=65536 mmap=1" \
     "direct: cap=16 sum=136 written=11223344 setjmp=42 count=2" \
     "stackargs: 1 2 3 4 5 6 7 8 9 10 -11 12 65 1.5 2.5" \
     "aaudio: open=0,0 start=0 callbacks>0=1 frames>0=1 state=STOPPED rate=48000 write=4800" \

@@ -165,6 +165,47 @@ NDK_EXPORT int bionic_fsync(int fd) { RET(fsync(fd)); }
 NDK_EXPORT int bionic_fdatasync(int fd) { RET(fsync(fd)); }
 NDK_EXPORT int bionic_ftruncate(int fd, off_t n) { RET(ftruncate(fd, n)); }
 NDK_EXPORT int bionic_ftruncate64(int fd, off_t n) { RET(ftruncate(fd, n)); }
+// posix_fallocate: Darwin has none. The file grows to offset+len (storage reserved with
+// F_PREALLOCATE when it can be): databases (Realm, ...) extend a file this way before writing
+// to it through mmap, which faults (SIGBUS) beyond the end of a file that did not grow.
+// Returns an error number (Linux values), as POSIX says; fallocate() returns -1 and sets errno.
+static int grow_file(int fd, off_t offset, off_t len) {
+    if (offset < 0 || len <= 0) return EINVAL;
+    struct stat st;
+    if (fstat(fd, &st) != 0) return errno;
+    if (!S_ISREG(st.st_mode)) return S_ISFIFO(st.st_mode) ? ESPIPE : ENODEV;
+    off_t end = offset + len;
+    if (end <= st.st_size) return 0;
+    fstore_t fs = {F_ALLOCATECONTIG | F_ALLOCATEALL, F_PEOFPOSMODE, 0, end - st.st_size, 0};
+    if (fcntl(fd, F_PREALLOCATE, &fs) == -1) {
+        fs.fst_flags = F_ALLOCATEALL;
+        (void)fcntl(fd, F_PREALLOCATE, &fs);  // (best effort: ftruncate still makes room)
+    }
+    return ftruncate(fd, end) == 0 ? 0 : errno;
+}
+NDK_EXPORT int bionic_posix_fallocate(int fd, off_t offset, off_t len) {
+    int e = grow_file(fd, offset, len);
+    return e ? ndk_errno_to_linux(e) : 0;
+}
+NDK_EXPORT int bionic_posix_fallocate64(int fd, off_t offset, off_t len) { return bionic_posix_fallocate(fd, offset, len); }
+NDK_EXPORT int bionic_fallocate(int fd, int mode, off_t offset, off_t len) {
+    if (mode & ~1) {  // only FALLOC_FL_KEEP_SIZE (1) and plain allocation
+        errno = ENOTSUP;
+        ndk_fix_errno();
+        return -1;
+    }
+    int e = 0;
+    if (!(mode & 1)) {
+        e = grow_file(fd, offset, len);
+    }
+    if (e) {
+        errno = e;
+        ndk_fix_errno();
+        return -1;
+    }
+    return 0;
+}
+NDK_EXPORT int bionic_fallocate64(int fd, int mode, off_t offset, off_t len) { return bionic_fallocate(fd, mode, offset, len); }
 NDK_EXPORT int bionic_truncate(const char *p, off_t n) { PATH(p); RET(truncate(t_p, n)); }
 NDK_EXPORT int bionic_isatty(int fd) { int r = isatty(ndk_proc_fd(fd)); if (!r) ndk_fix_errno(); return r; }
 NDK_EXPORT int bionic_flock(int fd, int op) { RET(flock(fd, op)); }  // LOCK_* values match

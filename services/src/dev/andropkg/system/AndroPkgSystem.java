@@ -288,6 +288,7 @@ public final class AndroPkgSystem {
         services.put("window", LocalService.create("android.view.IWindowManager", new WindowManagerImpl(display)));
         services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
+        services.put("locale", LocalService.create("android.app.ILocaleManager", new LocaleManagerImpl()));
         services.put("notification", LocalService.create("android.app.INotificationManager", new NotificationManagerImpl()));
         services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
         services.put("connectivity", LocalService.create("android.net.IConnectivityManager", new ConnectivityManagerImpl()));

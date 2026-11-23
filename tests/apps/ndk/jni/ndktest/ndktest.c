@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #define TAG "ndktest"
@@ -86,8 +87,23 @@ static jstring files(JNIEnv* env, jclass cls, jstring jdir) {
     if (d) closedir(d);
     errno = 0;
     int missing = open("/nonexistent/file", 0);
-    snprintf(out, sizeof out, "stat=%d size=%lld reg=%d entries>0=%d enoent=%d", r, (long long)st.st_size,
-             S_ISREG(st.st_mode), entries > 0, missing < 0 && errno == ENOENT);
+    int enoent = missing < 0 && errno == ENOENT;
+    // A file grown with posix_fallocate, then written through mmap (databases: Realm).
+    snprintf(path, sizeof path, "%s/grown.bin", dir);
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int fa = posix_fallocate(fd, 0, 65536);
+    struct stat gst;
+    fstat(fd, &gst);
+    char* m = mmap(NULL, 65536, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int mapped = m != MAP_FAILED;
+    if (mapped) {
+        m[65535] = 'z';
+        *(unsigned short*)(m + 1) = 0x1001;  // (an unaligned store, as Realm's header write)
+        munmap(m, 65536);
+    }
+    close(fd);
+    snprintf(out, sizeof out, "stat=%d size=%lld reg=%d entries>0=%d enoent=%d fallocate=%d grown=%lld mmap=%d",
+             r, (long long)st.st_size, S_ISREG(st.st_mode), entries > 0, enoent, fa, (long long)gst.st_size, mapped);
     (*env)->ReleaseStringUTFChars(env, jdir, dir);
     return (*env)->NewStringUTF(env, out);
 }
