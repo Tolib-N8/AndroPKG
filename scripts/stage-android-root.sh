@@ -34,8 +34,11 @@ cp -R "$pb/apex-etc/com.android.tzdata/." "$out/apex/com.android.tzdata/etc/"
 mkdir -p "$out/apex/com.android.conscrypt"
 cp -R "$pb/cacerts" "$out/apex/com.android.conscrypt/cacerts"
 cp "$root/build/services/services.dex" "$out/system/framework/andropkg-services.dex"
+# ANDROPKG_STAGE_ONLY=<name>: only that app (an IPA of one app, scripts/convert-ipa.sh).
+only="${ANDROPKG_STAGE_ONLY:-}"
 for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
   [ -f "$a" ] || continue
+  [ -z "$only" ] || [ "$(basename "$a" .apk)" = "$only" ] || continue
   cp "$a" "$out/test/"
   v="$(dirname "$a")/oat/arm64/$(basename "$a" .apk).vdex"  # (scripts/preverify.sh <apk>)
   if [ -z "${ANDROPKG_NO_PREVERIFY:-}" ] && [ -f "$v" ]; then mkdir -p "$out/test/oat/arm64"; cp "$v" "$out/test/oat/arm64/"; fi
@@ -43,10 +46,12 @@ done
 # Split packages (scripts/unpack-bundle.sh): directories with a base.apk.
 for d in "$root"/build/apps-ext/*/; do
   [ -f "$d/base.apk" ] || continue
+  [ -z "$only" ] || [ "$(basename "$d")" = "$only" ] || continue
   n=$(basename "$d"); rm -rf "$out/test/$n"; mkdir -p "$out/test/$n"; cp "$d"*.apk "$out/test/$n/"
   if [ -z "${ANDROPKG_NO_PREVERIFY:-}" ] && [ -d "$d/oat" ]; then cp -R "$d/oat" "$out/test/$n/"; fi
 done
 for t in "$root"/build/tests/*/classes.dex; do
+  [ -z "$only" ] || break
   cp "$t" "$out/test/$(basename "$(dirname "$t")").dex"
 done
 du -sh "$out"

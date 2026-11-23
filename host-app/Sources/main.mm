@@ -347,6 +347,8 @@ static void* VMThread(void*) {
   // The APK to run: ANDROPKG_APK (scripts/runner-ios.sh), else the last one run that way, so
   // tapping the home-screen icon opens that Android app.
   NSString* lastApk = [NSUserDefaults.standardUserDefaults stringForKey:@"andropkg.lastApk"];
+  // An app converted to an IPA (scripts/convert-ipa.sh) names its APK in Info.plist.
+  if (NSString* own = NSBundle.mainBundle.infoDictionary[@"AndroPkgAPK"]) lastApk = own;
   if (const char* env_apk = getenv("ANDROPKG_APK")) {
     [NSUserDefaults.standardUserDefaults setObject:@(env_apk) forKey:@"andropkg.lastApk"];
     lastApk = @(env_apk);

@@ -116,6 +116,11 @@ public final class AndroPkgSystem {
         // hwui's GPU pipeline (RenderThread over Metal) is ported.
         Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
         parsePackage();
+        String iconOut = System.getenv("ANDROPKG_RENDER_ICON");
+        if (iconOut != null) {
+            renderIcon(iconOut);
+            System.exit(0);
+        }
         if (System.getenv("ANDROPKG_PREVERIFY") != null) {
             // scripts/preverify.sh: the runtime verifies every class of the APK as its dex files
             // load, writes the vdex and exits. Only the class loader is needed: the app itself
@@ -135,6 +140,55 @@ public final class AndroPkgSystem {
         // Never returns: the app's main looper takes over this thread.
         Hidden.callStatic(Hidden.cls("android.app.ActivityThread"), "main",
                 (Object) new String[] {"seq=1"});
+    }
+
+    /**
+     * scripts/convert-ipa.sh: the app's launcher icon as a 1024x1024 PNG, drawn by the framework
+     * itself (adaptive and vector icons included). An adaptive icon is drawn whole, background and
+     * foreground without a mask: iOS applies its own.
+     */
+    private static void renderIcon(String out) {
+        try {
+            android.content.res.AssetManager am = (android.content.res.AssetManager)
+                    android.content.res.AssetManager.class.getDeclaredConstructor().newInstance();
+            Hidden.call(am, "addAssetPath", appInfo.sourceDir);
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            dm.setToDefaults();
+            dm.densityDpi = android.util.DisplayMetrics.DENSITY_XXXHIGH;
+            dm.density = dm.densityDpi / 160f;
+            dm.scaledDensity = dm.density;
+            android.content.res.Configuration config = new android.content.res.Configuration();
+            config.densityDpi = dm.densityDpi;
+            android.content.res.Resources res = new android.content.res.Resources(am, dm, config);
+            int id = appInfo.icon != 0 ? appInfo.icon : appInfo.logo;
+            android.graphics.drawable.Drawable d = res.getDrawableForDensity(id, dm.densityDpi, null);
+            final int size = 1024;
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(size, size,
+                    android.graphics.Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
+            canvas.drawColor(0xFFFFFFFF);
+            if (d instanceof android.graphics.drawable.AdaptiveIconDrawable) {
+                android.graphics.drawable.AdaptiveIconDrawable a = (android.graphics.drawable.AdaptiveIconDrawable) d;
+                // Layers are 108dp of which the middle 72dp show: scale that part to the icon.
+                int layer = size * 108 / 72, inset = (layer - size) / 2;
+                for (android.graphics.drawable.Drawable part : new android.graphics.drawable.Drawable[] {
+                        a.getBackground(), a.getForeground()}) {
+                    if (part == null) continue;
+                    part.setBounds(-inset, -inset, size + inset, size + inset);
+                    part.draw(canvas);
+                }
+            } else {
+                d.setBounds(0, 0, size, size);
+                d.draw(canvas);
+            }
+            try (java.io.FileOutputStream f = new java.io.FileOutputStream(out)) {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, f);
+            }
+            Log.i(TAG, "icon -> " + out);
+        } catch (Throwable t) {
+            Log.e(TAG, "rendering the icon failed", t);
+            System.exit(1);
+        }
     }
 
     private static String appInfoName() { return appInfo != null ? appInfo.packageName : "?"; }

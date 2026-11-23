@@ -121,6 +121,8 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
 
 ## ⏳ Delivery
 
-- ⏳ Convert APKs to IPAs from the command line (`andropkg convert app.apk -o app.ipa`).
+- ✅ Convert APKs to IPAs from the command line (`scripts/convert-ipa.sh app.apk -o app.ipa
+  [--install]`): one app per IPA, with its name and launcher icon (drawn by the framework,
+  adaptive icons too), native libraries converted and signed, classes preverified.
 - ⏳ Sign on the device from the host app, so APKs install without a computer.
 - ⏳ Packaging for AltStore/SideStore.
