@@ -95,8 +95,13 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
 | **Yandex Music** | ✅ Sign-in (WebView), persisted session, Compose UI, playback, video covers. |
 | **Spotify** | ✅ Launch (about 2 s to first frame) and sign-in. Content depends on the account region. |
 
-- 🔄 Build a corpus of 10–20 popular APKs (messengers, social, media, games, utilities) and
-  fix the shared gaps.
+- 🔄 Build a corpus of popular APKs (messengers, social, media, games, utilities) and fix the
+  shared gaps. 25 apps so far (`scripts/corpus-mac.sh`), 24 reach their first frame, among
+  them NewPipe, AntennaPod, Conversations, and the libGDX games Shattered Pixel Dungeon and
+  Mindustry.
+- ⏳ libffi closures without JIT: JNA's direct mapping (Element's Matrix crypto) needs
+  executable trampolines, which iOS forbids. Planned: pre-signed trampoline tables, as
+  Apple's own libffi uses.
 - ✅ Multi-touch: pointer down/up, moves with every finger, batched history.
 - ⏳ Hardware keyboards and mouse/trackpad pointers.
 - ⏳ Notifications delivered as iOS notifications, and background playback controls.
