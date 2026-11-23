@@ -103,8 +103,11 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
   image's `ffi_closure_alloc`/`ffi_closure_free` to an allocator whose trampolines are
   pre-signed, and replaces reads of `CTR_EL0` (forbidden on Apple) with a constant.
 - ✅ Multi-touch: pointer down/up, moves with every finger, batched history.
+- ✅ JobScheduler: apps' background work (WorkManager) runs, as Yandex Music's library sync.
+- ✅ Video decoders hold back input when their output piles up (no runaway memory).
 - ⏳ Hardware keyboards and mouse/trackpad pointers.
-- ⏳ Notifications delivered as iOS notifications, and background playback controls.
+- 🔄 Notifications delivered as iOS notifications, and playback controls on the lock screen
+  and in Control Center (MediaSession → Now Playing).
 - ⏳ Camera (Camera2 on AVCaptureSession) and the photo picker.
 - ⏳ `NsdManager` / service discovery, and Bluetooth basics.
 - ⏳ A microG-style replacement for common Google Play Services APIs.
@@ -124,5 +127,10 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
 - ✅ Convert APKs to IPAs from the command line (`scripts/convert-ipa.sh app.apk -o app.ipa
   [--install]`): one app per IPA, with its name and launcher icon (drawn by the framework,
   adaptive icons too), native libraries converted and signed, classes preverified.
-- ⏳ Sign on the device from the host app, so APKs install without a computer.
+- ✅ A launcher in the host app: APKs open in AndroPkg (Files, the share sheet, a picker) and
+  run without a computer; each app shows its own name and icon.
+- ⏳ Convert and sign native libraries on the device, so apps with native code (most popular
+  apps) install without a computer too.
+- ⏳ **App stores inside AndroPkg** (RuStore, F-Droid): a `PackageInstaller` bridge, so an
+  APK a store downloads and installs lands in the launcher.
 - ⏳ Packaging for AltStore/SideStore.
