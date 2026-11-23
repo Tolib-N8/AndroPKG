@@ -1,5 +1,6 @@
 // andropkg runner (M1): boots ART + Android 14 libcore inside an iOS app and runs a dex's
 // main(). Output goes to stdout (devicectl --console) and to the screen.
+#import "Launcher.h"
 #import <CoreMotion/CoreMotion.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <UIKit/UIKit.h>
@@ -339,6 +340,20 @@ static int RunDex(NSString* dex_path, const char* main_class, const std::vector<
   return 0;
 }
 
+static NSString* g_chosen_apk;   // the launcher's choice
+static bool g_launcher;           // no APK given: AndroPkg opens on its list of apps
+static void* VMThread(void*);
+static void StartVM() {
+  static bool started;
+  if (started) return;
+  started = true;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack
+  pthread_t t;
+  pthread_create(&t, &attr, VMThread, nullptr);
+}
+
 static void* VMThread(void*) {
   NSString* root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"android-root"];
   std::vector<std::string> main_args;
@@ -354,6 +369,7 @@ static void* VMThread(void*) {
     lastApk = @(env_apk);
   }
   bool plain_java = getenv("ANDROPKG_DEX") || getenv("ANDROPKG_MAIN");
+  if (g_chosen_apk) lastApk = g_chosen_apk;  // picked in the launcher (an absolute path)
   if (const char* apk = (lastApk && !plain_java) ? lastApk.UTF8String : nullptr) {
     // An Android app: andropkg's system services boot ActivityThread for the APK.
     dex_rel = "system/framework/andropkg-services.dex";
@@ -364,7 +380,10 @@ static void* VMThread(void*) {
         NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
     NSString* data = [[support stringByAppendingPathComponent:@"andropkg/data/app"] stringByAppendingPathComponent:name];
     [NSFileManager.defaultManager createDirectoryAtPath:data withIntermediateDirectories:YES attributes:nil error:nil];
-    main_args = {[root stringByAppendingPathComponent:@(apk)].fileSystemRepresentation, data.fileSystemRepresentation};
+    NSString* apk_path = [@(apk) hasPrefix:@"/"] ? @(apk) : [root stringByAppendingPathComponent:@(apk)];
+    main_args = {apk_path.fileSystemRepresentation, data.fileSystemRepresentation};
+    // The runtime writes the app's name and icon here the first time it runs (the launcher's).
+    g_extra_vm_options.push_back(std::string("-Dandropkg.metaDir=") + AndropkgMetaDir(name).fileSystemRepresentation);
     // Converted, signed native libraries of this APK (scripts/prepare-native-libs.sh).
     NSString* native = [[root stringByAppendingPathComponent:@"native"] stringByAppendingPathComponent:name];
     if ([NSFileManager.defaultManager fileExistsAtPath:native]) {
@@ -431,8 +450,34 @@ static void SetAppVisible(int visible) {
                                                    queue:nil usingBlock:^(NSNotification*) { SetAppVisible(0); }];
   [NSNotificationCenter.defaultCenter addObserverForName:UISceneWillEnterForegroundNotification object:scene
                                                    queue:nil usingBlock:^(NSNotification*) { SetAppVisible(1); }];
-  self.window.rootViewController = vc;
+  if (g_launcher) {
+    __weak UIWindow* window = self.window;
+    self.window.rootViewController = AndropkgLauncherController(^(NSString* apk) {
+      g_chosen_apk = apk;
+      window.rootViewController = vc;
+      StartVM();
+    });
+  } else {
+    self.window.rootViewController = vc;
+  }
   [self.window makeKeyAndVisible];
+  [self importApks:o.URLContexts];
+}
+// An APK opened in AndroPkg (Files, the share sheet): installed for the launcher.
+- (void)scene:(UIScene*)scene openURLContexts:(NSSet<UIOpenURLContext*>*)contexts {
+  [self importApks:contexts];
+}
+- (void)importApks:(NSSet<UIOpenURLContext*>*)contexts {
+  for (UIOpenURLContext* c in contexts) {
+    if (!c.URL.isFileURL) continue;
+    NSString* err = nil;
+    if (AndropkgImportApk(c.URL, &err)) {
+      Log([NSString stringWithFormat:@"installed %@", c.URL.lastPathComponent]);
+    } else {
+      Log([NSString stringWithFormat:@"could not install %@: %@", c.URL.lastPathComponent, err]);
+    }
+  }
+  if (contexts.count) [NSNotificationCenter.defaultCenter postNotificationName:AndropkgAppsChanged object:nil];
 }
 @end
 
@@ -474,11 +519,11 @@ static void SetAppVisible(int visible) {
     static dispatch_source_t keep;
     keep = timer;
   }
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setstacksize(&attr, 8 << 20);  // ART expects a large main-thread stack
-  pthread_t t;
-  pthread_create(&t, &attr, VMThread, nullptr);
+  // An APK to run (the runner's ANDROPKG_APK, a test's ANDROPKG_DEX/MAIN, a converted IPA's
+  // AndroPkgAPK) starts right away; otherwise the launcher lists the apps first.
+  g_launcher = !getenv("ANDROPKG_APK") && !getenv("ANDROPKG_DEX") && !getenv("ANDROPKG_MAIN") &&
+               !NSBundle.mainBundle.infoDictionary[@"AndroPkgAPK"];
+  if (!g_launcher) StartVM();
   return YES;
 }
 - (UISceneConfiguration*)application:(UIApplication*)app

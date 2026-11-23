@@ -12,6 +12,45 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- APKs open in AndroPkg (Files, Safari downloads, the share sheet): the launcher installs them. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Android app</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.android.package-archive</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.android.package-archive</string>
+			<key>UTTypeDescription</key>
+			<string>Android app</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.archive</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>apk</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.android.package-archive</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<!-- MediaPlayer streams plain-http radio and podcasts (AVFoundation is subject to ATS). -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

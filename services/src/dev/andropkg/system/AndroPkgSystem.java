@@ -118,9 +118,10 @@ public final class AndroPkgSystem {
         parsePackage();
         String iconOut = System.getenv("ANDROPKG_RENDER_ICON");
         if (iconOut != null) {
-            renderIcon(iconOut);
+            if (!renderIcon(iconOut, 1024)) System.exit(1);
             System.exit(0);
         }
+        writeLauncherMeta(System.getProperty("andropkg.metaDir"));
         if (System.getenv("ANDROPKG_PREVERIFY") != null) {
             // scripts/preverify.sh: the runtime verifies every class of the APK as its dex files
             // load, writes the vdex and exits. Only the class loader is needed: the app itself
@@ -147,22 +148,43 @@ public final class AndroPkgSystem {
      * itself (adaptive and vector icons included). An adaptive icon is drawn whole, background and
      * foreground without a mask: iOS applies its own.
      */
-    private static void renderIcon(String out) {
+    /** The iOS launcher's name and icon for this app (host-app Launcher.mm), once. */
+    private static void writeLauncherMeta(String dir) {
+        if (dir == null || new java.io.File(dir, "label").exists()) return;
         try {
-            android.content.res.AssetManager am = (android.content.res.AssetManager)
-                    android.content.res.AssetManager.class.getDeclaredConstructor().newInstance();
-            Hidden.call(am, "addAssetPath", appInfo.sourceDir);
-            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
-            dm.setToDefaults();
-            dm.densityDpi = android.util.DisplayMetrics.DENSITY_XXXHIGH;
-            dm.density = dm.densityDpi / 160f;
-            dm.scaledDensity = dm.density;
-            android.content.res.Configuration config = new android.content.res.Configuration();
-            config.densityDpi = dm.densityDpi;
-            android.content.res.Resources res = new android.content.res.Resources(am, dm, config);
+            new java.io.File(dir).mkdirs();
+            CharSequence label = appResources().getText(appInfo.labelRes, appInfo.nonLocalizedLabel);
+            if (label == null || label.length() == 0) label = appInfo.packageName;
+            renderIcon(dir + "/icon.png", 256);
+            try (java.io.FileOutputStream f = new java.io.FileOutputStream(new java.io.File(dir, "label"))) {
+                f.write(label.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "launcher name/icon", t);
+        }
+    }
+
+    private static android.content.res.Resources appResources() throws Exception {
+        android.content.res.AssetManager am = (android.content.res.AssetManager)
+                android.content.res.AssetManager.class.getDeclaredConstructor().newInstance();
+        Hidden.call(am, "addAssetPath", appInfo.sourceDir);
+        android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+        dm.setToDefaults();
+        dm.densityDpi = android.util.DisplayMetrics.DENSITY_XXXHIGH;
+        dm.density = dm.densityDpi / 160f;
+        dm.scaledDensity = dm.density;
+        android.content.res.Configuration config = new android.content.res.Configuration();
+        config.densityDpi = dm.densityDpi;
+        config.setLocale(java.util.Locale.getDefault());
+        return new android.content.res.Resources(am, dm, config);
+    }
+
+    private static boolean renderIcon(String out, final int size) {
+        try {
+            android.content.res.Resources res = appResources();
             int id = appInfo.icon != 0 ? appInfo.icon : appInfo.logo;
-            android.graphics.drawable.Drawable d = res.getDrawableForDensity(id, dm.densityDpi, null);
-            final int size = 1024;
+            android.graphics.drawable.Drawable d = res.getDrawableForDensity(id,
+                    android.util.DisplayMetrics.DENSITY_XXXHIGH, null);
             android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(size, size,
                     android.graphics.Bitmap.Config.ARGB_8888);
             android.graphics.Canvas canvas = new android.graphics.Canvas(bitmap);
@@ -185,9 +207,10 @@ public final class AndroPkgSystem {
                 bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, f);
             }
             Log.i(TAG, "icon -> " + out);
+            return true;
         } catch (Throwable t) {
             Log.e(TAG, "rendering the icon failed", t);
-            System.exit(1);
+            return false;
         }
     }
 
@@ -343,6 +366,7 @@ public final class AndroPkgSystem {
         services.put("input", LocalService.create("android.hardware.input.IInputManager", new InputManagerImpl()));
         services.put("user", LocalService.create("android.os.IUserManager", new UserManagerImpl()));
         services.put("locale", LocalService.create("android.app.ILocaleManager", new LocaleManagerImpl()));
+        services.put("jobscheduler", LocalService.create("android.app.job.IJobScheduler", new JobSchedulerImpl()));
         services.put("notification", LocalService.create("android.app.INotificationManager", new NotificationManagerImpl()));
         services.put("mount", LocalService.create("android.os.storage.IStorageManager", new StorageManagerImpl()));
         services.put("connectivity", LocalService.create("android.net.IConnectivityManager", new ConnectivityManagerImpl()));

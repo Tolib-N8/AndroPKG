@@ -84,7 +84,10 @@ public class MainActivity extends Activity {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
                 Log.i(TAG, "[video] texture available " + w + "x" + h);
                 Surface surface = new Surface(st);
-                new Thread(() -> play(mime + " (texture)", mime, asset, audType, surface), "texture").start();
+                new Thread(() -> {
+                    play(mime + " (texture)", mime, asset, audType, surface);
+                    backpressure(surface);
+                }, "texture").start();
             }
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) {}
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { return true; }
@@ -285,6 +288,39 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[video] " + label + " units=" + units.size() + " rendered=" + rendered + " format=" + outFormat);
         } catch (Exception e) {
             Log.e(TAG, "[video] " + label + " failed", e);
+        }
+    }
+
+    /**
+     * A decoder whose outputs are never taken stops taking input (as a hardware codec does once
+     * its output buffers are full) instead of decoding everything it is given into memory.
+     */
+    void backpressure(Surface surface) {
+        try {
+            List<byte[]> units = accessUnits(read("green_avc.bin"), false, 9);
+            MediaCodec codec = MediaCodec.createDecoderByType("video/avc");
+            codec.configure(MediaFormat.createVideoFormat("video/avc", 320, 240), surface, null, 0);
+            codec.start();
+            int queued = 0, misses = 0;
+            while (queued < 200 && misses < 20) {
+                int in = codec.dequeueInputBuffer(2000);
+                if (in < 0) {
+                    misses++;
+                    continue;
+                }
+                byte[] u = units.get(queued % units.size());
+                ByteBuffer buf = codec.getInputBuffer(in);
+                buf.clear();
+                buf.put(u);
+                codec.queueInputBuffer(in, 0, u.length, queued * 33333L, 0);
+                queued++;
+                misses = 0;
+            }
+            codec.stop();
+            codec.release();
+            Log.i(TAG, "[video] backpressure bounded=" + (queued < 60) + " queued=" + queued);
+        } catch (Exception e) {
+            Log.e(TAG, "[video] backpressure failed", e);
         }
     }
 

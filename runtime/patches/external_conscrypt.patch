@@ -1,0 +1,101 @@
+diff --git a/common/src/jni/main/cpp/conscrypt/native_crypto.cc b/common/src/jni/main/cpp/conscrypt/native_crypto.cc
+index d037e4f..56a1df0 100644
+--- a/common/src/jni/main/cpp/conscrypt/native_crypto.cc
++++ b/common/src/jni/main/cpp/conscrypt/native_crypto.cc
+@@ -8214,6 +8214,45 @@ static jbyteArray NativeCrypto_getApplicationProtocol(JNIEnv* env, jclass, jlong
+     return result;
+ }
+ 
++#if defined(__APPLE__)
++// andropkg: ANDROPKG_LOG_HTTP=1 (debugging an app's network traffic without a proxy or its
++// tokens): HTTP/2 is not offered (ALPN), so apps speak HTTP/1.1, and the request line (no query)
++// with its Host, and the response status line, are logged. Headers and bodies are not.
++static bool andropkg_log_http() {
++    static const bool on = getenv("ANDROPKG_LOG_HTTP") != nullptr;
++    return on;
++}
++static void andropkg_http_line(const char* buf, int len, bool out) {
++    if (!andropkg_log_http() || len <= 0) return;
++    static const char* kMethods[] = {"GET ", "POST ", "PUT ", "DELETE ", "PATCH ", "HEAD ", "HTTP/1."};
++    bool match = false;
++    for (const char* m : kMethods) {
++        size_t n = strlen(m);
++        if (static_cast<size_t>(len) >= n && memcmp(buf, m, n) == 0) match = true;
++    }
++    if (!match) return;
++    int end = 0;
++    while (end < len && end < 300 && buf[end] != '\r' && buf[end] != '\n') end++;
++    std::string line(buf, static_cast<size_t>(end));
++    if (out) {
++        size_t q = line.find('?');
++        size_t sp = line.rfind(' ');
++        if (q != std::string::npos && sp != std::string::npos && q < sp) line.erase(q, sp - q);
++        const char* host = static_cast<const char*>(memmem(buf, static_cast<size_t>(len), "\r\nHost: ", 8));
++        if (host != nullptr) {
++            const char* h = host + 8;
++            const char* e = h;
++            while (e < buf + len && *e != '\r') e++;
++            line += "  [" + std::string(h, static_cast<size_t>(e - h)) + "]";
++        }
++    }
++    __android_log_print(ANDROID_LOG_INFO, "andropkg-http", "%s %s", out ? ">>" : "<<", line.c_str());
++}
++#else
++static bool andropkg_log_http() { return false; }
++static void andropkg_http_line(const char*, int, bool) {}
++#endif
++
+ static void NativeCrypto_setApplicationProtocols(JNIEnv* env, jclass, jlong ssl_address,
+                                                  CONSCRYPT_UNUSED jobject ssl_holder,
+                                                  jboolean client_mode, jbyteArray protocols) {
+@@ -8241,7 +8280,17 @@ static void NativeCrypto_setApplicationProtocols(JNIEnv* env, jclass, jlong ssl_
+             }
+ 
+             const unsigned char* tmp = reinterpret_cast<const unsigned char*>(protosBytes.get());
+-            int ret = SSL_set_alpn_protos(ssl, tmp, static_cast<unsigned int>(protosBytes.size()));
++            unsigned int tmp_len = static_cast<unsigned int>(protosBytes.size());
++            std::vector<unsigned char> http1;
++            if (andropkg_log_http()) {  // drop "h2": length-prefixed protocol names
++                for (unsigned int i = 0; i < tmp_len && i + 1 + tmp[i] <= tmp_len; i += 1 + tmp[i]) {
++                    if (tmp[i] == 2 && memcmp(tmp + i + 1, "h2", 2) == 0) continue;
++                    http1.insert(http1.end(), tmp + i, tmp + i + 1 + tmp[i]);
++                }
++                tmp = http1.data();
++                tmp_len = static_cast<unsigned int>(http1.size());
++            }
++            int ret = SSL_set_alpn_protos(ssl, tmp, tmp_len);
+             if (ret != 0) {
+                 conscrypt::jniutil::throwSSLExceptionStr(env,
+                                                          "Unable to set ALPN protocols for client");
+@@ -8539,6 +8588,7 @@ static int sslRead(JNIEnv* env, SSL* ssl, jobject fdObject, jobject shc, char* b
+             return THROWN_EXCEPTION;
+         }
+         int result = SSL_read(ssl, buf, len);
++        andropkg_http_line(buf, result, false);
+         appData->clearCallbackState();
+         // callbacks can happen if server requests renegotiation
+         if (env->ExceptionCheck()) {
+@@ -8812,6 +8862,7 @@ static int sslWrite(JNIEnv* env, SSL* ssl, jobject fdObject, jobject shc, const
+         }
+         JNI_TRACE("ssl=%p sslWrite SSL_write len=%d", ssl, len);
+         int result = SSL_write(ssl, buf, len);
++        andropkg_http_line(buf, result, true);
+         appData->clearCallbackState();
+         // callbacks can happen if server requests renegotiation
+         if (env->ExceptionCheck()) {
+@@ -9992,6 +10043,7 @@ static jint NativeCrypto_ENGINE_SSL_read_direct(JNIEnv* env, jclass, jlong ssl_a
+     errno = 0;
+ 
+     int result = SSL_read(ssl, destPtr, length);
++    andropkg_http_line(destPtr, result, false);
+     appData->clearCallbackState();
+     if (env->ExceptionCheck()) {
+         // An exception was thrown by one of the callbacks. Just propagate that exception.
+@@ -10275,6 +10327,7 @@ static int NativeCrypto_ENGINE_SSL_write_direct(JNIEnv* env, jclass, jlong ssl_a
+     errno = 0;
+ 
+     int result = SSL_write(ssl, sourcePtr, len);
++    andropkg_http_line(sourcePtr, result, true);
+     appData->clearCallbackState();
+     JNI_TRACE("ssl=%p NativeCrypto_ENGINE_SSL_write_direct address=%p length=%d shc=%p => ret=%d",
+               ssl, sourcePtr, len, shc, result);

@@ -58,6 +58,11 @@ final class LocalService {
                         if (name.equals("toString")) return "andropkg:" + shortName;
                     }
                     Method m = find(impl.getClass(), name, arity);
+                    // (A one-argument call must not land on the Object[] form below as if it
+                    // were the argument: that form always gets all the arguments.)
+                    if (m != null && m.getParameterCount() == 1 && m.getParameterTypes()[0] == Object[].class) {
+                        m = null;
+                    }
                     if (m != null) {
                         // Checked exceptions the AIDL method declares (FileNotFoundException from
                         // IContentProvider.openFile, ...) reach the caller as themselves.

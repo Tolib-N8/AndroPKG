@@ -587,6 +587,7 @@ class VideoDecoder {
   }
   void Drain() { draining_ = true; }
   bool Drained() const { return draining_ && frames_.empty(); }
+  size_t Pending() const { return frames_.size(); }  // decoded, not yet in an output buffer
   void Flush() {
     if (session_) VTDecompressionSessionWaitForAsynchronousFrames(session_);
     for (auto& f : frames_) CVPixelBufferRelease(f.second);
@@ -722,6 +723,10 @@ jfieldID gSurfaceNative;  // android.view.Surface.mNativeObject
 
 // ---- MediaCodec ----------------------------------------------------------------------------
 constexpr int kNumInput = 4, kNumOutput = 8;
+// Decoded video frames waiting for a free output buffer, beyond which input buffers are held
+// back (a hardware codec's backpressure). Without it a player that queues input faster than it
+// renders (ExoPlayer, before its surface shows) piled up frames: gigabytes on the iPhone.
+constexpr size_t kMaxPendingFrames = 6;
 constexpr size_t kInputSize = 128 * 1024, kOutputSize = 128 * 1024;
 enum { INFO_TRY_AGAIN_LATER = -1, INFO_OUTPUT_FORMAT_CHANGED = -2, INFO_OUTPUT_BUFFERS_CHANGED = -3 };
 enum { FLAG_END_OF_STREAM = 4, FLAG_CODEC_CONFIG = 2 };
@@ -744,6 +749,7 @@ struct Codec {
     int flags;
   };
   std::deque<Ready> ready;           // filled output buffers, not yet dequeued
+  std::vector<int> heldInputs;       // input buffers kept back while decoded frames pile up
   std::deque<float> pending;         // decoded PCM waiting for a free output buffer
   int64_t pendingPts = 0;
   bool pendingEos = false;
@@ -1007,6 +1013,7 @@ void cs_start(JNIEnv* env, jobject thiz) {
 void ResetQueues(Codec* c) {
   std::fill(std::begin(c->inFree), std::end(c->inFree), true);
   std::fill(std::begin(c->outFree), std::end(c->outFree), true);
+  c->heldInputs.clear();
   c->ready.clear();
   c->pending.clear();
   c->pendingEos = false;
@@ -1080,9 +1087,15 @@ void QueueInput(JNIEnv* env, Codec* c, int index, int offset, int size, int64_t 
         c->eosQueued = true;
         c->pendingPts = pts;
       }
-      c->inFree[index] = true;
-      inputBack = !c->eosQueued;
       made = FillVideoOutputs(c);
+      if (!c->eosQueued && c->vdec->Pending() > kMaxPendingFrames) {
+        c->inFree[index] = false;  // back once the app takes outputs (cs_releaseOutput)
+        c->heldInputs.push_back(index);
+        inputBack = false;
+      } else {
+        c->inFree[index] = true;
+        inputBack = !c->eosQueued;
+      }
     } else {
     std::vector<float> pcm;
     if (!(flags & FLAG_CODEC_CONFIG) && size > 0) c->dec->Decode(c->in[index].data() + offset, (size_t)size, &pcm);
@@ -1163,6 +1176,7 @@ void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean render, jb
   Codec* c = GetCodec(env, thiz);
   if (!c) return;
   std::vector<Codec::Ready> made;
+  std::vector<int> resumed;  // held input buffers given back
   CVPixelBufferRef show = nullptr;
   int64_t surface = 0;
   {
@@ -1179,6 +1193,10 @@ void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean render, jb
       c->frame[index] = nullptr;
     }
     made = c->vdec ? FillVideoOutputs(c) : FillOutputs(c);  // decoded data waiting for this buffer
+    if (c->vdec && !c->heldInputs.empty() && c->vdec->Pending() <= kMaxPendingFrames) {
+      resumed.swap(c->heldInputs);
+      if (!c->async) for (int i : resumed) c->inFree[i] = true;  // (async: posted below)
+    }
     if (c->async) {
       for (auto& r : made) {
         auto it = std::find_if(c->ready.begin(), c->ready.end(), [&](const Codec::Ready& x) { return x.index == r.index; });
@@ -1190,8 +1208,10 @@ void cs_releaseOutput(JNIEnv* env, jobject thiz, jint index, jboolean render, jb
     PostToSurface(surface, show);
     CVPixelBufferRelease(show);
   }
-  if (c->async)
+  if (c->async) {
     for (auto& r : made) Post(env, c, CB_OUTPUT_AVAILABLE, r.index, BufferInfo(env, 0, r.size, r.pts, r.flags));
+    for (int i : resumed) Post(env, c, CB_INPUT_AVAILABLE, i, nullptr);
+  }
 }
 
 void cs_setSurface(JNIEnv* env, jobject thiz, jobject surface) {  // MediaCodec.setOutputSurface

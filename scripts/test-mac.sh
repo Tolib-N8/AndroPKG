@@ -140,7 +140,7 @@ echo "ok   surfaceview checks"
 ANDROPKG_TEST_SCRIPT="wait 3500; pixel 540,300; pixel 540,690; pixel 540,1080; pixel 540,1850; pixel 200,2150" \
   run video "test: script done" $(apk video)
 for want in "video/avc units=30 rendered=30 format=320x240" "video/hevc units=30 rendered=30 format=320x240" \
-            "video/avc (texture) units=30 rendered=30 format=320x240" \
+            "video/avc (texture) units=30 rendered=30 format=320x240" "backpressure bounded=true" \
             "extractor tracks=video/avc audio/mp4a-latm size=320x240 csd=true samples=30 sync=2 rendered=30" \
             "videoview prepared 320x240 duration=2000" "videoview completed" \
             "codec c2.android.avc.decoder video/avc 1080p=true profiles=3 adaptive=true" \
