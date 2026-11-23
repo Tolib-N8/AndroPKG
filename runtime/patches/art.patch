@@ -2117,7 +2117,7 @@ index c735afa..88e0002 100644
      return odex_;
    }
 diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
-index 63e005d..f197cde 100644
+index 63e005d..257ac87 100644
 --- a/runtime/oat_file_manager.cc
 +++ b/runtime/oat_file_manager.cc
 @@ -34,7 +34,12 @@
@@ -2133,21 +2133,18 @@ index 63e005d..f197cde 100644
  #include "dex/art_dex_file_loader.h"
  #include "dex/dex_file-inl.h"
  #include "dex/dex_file_loader.h"
-@@ -174,6 +179,286 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
+@@ -174,6 +179,283 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
    return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
  }
  
 +#if defined(ANDROPKG)
-+// The verification caches (vdex files): 0 = off, 1 = used, 2 = used and written. Opt-in with
-+// ANDROPKG_VDEX_CACHE=1 (or the preverification build step) while a startup race they expose
-+// is open: faster launches let coroutine threads see corrupt references (about one Spotify
-+// launch in ten). ANDROPKG_NO_VDEX_CACHE=1 keeps them read-only, =2 off.
++// The verification caches (vdex files): 0 = off, 1 = used, 2 = used and written (default).
++// ANDROPKG_NO_VDEX_CACHE=1 keeps them read-only, =2 turns them off.
 +int AndropkgVdexMode() {
 +  static const int mode = [] {
 +    const char* no = getenv("ANDROPKG_NO_VDEX_CACHE");
 +    if (no != nullptr) return no[0] == '2' ? 0 : 1;
-+    if (getenv("ANDROPKG_PREVERIFY") != nullptr) return 2;
-+    return getenv("ANDROPKG_VDEX_CACHE") != nullptr ? 2 : 0;
++    return 2;
 +  }();
 +  return mode;
 +}
@@ -2420,7 +2417,7 @@ index 63e005d..f197cde 100644
  std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
      const char* dex_location,
      jobject class_loader,
-@@ -199,7 +484,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -199,7 +481,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
    if (class_loader == nullptr) {
      LOG(WARNING) << "Opening an oat file without a class loader. "
                   << "Are you using the deprecated DexFile APIs?";
@@ -2434,7 +2431,7 @@ index 63e005d..f197cde 100644
      auto oat_file_assistant = std::make_unique<OatFileAssistant>(dex_location,
                                                                   kRuntimeISA,
                                                                   context.get(),
-@@ -461,6 +751,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -461,6 +748,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
        error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                              + " because: " + error_msg);
      }
@@ -2851,6 +2848,40 @@ index 6b1934c..f004983 100644
    tlsPtr_.exception = new_exception.Ptr();
  }
  
+diff --git a/runtime/thread_list.cc b/runtime/thread_list.cc
+index d98415f..ece7cf7 100644
+--- a/runtime/thread_list.cc
++++ b/runtime/thread_list.cc
+@@ -64,6 +64,10 @@
+ 
+ namespace art {
+ 
++#if defined(ANDROPKG)
++void ThreadResetFunctionTable(Thread* thread, void* arg);  // jni/jni_env_ext.cc
++#endif
++
+ using android::base::StringPrintf;
+ 
+ static constexpr uint64_t kLongThreadSuspendThreshold = MsToNs(5);
+@@ -1297,6 +1301,18 @@ void ThreadList::Register(Thread* self) {
+   }
+   CHECK(!Contains(self));
+   list_.push_back(self);
++#if defined(ANDROPKG)
++  // andropkg: a JNI function table override installed (JNIEnvExt::SetTableOverride: ndk-libs'
++  // table for Android code, when the first Android library loads) after this thread built its
++  // JNIEnvExt and before it got into the list was never applied to it: Android code on such a
++  // thread (coroutine workers started early) called ART's variadic JNI entries, which decoded
++  // AAPCS64 arguments as Darwin ones (stack garbage as objects; about one Spotify launch in
++  // ten). The override is read again now that SetTableOverride's ForEach cannot miss us.
++  if (self->GetJniEnv() != nullptr) {
++    MutexLock mu3(self, *Locks::jni_function_table_lock_);
++    ThreadResetFunctionTable(self, nullptr);
++  }
++#endif
+   if (gUseReadBarrier) {
+     gc::collector::ConcurrentCopying* const cc =
+         Runtime::Current()->GetHeap()->ConcurrentCopyingCollector();
 diff --git a/sigchainlib/sigchain.cc b/sigchainlib/sigchain.cc
 index a7f73f7..93f5767 100644
 --- a/sigchainlib/sigchain.cc

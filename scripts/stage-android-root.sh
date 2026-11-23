@@ -16,7 +16,7 @@ while read -r dev; do
   cp "$pb/bootclasspath/$(basename "$dev")" "$out$dev"
   # Preverified classes (scripts/preverify.sh boot): <dir>/oat/arm64/<jar>.vdex
   v="$root/build/android-root$(dirname "$dev")/oat/arm64/$(basename "$dev" .jar).vdex"
-  if [ -n "${ANDROPKG_PREVERIFY_BUILD:-}" ] && [ -f "$v" ]; then
+  if [ -z "${ANDROPKG_NO_PREVERIFY:-}" ] && [ -f "$v" ]; then
     mkdir -p "$out$(dirname "$dev")/oat/arm64"; cp "$v" "$out$(dirname "$dev")/oat/arm64/"
   fi
 done < "$pb/bootclasspath.txt"
@@ -38,13 +38,13 @@ for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
   [ -f "$a" ] || continue
   cp "$a" "$out/test/"
   v="$(dirname "$a")/oat/arm64/$(basename "$a" .apk).vdex"  # (scripts/preverify.sh <apk>)
-  if [ -n "${ANDROPKG_PREVERIFY_BUILD:-}" ] && [ -f "$v" ]; then mkdir -p "$out/test/oat/arm64"; cp "$v" "$out/test/oat/arm64/"; fi
+  if [ -z "${ANDROPKG_NO_PREVERIFY:-}" ] && [ -f "$v" ]; then mkdir -p "$out/test/oat/arm64"; cp "$v" "$out/test/oat/arm64/"; fi
 done
 # Split packages (scripts/unpack-bundle.sh): directories with a base.apk.
 for d in "$root"/build/apps-ext/*/; do
   [ -f "$d/base.apk" ] || continue
   n=$(basename "$d"); rm -rf "$out/test/$n"; mkdir -p "$out/test/$n"; cp "$d"*.apk "$out/test/$n/"
-  if [ -n "${ANDROPKG_PREVERIFY_BUILD:-}" ] && [ -d "$d/oat" ]; then cp -R "$d/oat" "$out/test/$n/"; fi
+  if [ -z "${ANDROPKG_NO_PREVERIFY:-}" ] && [ -d "$d/oat" ]; then cp -R "$d/oat" "$out/test/$n/"; fi
 done
 for t in "$root"/build/tests/*/classes.dex; do
   cp "$t" "$out/test/$(basename "$(dirname "$t")").dex"

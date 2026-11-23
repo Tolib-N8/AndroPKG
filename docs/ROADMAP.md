@@ -73,13 +73,15 @@ These questions decided whether the approach could work at all.
 - ✅ **Render scale.** Android renders at 2 px/pt on 3× screens.
 - ✅ **GPU memory.** Metal objects on ART threads are released in autorelease pools, and a
   regression test guards against leaks.
-- 🔄 **Verification cache** (opt-in for now: `ANDROPKG_VDEX_CACHE=1`). Without dex2oat, every
-  class an app or the framework used was verified on each launch (79% of Spotify's main thread
-  at startup). Launches record the classes they verified into vdex files in the app's data
-  directory, and `scripts/preverify.sh` can verify everything ahead of time on the Mac. With
-  them Spotify reaches its first frame in about 1.3 s instead of 2.8 s on an iPhone 16 Pro.
-  The faster startup exposes a race in the runtime (coroutine threads see corrupt
-  references, about one launch in ten), so the caches stay off by default until it is found.
+- ✅ **Verification cache and preverification.** Without dex2oat, every class an app or the
+  framework used was verified on each launch (79% of Spotify's main thread at startup).
+  `scripts/preverify.sh` now verifies every class of the framework and of the app ahead of
+  time on the Mac, and the vdex files ship in the bundle; launches also record what they
+  verify. Spotify reaches its first frame in about 1.3 s instead of 2.8 s on an iPhone 16 Pro,
+  from the first launch on.
+- ✅ **A JNI race.** Threads created while the JNI table for Android code was being installed
+  kept ART's own table, and Android code on them passed its variadic arguments in the wrong
+  calling convention: stack garbage became objects. Faster startups made it frequent.
 - ✅ The framework's own dex files are no longer structurally re-verified on every launch.
 - ✅ Native libraries load faster: NDK symbol lookups are cached and search only the right
   image (RTLD_FIRST), instead of every image in the process.
