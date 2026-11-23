@@ -2047,7 +2047,7 @@ index c735afa..88e0002 100644
      return odex_;
    }
 diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
-index 63e005d..74ed640 100644
+index 63e005d..07bb11f 100644
 --- a/runtime/oat_file_manager.cc
 +++ b/runtime/oat_file_manager.cc
 @@ -34,7 +34,12 @@
@@ -2063,7 +2063,7 @@ index 63e005d..74ed640 100644
  #include "dex/art_dex_file_loader.h"
  #include "dex/dex_file-inl.h"
  #include "dex/dex_file_loader.h"
-@@ -174,6 +179,207 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
+@@ -174,6 +179,272 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
    return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
  }
  
@@ -2093,6 +2093,26 @@ index 63e005d..74ed640 100644
 +  return true;
 +}
 +
++// The vdex next to a jar or APK (<dir>/oat/<isa>/<name>.vdex): written ahead of time on the
++// Mac (preverification, scripts/preverify.sh) and shipped in the app bundle, complete.
++bool AndropkgBundledVdexPath(const std::string& location, std::string* vdex_path) {
++  std::string odex_filename, error_msg;
++  if (!OatFileAssistant::DexLocationToOdexFilename(location, kRuntimeISA, &odex_filename,
++                                                   &error_msg)) {
++    return false;
++  }
++  *vdex_path = GetVdexFilename(odex_filename);
++  return true;
++}
++
++// Preverification (a build step on the Mac): ANDROPKG_PREVERIFY=boot,app verifies every class
++// of the boot class path's jars and/or of the APK named by ANDROPKG_PREVERIFY_APK, writes the
++// bundled vdex files, and exits.
++bool AndropkgPreverify(const char* what) {
++  const char* v = getenv("ANDROPKG_PREVERIFY");
++  return v != nullptr && strstr(v, what) != nullptr;
++}
++
 +std::mutex gAndropkgBootVdexLock;
 +std::set<std::string> gAndropkgBootVdexAttached;  // jars whose verification cache is in use
 +
@@ -2113,7 +2133,8 @@ index 63e005d..74ed640 100644
 +bool AndropkgWriteVerificationCache(Thread* self,
 +                                    const std::vector<const DexFile*>& dex_files,
 +                                    jobject loader_ref,
-+                                    const std::string& vdex_path) {
++                                    const std::string& vdex_path,
++                                    bool all = false) {
 +  Runtime* const runtime = Runtime::Current();
 +  ClassLinker* const class_linker = runtime->GetClassLinker();
 +  verifier::VerifierDeps verifier_deps(dex_files);
@@ -2123,15 +2144,32 @@ index 63e005d..74ed640 100644
 +      if (runtime->IsShuttingDown(self)) return false;
 +      const dex::ClassDef& class_def = dex_file->GetClassDef(cdef_idx);
 +      ScopedObjectAccess soa(self);
-+      StackHandleScope<1> hs(self);
-+      ObjPtr<mirror::ClassLoader> loader =
-+          loader_ref == nullptr ? nullptr : soa.Decode<mirror::ClassLoader>(loader_ref);
-+      // Only the classes this launch has verified: loading the rest would cost the memory
-+      // and time of the whole app.
-+      Handle<mirror::Class> h_class(hs.NewHandle(
-+          class_linker->LookupClass(self, dex_file->GetClassDescriptor(class_def), loader)));
-+      if (h_class == nullptr || &h_class->GetDexFile() != dex_file || !h_class->IsVerified() ||
-+          !AndropkgCleanlyVerified(class_linker, h_class)) {
++      StackHandleScope<2> hs(self);
++      Handle<mirror::ClassLoader> h_loader(hs.NewHandle(
++          loader_ref == nullptr ? nullptr : soa.Decode<mirror::ClassLoader>(loader_ref)));
++      const char* descriptor = dex_file->GetClassDescriptor(class_def);
++      // At runtime, only the classes this launch has verified: loading the rest would cost the
++      // memory and time of the whole app. Preverifying (`all`), every class.
++      MutableHandle<mirror::Class> h_class(hs.NewHandle(
++          class_linker->LookupClass(self, descriptor, h_loader.Get())));
++      if (h_class == nullptr && all) {
++        h_class.Assign(class_linker->FindClass(self, descriptor, h_loader));
++        if (self->IsExceptionPending()) self->ClearException();
++      }
++      if (h_class == nullptr || &h_class->GetDexFile() != dex_file || h_class->IsErroneous()) {
++        continue;
++      }
++      if (!h_class->IsVerified()) {
++        if (!all) continue;
++        verifier::FailureKind failure = class_linker->VerifyClass(self, &verifier_deps, h_class);
++        if (self->IsExceptionPending()) self->ClearException();
++        if (failure == verifier::FailureKind::kNoFailure && h_class->IsVerified()) {
++          verifier_deps.RecordClassVerified(*dex_file, class_def);
++          recorded++;
++        }
++        continue;
++      }
++      if (!AndropkgCleanlyVerified(class_linker, h_class)) {
 +        continue;
 +      }
 +      class_linker->VerifyClass(self, &verifier_deps, h_class);  // re-runs it for the deps
@@ -2144,6 +2182,12 @@ index 63e005d..74ed640 100644
 +  }
 +  if (recorded == 0) return true;  // nothing yet: a later launch may record some
 +  std::string error_msg;
++  if (all) {  // <dir>/oat/<isa>/: may not exist yet
++    std::string dir = vdex_path.substr(0, vdex_path.rfind('/'));
++    for (size_t i = 1; i <= dir.size(); i++) {
++      if (i == dir.size() || dir[i] == '/') mkdir(dir.substr(0, i).c_str(), 0755);
++    }
++  }
 +  std::string tmp = vdex_path + ".tmp";
 +  unlink(tmp.c_str());
 +  if (!VdexFile::WriteToDisk(tmp, dex_files, verifier_deps, &error_msg) ||
@@ -2160,16 +2204,19 @@ index 63e005d..74ed640 100644
 +void AndropkgWriteBootVerificationCache(Thread* self) {
 +  static std::atomic<bool> done{false};
 +  if (done.exchange(true)) return;
++  const bool all = AndropkgPreverify("boot");
 +  std::vector<const DexFile*> bcp(Runtime::Current()->GetClassLinker()->GetBootClassPath().begin(),
 +                                  Runtime::Current()->GetClassLinker()->GetBootClassPath().end());
 +  for (const auto& [jar, dex_files] : AndropkgBootJars(bcp)) {
 +    {
 +      std::lock_guard<std::mutex> g(gAndropkgBootVdexLock);
-+      if (gAndropkgBootVdexAttached.count(jar) != 0) continue;
++      if (!all && gAndropkgBootVdexAttached.count(jar) != 0) continue;
 +    }
 +    std::string vdex_path;
-+    if (!AndropkgVdexPath(jar, &vdex_path)) continue;
-+    if (!AndropkgWriteVerificationCache(self, dex_files, /*loader_ref=*/nullptr, vdex_path)) return;
++    if (!(all ? AndropkgBundledVdexPath(jar, &vdex_path) : AndropkgVdexPath(jar, &vdex_path))) continue;
++    if (!AndropkgWriteVerificationCache(self, dex_files, /*loader_ref=*/nullptr, vdex_path, all)) {
++      return;
++    }
 +  }
 +}
 +}  // namespace
@@ -2185,11 +2232,11 @@ index 63e005d..74ed640 100644
 +  size_t attached = 0;
 +  for (const auto& [jar, dex_files] : AndropkgBootJars(dex_ptrs)) {
 +    std::string vdex_path, error_msg;
-+    if (!AndropkgVdexPath(jar, &vdex_path)) {
-+      VLOG(oat) << "andropkg: no vdex location for " << jar;
-+      continue;
++    if (AndropkgPreverify("boot")) continue;  // (rewriting them)
++    // The bundled vdex (complete, from the build) or this device's (classes launches used).
++    if (!AndropkgBundledVdexPath(jar, &vdex_path) || !OS::FileExists(vdex_path.c_str())) {
++      if (!AndropkgVdexPath(jar, &vdex_path) || !OS::FileExists(vdex_path.c_str())) continue;
 +    }
-+    if (!OS::FileExists(vdex_path.c_str())) continue;
 +    std::unique_ptr<VdexFile> vdex =
 +        VdexFile::Open(vdex_path, /*writable=*/false, /*low_4gb=*/false, &error_msg);
 +    if (vdex == nullptr) {
@@ -2203,7 +2250,7 @@ index 63e005d..74ed640 100644
 +    }
 +    if (!matches) {
 +      LOG(INFO) << "andropkg: stale " << vdex_path;
-+      unlink(vdex_path.c_str());  // rewritten by this launch
++      unlink(vdex_path.c_str());  // rewritten by this launch (a bundled one cannot be: read-only)
 +      continue;
 +    }
 +    std::unique_ptr<OatFile> oat(OatFile::OpenFromVdex(dex_files, std::move(vdex), jar, nullptr));
@@ -2248,6 +2295,24 @@ index 63e005d..74ed640 100644
 +
 +  void Run(Thread* self) override {
 +    Runtime* const runtime = Runtime::Current();
++    if (getenv("ANDROPKG_PREVERIFY") != nullptr) {
++      // Preverifying: the boot class path first (once), then the APK, then exit.
++      if (AndropkgPreverify("boot")) AndropkgWriteBootVerificationCache(self);
++      const char* apk = getenv("ANDROPKG_PREVERIFY_APK");
++      const std::string location = dex_files_.empty() ? "" : DexFileLoader::GetBaseLocation(
++          dex_files_[0]->GetLocation());
++      bool is_apk = apk != nullptr && location == apk;
++      std::string vdex_path;
++      if (is_apk && AndropkgPreverify("app") && AndropkgBundledVdexPath(location, &vdex_path)) {
++        AndropkgWriteVerificationCache(self, dex_files_, class_loader_, vdex_path, /*all=*/true);
++      }
++      if (is_apk || apk == nullptr) {
++        LOG(INFO) << "andropkg: preverification done";
++        fflush(stderr);
++        _exit(0);
++      }
++      return;
++    }
 +    const char* delay_env = getenv("ANDROPKG_VDEX_DELAY_MS");
 +    int64_t delay_ms = delay_env != nullptr ? atoll(delay_env) : 8000;
 +    for (int64_t waited = 0; waited < delay_ms; waited += 100) {
@@ -2271,7 +2336,7 @@ index 63e005d..74ed640 100644
  std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
      const char* dex_location,
      jobject class_loader,
-@@ -199,7 +405,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -199,7 +470,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
    if (class_loader == nullptr) {
      LOG(WARNING) << "Opening an oat file without a class loader. "
                   << "Are you using the deprecated DexFile APIs?";
@@ -2285,7 +2350,7 @@ index 63e005d..74ed640 100644
      auto oat_file_assistant = std::make_unique<OatFileAssistant>(dex_location,
                                                                   kRuntimeISA,
                                                                   context.get(),
-@@ -461,6 +672,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -461,6 +737,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
        error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                              + " because: " + error_msg);
      }

@@ -14,6 +14,9 @@ while read -r dev; do
   [ -n "$dev" ] || continue
   mkdir -p "$out$(dirname "$dev")"
   cp "$pb/bootclasspath/$(basename "$dev")" "$out$dev"
+  # Preverified classes (scripts/preverify.sh boot): <dir>/oat/arm64/<jar>.vdex
+  v="$root/build/android-root$(dirname "$dev")/oat/arm64/$(basename "$dev" .jar).vdex"
+  if [ -f "$v" ]; then mkdir -p "$out$(dirname "$dev")/oat/arm64"; cp "$v" "$out$(dirname "$dev")/oat/arm64/"; fi
 done < "$pb/bootclasspath.txt"
 cp "$pb/bootclasspath.txt" "$out/bootclasspath.txt"
 cp "$pb/framework-res.apk" "$out/system/framework/"
@@ -30,12 +33,16 @@ mkdir -p "$out/apex/com.android.conscrypt"
 cp -R "$pb/cacerts" "$out/apex/com.android.conscrypt/cacerts"
 cp "$root/build/services/services.dex" "$out/system/framework/andropkg-services.dex"
 for a in "$root"/build/apps/*.apk "$root"/build/apps-ext/*.apk; do
-  [ -f "$a" ] && cp "$a" "$out/test/"
+  [ -f "$a" ] || continue
+  cp "$a" "$out/test/"
+  v="$(dirname "$a")/oat/arm64/$(basename "$a" .apk).vdex"  # (scripts/preverify.sh <apk>)
+  if [ -f "$v" ]; then mkdir -p "$out/test/oat/arm64"; cp "$v" "$out/test/oat/arm64/"; fi
 done
 # Split packages (scripts/unpack-bundle.sh): directories with a base.apk.
 for d in "$root"/build/apps-ext/*/; do
   [ -f "$d/base.apk" ] || continue
   n=$(basename "$d"); rm -rf "$out/test/$n"; mkdir -p "$out/test/$n"; cp "$d"*.apk "$out/test/$n/"
+  [ -d "$d/oat" ] && cp -R "$d/oat" "$out/test/$n/"
 done
 for t in "$root"/build/tests/*/classes.dex; do
   cp "$t" "$out/test/$(basename "$(dirname "$t")").dex"

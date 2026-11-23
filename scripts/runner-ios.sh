@@ -21,6 +21,12 @@ for t in "$root"/tests/*/; do
   JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --lib "$sdkjar" --output "$outd" "$outd"/*.class
 done
 "$root/scripts/build-java.sh" >/dev/null
+"$root/scripts/preverify.sh" boot
+if [ "${1:-}" = --apk ]; then  # the app's classes verified ahead of time (once per APK)
+  for a in "$root/build/apps/$2.apk" "$root/build/apps-ext/$2.apk" "$root/build/apps-ext/$2"; do
+    [ -e "$a" ] && { "$root/scripts/preverify.sh" "$a"; break; }
+  done
+fi
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 # Native code of every staged APK: converted + signed with the development identity, inside the
 # app bundle (android-root/native/<apk>/), where the host points nativeLibraryDir.
