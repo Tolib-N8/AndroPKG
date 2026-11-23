@@ -116,6 +116,20 @@ public final class AndroPkgSystem {
         // hwui's GPU pipeline (RenderThread over Metal) is ported.
         Hidden.setStaticField(Hidden.cls("android.view.ThreadedRenderer"), "sRendererEnabled", false);
         parsePackage();
+        if (System.getenv("ANDROPKG_PREVERIFY") != null) {
+            // scripts/preverify.sh: the runtime verifies every class of the APK as its dex files
+            // load, writes the vdex and exits. Only the class loader is needed: the app itself
+            // would start running meanwhile (and may exit, missing its native libraries here).
+            new dalvik.system.PathClassLoader(appInfo.sourceDir, ClassLoader.getSystemClassLoader().getParent());
+            Log.i(TAG, "preverifying " + appInfo.sourceDir);
+            while (true) {
+                try {
+                    Thread.sleep(60_000);
+                } catch (InterruptedException e) {
+                    // keep waiting for the runtime to exit
+                }
+            }
+        }
         TouchDebug.installWhenReady();
         Log.i(TAG, "starting " + appInfo.packageName + " (" + apkPath + ")");
         // Never returns: the app's main looper takes over this thread.

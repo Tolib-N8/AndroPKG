@@ -2117,7 +2117,7 @@ index c735afa..88e0002 100644
      return odex_;
    }
 diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
-index 63e005d..257ac87 100644
+index 63e005d..1a85f5c 100644
 --- a/runtime/oat_file_manager.cc
 +++ b/runtime/oat_file_manager.cc
 @@ -34,7 +34,12 @@
@@ -2417,7 +2417,7 @@ index 63e005d..257ac87 100644
  std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
      const char* dex_location,
      jobject class_loader,
-@@ -199,7 +481,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -199,7 +481,15 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
    if (class_loader == nullptr) {
      LOG(WARNING) << "Opening an oat file without a class loader. "
                   << "Are you using the deprecated DexFile APIs?";
@@ -2426,12 +2426,15 @@ index 63e005d..257ac87 100644
 +#if defined(ANDROPKG)
 +             // ANDROPKG_NO_VDEX_CACHE=2: no oat/vdex files at all (startup measurements)
 +             && AndropkgVdexMode() != 0
++             // Preverifying: the APK's dex files are opened from the APK, whatever caches exist
++             // (the task writing the bundled vdex runs only then).
++             && getenv("ANDROPKG_PREVERIFY") == nullptr
 +#endif
 +             ) {
      auto oat_file_assistant = std::make_unique<OatFileAssistant>(dex_location,
                                                                   kRuntimeISA,
                                                                   context.get(),
-@@ -461,6 +748,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -461,6 +751,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
        error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                              + " because: " + error_msg);
      }

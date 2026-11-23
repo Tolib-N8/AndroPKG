@@ -35,6 +35,7 @@ fi
 # app bundle (android-root/native/<apk>/), where the host points nativeLibraryDir.
 for a in "$root/build/ios-stage/android-root/test/"*.apk "$root/build/ios-stage/android-root/test/"*/; do
   [ -e "$a" ] || continue
+  [ -d "$a" ] && [ ! -f "$a/base.apk" ] && continue  # (oat/: preverified vdex files)
   n=$(basename "$a" .apk)
   "$root/scripts/prepare-native-libs.sh" "${a%/}" "$root/build/ios-stage/android-root/native/$n" ios >/dev/null
 done

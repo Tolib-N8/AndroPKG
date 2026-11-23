@@ -13,6 +13,7 @@ apps="$*"
 if [ -z "$apps" ]; then
   for a in build/apps-ext/*.apk build/apps-ext/*/; do
     [ -e "$a" ] || continue
+    [ -d "$a" ] && [ ! -f "$a/base.apk" ] && continue  # (oat/: preverified vdex files)
     apps="$apps $(basename "${a%/}" .apk)"
   done
 fi
