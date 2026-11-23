@@ -169,6 +169,9 @@ scripts/test-mac.sh              # every test app, with pixel checks
 scripts/runner-ios.sh --apk hello                    # a test app
 ANDROPKG_INTERACTIVE=1 scripts/runner-ios.sh --apk <name>
 #   ^ your own APK: build/apps-ext/<name>.apk (gitignored)
+
+# 5. One Android app as its own iOS app: name, launcher icon, preverified classes
+scripts/convert-ipa.sh path/to/app.apk -o app.ipa --install
 ```
 
 <details>
@@ -183,6 +186,9 @@ ANDROPKG_INTERACTIVE=1 scripts/runner-ios.sh --apk <name>
 | `ANDROPKG_LOG_MEDIA=1` | Trace MediaCodec, MediaExtractor and MediaPlayer. |
 | `ANDROPKG_LOG_MEMORY=1` | Log the app footprint and GPU memory. |
 | `ANDROPKG_LOG_RENDERNODES=1` | Dump the RenderNode trees drawn by software canvases. |
+| `ANDROPKG_NO_VDEX_CACHE=1` | Use the verification caches read-only (`=2`: not at all). |
+| `ANDROPKG_NO_PREVERIFY=1` | Build without verifying classes ahead of time. |
+| `ANDROPKG_CHECK_REFS=1` | Check every JNI reference argument (finds bad decoding). |
 | `ANDROPKG_LOG_JNI=<class prefix>` | Trace JNI calls into matching classes. |
 | `ANDROPKG_LOG_NDKFS=1` | Trace NDK file system calls. |
 | `ANDROPKG_LOG_NDKNET=1` | Trace NDK network calls. |
