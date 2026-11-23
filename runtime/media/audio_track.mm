@@ -26,6 +26,8 @@
 
 #include "jni_defaults.h"
 
+void andropkg_bind_notifications(JNIEnv* env, jclass c);  // notifications.mm
+
 namespace {
 
 using andropkg_media::RegisterDeclared;
@@ -760,6 +762,10 @@ extern "C" __attribute__((visibility("default"))) void andropkg_media_bind_servi
   }
   gSessionClass = static_cast<jclass>(env->NewGlobalRef(c));
   gHostCommand = env->GetStaticMethodID(c, "hostCommand", "(Ljava/lang/String;J)V");
+  if (jclass n = LoadServicesClass(env, "dev.andropkg.system.NotificationManagerImpl")) {
+    andropkg_bind_notifications(env, n);  // (notifications.mm)
+    env->DeleteLocalRef(n);
+  }
   InstallRemoteCommands();
   env->CallStaticVoidMethod(c, env->GetStaticMethodID(c, "onHostReady", "()V"));
   if (env->ExceptionCheck()) env->ExceptionClear();

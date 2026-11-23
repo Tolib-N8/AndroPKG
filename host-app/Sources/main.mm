@@ -1,5 +1,6 @@
 // andropkg runner (M1): boots ART + Android 14 libcore inside an iOS app and runs a dex's
 // main(). Output goes to stdout (devicectl --console) and to the screen.
+#import <UserNotifications/UserNotifications.h>
 #import "Launcher.h"
 #import <CoreMotion/CoreMotion.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -481,10 +482,27 @@ static void SetAppVisible(int visible) {
 }
 @end
 
-@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@interface AppDelegate : UIResponder <UIApplicationDelegate, UNUserNotificationCenterDelegate>
 @end
 @implementation AppDelegate
+// Android notifications (runtime/media/notifications.mm): shown while the app is open too, as
+// Android shows them; a tap goes to the app's contentIntent.
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))done {
+  done(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionList |
+       UNNotificationPresentationOptionSound);
+}
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+    didReceiveNotificationResponse:(UNNotificationResponse*)response
+             withCompletionHandler:(void (^)(void))done {
+  NSString* key = response.notification.request.content.userInfo[@"andropkg.key"];
+  auto opened = reinterpret_cast<void (*)(const char*)>(dlsym(RTLD_DEFAULT, "andropkg_notification_opened"));
+  if (key && opened) opened(key.UTF8String);
+  done();
+}
 - (BOOL)application:(UIApplication*)app didFinishLaunchingWithOptions:(NSDictionary*)opts {
+  UNUserNotificationCenter.currentNotificationCenter.delegate = self;
   UIScreen* screen = UIScreen.mainScreen;
   // Android renders on the CPU, so it draws at (at most) 2 pixels per point and the window is
   // scaled to the screen: a 3x iPhone has 2.25x the pixels to fill per frame otherwise.

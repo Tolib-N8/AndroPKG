@@ -2117,7 +2117,7 @@ index c735afa..88e0002 100644
      return odex_;
    }
 diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
-index 63e005d..1a85f5c 100644
+index 63e005d..1e29b8e 100644
 --- a/runtime/oat_file_manager.cc
 +++ b/runtime/oat_file_manager.cc
 @@ -34,7 +34,12 @@
@@ -2133,7 +2133,7 @@ index 63e005d..1a85f5c 100644
  #include "dex/art_dex_file_loader.h"
  #include "dex/dex_file-inl.h"
  #include "dex/dex_file_loader.h"
-@@ -174,6 +179,283 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
+@@ -174,6 +179,289 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
    return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
  }
  
@@ -2263,7 +2263,10 @@ index 63e005d..1a85f5c 100644
 +      }
 +    }
 +  }
-+  if (recorded == 0) return true;  // nothing yet: a later launch may record some
++  if (recorded == 0) {  // nothing yet: a later launch may record some
++    if (all) LOG(WARNING) << "andropkg: no verified classes for " << vdex_path;
++    return true;
++  }
 +  std::string error_msg;
 +  if (all) {  // <dir>/oat/<isa>/: may not exist yet
 +    std::string dir = vdex_path.substr(0, vdex_path.rfind('/'));
@@ -2377,7 +2380,10 @@ index 63e005d..1a85f5c 100644
 +  void Run(Thread* self) override {
 +    Runtime* const runtime = Runtime::Current();
 +    if (getenv("ANDROPKG_PREVERIFY") != nullptr) {
-+      // Preverifying: the boot class path first (once), then the APK, then exit.
++      // Preverifying: the boot class path first (once), then the APK, then exit. (The task is
++      // queued while the class loader's constructor opens the dex files: give it time to
++      // finish, or its classes cannot be found yet and none get recorded.)
++      for (int waited = 0; waited < 1000 && !runtime->IsShuttingDown(self); waited += 100) usleep(100 * 1000);
 +      if (AndropkgPreverify("boot")) AndropkgWriteBootVerificationCache(self);
 +      const char* apk = getenv("ANDROPKG_PREVERIFY_APK");
 +      const std::string location = dex_files_.empty() ? "" : DexFileLoader::GetBaseLocation(
@@ -2417,7 +2423,7 @@ index 63e005d..1a85f5c 100644
  std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
      const char* dex_location,
      jobject class_loader,
-@@ -199,7 +481,15 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -199,7 +487,15 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
    if (class_loader == nullptr) {
      LOG(WARNING) << "Opening an oat file without a class loader. "
                   << "Are you using the deprecated DexFile APIs?";
@@ -2434,7 +2440,7 @@ index 63e005d..1a85f5c 100644
      auto oat_file_assistant = std::make_unique<OatFileAssistant>(dex_location,
                                                                   kRuntimeISA,
                                                                   context.get(),
-@@ -461,6 +751,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -461,6 +757,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
        error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                              + " because: " + error_msg);
      }

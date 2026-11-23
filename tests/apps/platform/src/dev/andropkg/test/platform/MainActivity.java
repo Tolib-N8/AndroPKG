@@ -93,6 +93,19 @@ public class MainActivity extends Activity {
         Log.i(TAG, "[platform] renderNode layer effect " + Integer.toHexString(fxTarget.getPixel(3, 2)));
         // Network service discovery: a manager (no exception storm), discovery that finds nothing.
         android.net.nsd.NsdManager nsd = getSystemService(android.net.nsd.NsdManager.class);
+        try {  // a notification (the host shows it; the Mac logs it)
+            android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+            nm.createNotificationChannel(new android.app.NotificationChannel("test", "Test",
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT));
+            android.app.Notification n = new android.app.Notification.Builder(this, "test")
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle("andropkg").setContentText("notification test").build();
+            nm.notify(7, n);
+            if (System.getenv("ANDROPKG_TEST_KEEP_NOTIFICATION") == null) nm.cancel(7);
+            Log.i(TAG, "[platform] notification posted=true");
+        } catch (RuntimeException e) {
+            Log.i(TAG, "[platform] notification posted=" + e);
+        }
         Log.i(TAG, "[platform] debug heap>0=" + (android.os.Debug.getNativeHeapAllocatedSize() > 0)
                 + " pss>0=" + (android.os.Debug.getPss() > 0));
         Log.i(TAG, "[platform] nsd manager=" + (nsd != null));

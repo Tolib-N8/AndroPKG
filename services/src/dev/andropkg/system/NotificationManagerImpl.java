@@ -22,8 +22,11 @@ import java.util.Map;
  * android.app.INotificationManager: toasts. Since Android 11 text toasts are drawn by
  * SystemUI; here the same view (ToastPresenter's text toast) is shown in a TYPE_TOAST window
  * of the app's process. Custom-view toasts are shown by the app itself (Toast.TN) when told.
- * Notification channels and groups are kept (in memory) so apps can read them back;
- * notifications themselves are logged and dropped for now.
+ * Notification channels and groups are kept (in memory) so apps can read them back.
+ * Notifications become the host's notifications (runtime/media/notifications.mm): title and
+ * text, a sound unless the channel is quiet; tapping one sends its contentIntent. Ongoing,
+ * media and group-summary notifications are not shown (a player's is the lock screen's Now
+ * Playing).
  */
 final class NotificationManagerImpl {
     private static final String TAG = "andropkg";
@@ -33,6 +36,104 @@ final class NotificationManagerImpl {
     private synchronized Handler main() {
         if (mainHandler == null) mainHandler = new Handler(Looper.getMainLooper());
         return mainHandler;
+    }
+
+    // ---- notifications (host: runtime/media/notifications.mm) ----
+
+    static native void nativePost(String key, String title, String text, boolean silent);
+    static native void nativeCancel(String key);
+    static NotificationManagerImpl instance;
+    private final Map<String, android.app.PendingIntent> contentIntents = new HashMap<>();
+    private final Map<String, Notification> active = new LinkedHashMap<>();
+
+    NotificationManagerImpl() {
+        instance = this;
+    }
+
+    private static String key(String pkg, String tag, int id) {
+        return pkg + ":" + (tag == null ? "" : tag) + ":" + id;
+    }
+
+    // enqueueNotificationWithTag(String pkg, String opPkg, String tag, int id, Notification n, int userId)
+    public void enqueueNotificationWithTag(String pkg, String opPkg, String tag, int id, Notification n, int userId) {
+        String key = key(pkg, tag, id);
+        synchronized (this) {
+            active.put(key, n);
+            if (n.contentIntent != null) contentIntents.put(key, n.contentIntent);
+        }
+        android.os.Bundle x = n.extras;
+        String template = x != null ? x.getString(Notification.EXTRA_TEMPLATE) : null;
+        boolean media = template != null && template.contains("MediaStyle");
+        boolean ongoing = (n.flags & (Notification.FLAG_ONGOING_EVENT | Notification.FLAG_FOREGROUND_SERVICE)) != 0;
+        boolean summary = (n.flags & Notification.FLAG_GROUP_SUMMARY) != 0;
+        if (media || ongoing || summary) return;
+        CharSequence title = x != null ? x.getCharSequence(Notification.EXTRA_TITLE) : null;
+        CharSequence text = x != null ? x.getCharSequence(Notification.EXTRA_BIG_TEXT) : null;
+        if (text == null && x != null) text = x.getCharSequence(Notification.EXTRA_TEXT);
+        if (title == null && text == null) return;
+        Log.i(TAG, "notification " + id + " [" + n.getChannelId() + "]: " + title);
+        NotificationChannel channel = n.getChannelId() != null ? channels.get(n.getChannelId()) : null;
+        boolean silent = (n.flags & Notification.FLAG_ONLY_ALERT_ONCE) != 0 && isUpdate(key)
+                || channel != null && channel.getImportance() < 3 /* IMPORTANCE_DEFAULT */;
+        try {
+            nativePost(key, title != null ? title.toString() : "", text != null ? text.toString() : "", silent);
+        } catch (UnsatisfiedLinkError e) {
+            Log.i(TAG, "notification (no host yet): " + title + ": " + text);
+        }
+    }
+
+    private final java.util.Set<String> posted = new java.util.HashSet<>();
+
+    private synchronized boolean isUpdate(String key) {
+        return !posted.add(key);
+    }
+
+    // cancelNotificationWithTag(String pkg, String opPkg, String tag, int id, int userId)
+    public void cancelNotificationWithTag(String pkg, String opPkg, String tag, int id, int userId) {
+        String key = key(pkg, tag, id);
+        synchronized (this) {
+            active.remove(key);
+            contentIntents.remove(key);
+            posted.remove(key);
+        }
+        try {
+            nativeCancel(key);
+        } catch (UnsatisfiedLinkError e) {
+            // no host notifications yet
+        }
+    }
+
+    public void cancelAllNotifications(String pkg, int userId) {
+        List<String> keys;
+        synchronized (this) {
+            keys = new ArrayList<>(active.keySet());
+        }
+        for (String k : keys) {
+            String[] p = k.split(":", 3);
+            cancelNotificationWithTag(p[0], p[0], p[1].isEmpty() ? null : p[1], Integer.parseInt(p[2]), userId);
+        }
+    }
+
+    /** The user tapped a notification (host): the app's contentIntent. */
+    static void hostOpened(String key) {
+        NotificationManagerImpl m = instance;
+        if (m == null) return;
+        android.app.PendingIntent pi;
+        Notification n;
+        synchronized (m) {
+            pi = m.contentIntents.get(key);
+            n = m.active.get(key);
+        }
+        if (pi == null) return;
+        try {
+            pi.send();
+        } catch (android.app.PendingIntent.CanceledException e) {
+            Log.w(TAG, "notification intent cancelled: " + key);
+        }
+        if (n != null && (n.flags & Notification.FLAG_AUTO_CANCEL) != 0) {
+            String[] p = key.split(":", 3);
+            m.cancelNotificationWithTag(p[0], p[0], p[1].isEmpty() ? null : p[1], Integer.parseInt(p[2]), 0);
+        }
     }
 
     private static int durationMs(int duration) {
@@ -207,10 +308,4 @@ final class NotificationManagerImpl {
 
     public boolean onlyHasDefaultChannel(String pkg, int uid) { return false; }
 
-    // ---- notifications (logged, not shown yet) --------------------------------------------
-    public void enqueueNotificationWithTag(String pkg, String opPkg, String tag, int id, Notification n, int userId) {
-        CharSequence title = n.extras != null ? n.extras.getCharSequence(Notification.EXTRA_TITLE) : null;
-        CharSequence text = n.extras != null ? n.extras.getCharSequence(Notification.EXTRA_TEXT) : null;
-        Log.i(TAG, "notification " + id + " [" + n.getChannelId() + "]: " + title + (text != null ? " — " + text : ""));
-    }
 }

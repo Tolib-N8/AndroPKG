@@ -214,7 +214,8 @@ target_include_directories(libinput PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen/inpu
 
 # Audio and media on Core Audio / AVFoundation (runtime/media, Objective-C++ with ARC; no AOSP
 # headers, so the Linux compat include setup does not apply to them).
-add_library(andropkg_audio OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/audio_track.mm)
+add_library(andropkg_audio OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/audio_track.mm
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/notifications.mm)
 add_library(andropkg_media_player OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/media_player.mm
             ${CMAKE_CURRENT_SOURCE_DIR}/media/decoder.mm ${CMAKE_CURRENT_SOURCE_DIR}/media/media_codec.mm)
 add_library(andropkg_soundpool OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/media/soundpool.mm
@@ -256,7 +257,8 @@ endif()
 target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework CoreFoundation" "-framework CoreGraphics"
                       "-framework CoreText" "-framework ImageIO" ${_uti_fw}
                       "-framework Foundation" "-framework AudioToolbox" "-framework AVFoundation"
-                      "-framework MediaPlayer" "-framework Metal" "-framework QuartzCore" "-framework CoreVideo")
+                      "-framework MediaPlayer" "-framework Metal" "-framework QuartzCore" "-framework CoreVideo"
+                      "-framework UserNotifications")
 if(ANDROPKG_PLATFORM STREQUAL "ios")
   target_link_libraries(libandroid_runtime_dylib PRIVATE "-framework UIKit" "-framework WebKit")
 else()
