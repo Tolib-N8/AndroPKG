@@ -94,6 +94,20 @@ public class MainActivity extends Activity {
         // Network service discovery: a manager (no exception storm), discovery that finds nothing.
         android.net.nsd.NsdManager nsd = getSystemService(android.net.nsd.NsdManager.class);
         Log.i(TAG, "[platform] nsd manager=" + (nsd != null));
+        try {  // Spotify: discovery through the INsdServiceConnector sub-service
+            nsd.discoverServices("_spotify-connect._tcp", android.net.nsd.NsdManager.PROTOCOL_DNS_SD,
+                    new android.net.nsd.NsdManager.DiscoveryListener() {
+                        public void onStartDiscoveryFailed(String t, int e) {}
+                        public void onStopDiscoveryFailed(String t, int e) {}
+                        public void onDiscoveryStarted(String t) {}
+                        public void onDiscoveryStopped(String t) {}
+                        public void onServiceFound(android.net.nsd.NsdServiceInfo i) {}
+                        public void onServiceLost(android.net.nsd.NsdServiceInfo i) {}
+                    });
+            Log.i(TAG, "[platform] nsd discover=true");
+        } catch (RuntimeException e) {
+            Log.i(TAG, "[platform] nsd discover=" + e);
+        }
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         Network net = cm.getActiveNetwork();

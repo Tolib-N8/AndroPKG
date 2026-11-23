@@ -74,7 +74,7 @@ final class LocalService {
                     if (reported.add(name + "/" + arity)) Log.w(TAG, shortName + "." + name + "() -> default");
                     replyToResultReceivers(args);
                     Class<?> ret = method.getReturnType();
-                    if (NESTED_DEFAULTS.contains(ret.getName())) {
+                    if (isNestedDefault(ret.getName())) {
                         // A sub-service the caller dereferences without a null check (NsdManager's
                         // connect() -> INsdServiceConnector): defaults all the way down. Other
                         // callers (ImeTracker, ...) handle a null service and must get one, since
@@ -103,8 +103,16 @@ final class LocalService {
         }
     }
 
-    private static final java.util.Set<String> NESTED_DEFAULTS =
-            java.util.Collections.singleton("android.net.nsd.INsdServiceConnector");
+    // (By suffix: the connectivity module's classes are renamed, e.g.
+    // android.net.connectivity.android.net.nsd.INsdServiceConnector.)
+    private static final String[] NESTED_DEFAULTS = {"android.net.nsd.INsdServiceConnector"};
+
+    private static boolean isNestedDefault(String name) {
+        for (String n : NESTED_DEFAULTS) {
+            if (name.equals(n) || name.endsWith("." + n)) return true;
+        }
+        return false;
+    }
 
     private static final Class<?> RESULT_RECEIVER = optionalClass("com.android.internal.os.IResultReceiver");
 

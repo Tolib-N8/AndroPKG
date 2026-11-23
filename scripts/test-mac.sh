@@ -21,7 +21,7 @@ run() {  # run <name> <expected-regex> <dalvikvm args...>
   ANDROPKG_BCP=full timeout 300 scripts/run-dalvikvm-mac.sh "$@" >"$log/$name.log" 2>&1 || true
   # POSIX sh: "VAR=x run ..." assignments outlive the function call; reset them per test.
   unset ANDROPKG_TEST_TAP ANDROPKG_TEST_TYPE ANDROPKG_TEST_SWIPE ANDROPKG_TEST_BACK ANDROPKG_TEST_BACKGROUND \
-        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME ANDROPKG_LOG_MEMORY
+        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME ANDROPKG_LOG_MEMORY ANDROPKG_VDEX_DELAY_MS
   grep -qE "$want" "$log/$name.log" || fail "$name" "$name"
   echo "ok   $name"
 }
@@ -72,7 +72,7 @@ echo "ok   components checks"
 # Platform services: connectivity, notification channels, asset fds, sensors, startActivities.
 ANDROPKG_TEST_SCRIPT="wait 300; accel 1,2,9.8" run platform "\[platform\] done" $(apk platform)
 for want in "network internet=true" "network callback available" "channel Channel one importance=2" \
-    "asset fd length=25" "accelerometer Accelerometer" "accel 1,2,10" "second created n=1" "second new intent n=2" "hardware bitmap pixel=ff00ff00" "parcel bitmap 4x4 pixel=ff00ff00" "software renderNode ffff0000,ff0000ff" "renderNode layer effect ff00ff00" "nsd manager=true"; do
+    "asset fd length=25" "accelerometer Accelerometer" "accel 1,2,10" "second created n=1" "second new intent n=2" "hardware bitmap pixel=ff00ff00" "parcel bitmap 4x4 pixel=ff00ff00" "software renderNode ffff0000,ff0000ff" "renderNode layer effect ff00ff00" "nsd manager=true" "nsd discover=true"; do
   grep -q "\[platform\] $want" "$log/platform.log" || fail "platform: $want" platform
 done
 echo "ok   platform checks"
@@ -165,6 +165,19 @@ first=$(grep -m1 -oE "device [0-9]+ MB" "$log/gpu-memory.log" | grep -oE "[0-9]+
 last=$(grep -oE "device [0-9]+ MB" "$log/gpu-memory.log" | tail -1 | grep -oE "[0-9]+")
 [ -n "$first" ] && [ -n "$last" ] && [ $((last - first)) -lt 64 ] || fail "gpu-memory: Metal allocation grew ${first} -> ${last} MB" gpu-memory
 echo "ok   gpu memory (${first} -> ${last} MB)"
+# Verification cache: a launch records the classes it verified into vdex files (dalvik-cache);
+# the next launch uses them. The APK is in a read-only directory, as in an iOS app bundle
+# (OatFileAssistant then also looks for an oat file next to the cached vdex).
+ro="$root/build/test-readonly"; [ -d "$ro" ] && chmod -R u+w "$ro"; rm -rf "$ro"; mkdir -p "$ro"
+cp "$root/build/apps/hello.apk" "$ro/"; chmod a-w "$ro"
+rm -f "$root"/build/android-root/data/dalvik-cache/arm64/*test-readonly*
+roapk() { echo -Xhidden-api-policy:disabled -cp build/services/services.dex dev.andropkg.system.AndroPkgSystem \
+  "$ro/hello.apk" "$root/build/android-root/data/app/hello"; }
+ANDROPKG_VDEX_DELAY_MS=200 ANDROPKG_TEST_SCRIPT="wait 4000; exit" run vdex-write \
+  "verification cache .*test-readonly@hello.apk@classes.vdex" $(roapk)
+ANDROPKG_TEST_SCRIPT="exit" run vdex-read "test: script done" -verbose:oat $(roapk)
+grep -qE "Successfully loaded .*test-readonly@hello.apk@classes.vdex" "$log/vdex-read.log" || fail "vdex-read: cache not used" vdex-read
+echo "ok   verification cache used"
 ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)
 for want in "\[glsv\] center=ff00ff error=0" "\[glsv\] fps=(5[5-9]|6[0-5])" "test: pixel 540,1200 = ff00ff" \
     "test: pixel 30,1200 = 00ff00"; do
