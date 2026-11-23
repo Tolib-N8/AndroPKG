@@ -172,6 +172,17 @@ sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer) {
   }  // @autoreleasepool
 }
 
+sk_sp<SkImage> RasterImageOf(const sk_sp<SkImage>& image) {
+  @autoreleasepool {
+  std::lock_guard<std::recursive_mutex> g(Mutex());
+  State& s = S();
+  if (!s.context) return nullptr;
+  sk_sp<SkImage> raster = image->makeRasterImage();
+  s.context->submit(true);  // wait for the transfer; frees its buffers before the pool drains
+  return raster;
+  }  // @autoreleasepool
+}
+
 struct Buffers::Impl {
   GrBackendTexture tex[2];
   sk_sp<SkSurface> surface[2];

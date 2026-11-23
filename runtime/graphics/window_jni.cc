@@ -166,6 +166,16 @@ struct WindowSurface {
   // A surface drawn on the CPU (the NDK's ANativeWindow) has none and keeps `pixels`.
   std::unique_ptr<andropkg_gpu::Buffers> gpu;
   sk_sp<SkImage> gpuFrame;
+  // A decoded video frame (MediaCodec): `videoImage` is `gpuFrame` while it shows `videoBuffer`
+  // (retained), which a canvas in memory copies from directly instead of reading the GPU back.
+  sk_sp<SkImage> videoImage;
+  CVPixelBufferRef videoBuffer = nullptr;
+  void SetVideoBuffer(CVPixelBufferRef pb) {
+    if (pb) CVPixelBufferRetain(pb);
+    if (videoBuffer) CVPixelBufferRelease(videoBuffer);
+    videoBuffer = pb;
+  }
+  ~WindowSurface() { SetVideoBuffer(nullptr); }
   // A SurfaceTexture's buffer: frames posted here notify it instead of a window.
   struct Texture* texture = nullptr;
 };
@@ -452,6 +462,8 @@ extern "C" __attribute__((visibility("default"))) void andropkg_surface_post_pix
     std::lock_guard<std::mutex> g(s->lock);
     if (image) {
       s->gpuFrame = image;
+      s->videoImage = image;
+      s->SetVideoBuffer(pb);
     } else if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) == kCVReturnSuccess) {
       const auto* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddress(pb));
       size_t stride = CVPixelBufferGetBytesPerRow(pb);
@@ -1582,6 +1594,11 @@ void RunTestScript(std::string script) {
       }
     } else if (op == "log") {
       // logged above
+    } else if (op == "exit") {  // apps that never finish themselves: end the run here
+      ALOGI("test: script done");
+      fflush(stdout);
+      fflush(stderr);
+      _exit(0);
     } else {
       ALOGW("test: unknown command '%s'", cmd.c_str());
     }
@@ -1842,6 +1859,17 @@ jlong s_createFromSurfaceTexture(JNIEnv* env, jclass, jobject st) {
 // renderer's texture layer does. The SurfaceTexture is created when the view first draws with a
 // size (TextureView.getTextureLayer) and announced to the listener; then the latest frame is
 // drawn over the view's bounds, through setTransform's matrix.
+// A copy of a 32BGRA pixel buffer's pixels as a raster image.
+sk_sp<SkImage> RasterCopyOf(CVPixelBufferRef pb) {
+  if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) return nullptr;
+  SkImageInfo info = SkImageInfo::Make((int)CVPixelBufferGetWidth(pb), (int)CVPixelBufferGetHeight(pb),
+                                       kBGRA_8888_SkColorType, kOpaque_SkAlphaType);
+  sk_sp<SkImage> image = SkImage::MakeRasterCopy(
+      SkPixmap(info, CVPixelBufferGetBaseAddress(pb), CVPixelBufferGetBytesPerRow(pb)));
+  CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+  return image;
+}
+
 void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
   int w = env->CallIntMethod(view, gTex.getWidth), h = env->CallIntMethod(view, gTex.getHeight);
   if (w <= 0 || h <= 0) return;
@@ -1866,10 +1894,13 @@ void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
   SkCanvas* sk = android::andropkg_skcanvas_of(env, canvas);
   if (!t || !sk) return;
   sk_sp<SkImage> image;
+  bool inMemory = sk->recordingContext() == nullptr;
   {
     std::lock_guard<std::mutex> g(t->surface->lock);
     WindowSurface* s = t->surface;
-    if (s->gpuFrame) {
+    if (s->gpuFrame && inMemory && s->gpuFrame == s->videoImage && s->videoBuffer) {
+      image = RasterCopyOf(s->videoBuffer);  // a video frame: its pixels are in memory already
+    } else if (s->gpuFrame) {
       image = s->gpuFrame;
     } else if (s->drawnW > 0 && s->pixels.size() >= static_cast<size_t>(s->drawnW) * s->drawnH) {
       SkImageInfo info = SkImageInfo::Make(s->drawnW, s->drawnH, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
@@ -1877,11 +1908,9 @@ void tv_draw(JNIEnv* env, jobject view, jobject canvas) {
     }
   }
   if (!image) return;
-  if (image->isTextureBacked() && sk->recordingContext() == nullptr) {
-    // A canvas in memory (a view snapshot, a software layer): read the GPU frame back first,
-    // holding the GPU lock (the context is not thread-safe; the compositor may be using it).
-    std::lock_guard<std::recursive_mutex> gpu(andropkg_gpu::Mutex());
-    image = image->makeRasterImage();
+  if (image->isTextureBacked() && inMemory) {
+    // A canvas in memory (a view snapshot, a software layer): read the GPU frame back first.
+    image = andropkg_gpu::RasterImageOf(image);
     if (!image) return;
   }
   sk->save();

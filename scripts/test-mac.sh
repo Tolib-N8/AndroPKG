@@ -154,12 +154,12 @@ grep -qE "test: pixel 540,1850 = f[0-9a-f]f[0-9a-f]0[0-9a-f]" "$log/video.log" |
 grep -qE "test: pixel 200,2150 = f[0-9a-f]0[0-9a-f]f[0-9a-f]" "$log/video.log" || fail "video: VideoView frame not magenta" video
 echo "ok   video checks"
 # Multi-touch: a two-finger pinch (POINTER_DOWN/UP, moves with both fingers, ScaleGestureDetector).
-ANDROPKG_TEST_SCRIPT="wait 1500; pinch 540,1200,200,700; wait 500" run touch \
+ANDROPKG_TEST_SCRIPT="wait 1500; pinch 540,1200,200,700; wait 500; exit" run touch \
   "TouchTest.*pointers=2 pointerDown=1 pointerUp=1 twoFingerMoves=true zoomed=true" $(apk touch)
 
 # GPU memory: a window redrawn as fast as it can (no video) must not grow the Metal allocation
 # (autoreleased Metal objects on ART threads once leaked a display-sized texture per frame).
-ANDROPKG_LOG_MEMORY=1 ANDROPKG_TEST_SCRIPT="wait 6000" run gpu-memory "test: script done" \
+ANDROPKG_LOG_MEMORY=1 ANDROPKG_TEST_SCRIPT="wait 6000; exit" run gpu-memory "test: script done" \
   -Dandropkg.video.soak=anim $(apk video)
 first=$(grep -m1 -oE "device [0-9]+ MB" "$log/gpu-memory.log" | grep -oE "[0-9]+")
 last=$(grep -oE "device [0-9]+ MB" "$log/gpu-memory.log" | tail -1 | grep -oE "[0-9]+")

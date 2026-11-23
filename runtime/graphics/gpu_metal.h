@@ -49,6 +49,9 @@ bool PresentsToLayer();
 /// A GPU image of a decoded video frame (a 32BGRA, Metal-compatible CVPixelBufferRef), without
 /// copying it; nullptr if it can't be wrapped.
 sk_sp<SkImage> ImageFromPixelBuffer(void* pixel_buffer);
+// A raster copy of a GPU image (for a canvas in memory), under the GPU lock and an autorelease
+// pool: the readback's Metal objects are autoreleased, and ART threads have no pool of their own.
+sk_sp<SkImage> RasterImageOf(const sk_sp<SkImage>& image);
 
 /// The Metal device's allocated memory (diagnostics).
 int64_t AllocatedKB();

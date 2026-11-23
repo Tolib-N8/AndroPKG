@@ -74,9 +74,11 @@ final class LocalService {
                     if (reported.add(name + "/" + arity)) Log.w(TAG, shortName + "." + name + "() -> default");
                     replyToResultReceivers(args);
                     Class<?> ret = method.getReturnType();
-                    if (ret.isInterface() && IInterface.class.isAssignableFrom(ret)) {
-                        // A sub-service (NsdManager's connect() -> INsdServiceConnector, ...):
-                        // defaults all the way down rather than a null the caller dereferences.
+                    if (NESTED_DEFAULTS.contains(ret.getName())) {
+                        // A sub-service the caller dereferences without a null check (NsdManager's
+                        // connect() -> INsdServiceConnector): defaults all the way down. Other
+                        // callers (ImeTracker, ...) handle a null service and must get one, since
+                        // a default proxy's null results break them further in.
                         return create(ret.getName(), new Object()).iface;
                     }
                     return Hidden.defaultValue(ret);
@@ -100,6 +102,9 @@ final class LocalService {
             }
         }
     }
+
+    private static final java.util.Set<String> NESTED_DEFAULTS =
+            java.util.Collections.singleton("android.net.nsd.INsdServiceConnector");
 
     private static final Class<?> RESULT_RECEIVER = optionalClass("com.android.internal.os.IResultReceiver");
 
