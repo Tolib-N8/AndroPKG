@@ -19,6 +19,9 @@
 extern const struct JNINativeInterface *andropkg_jni_base_table(void) __attribute__((weak));
 extern void andropkg_jni_set_table_override(const struct JNINativeInterface *t) __attribute__((weak));
 extern const void *andropkg_jni_current_native_code(void) __attribute__((weak));
+extern bool andropkg_jni_is_trampoline_return(const void *pc) __attribute__((weak));
+extern bool andropkg_jni_ref_valid(JNIEnv *env, jobject obj) __attribute__((weak));
+extern void andropkg_jni_method_name(JNIEnv *env, jmethodID mid, char *out, size_t n) __attribute__((weak));
 
 // ---- who is calling? ---------------------------------------------------------------------------
 // The return address alone is not enough: `return (*env)->CallIntMethod(...)` compiles to a tail
@@ -47,6 +50,15 @@ static bool in_this_library(uintptr_t pc) {
 
 static bool android_caller(uintptr_t ra) {
     if (ndk_is_android_pc(ra) || in_this_library(ra)) return true;
+    // A return into another image is that image's own call, Darwin code (ART's ClassLinker
+    // calling ClassLoader.loadClass through CallObjectMethodV, libcore's natives, the runtime),
+    // even while an Android native method is running: deciding by the running native method
+    // there decoded a Darwin va_list as an AAPCS64 one whenever the stack garbage looked like
+    // one (corrupt arguments: a stack address as a String, 1 as an object). The exception is a
+    // return into ART's JNI trampoline: the native method tail-called the JNI function.
+    Dl_info d;
+    bool trampoline = andropkg_jni_is_trampoline_return && andropkg_jni_is_trampoline_return((const void *)ra);
+    if (!trampoline && dladdr((const void *)ra, &d) && d.dli_fbase != NULL) return false;
     const void *code = andropkg_jni_current_native_code ? andropkg_jni_current_native_code() : NULL;
     return code && ndk_is_android_pc((uintptr_t)code);
 }
@@ -205,12 +217,36 @@ static void to_jvalues(const char *types, ndk_va *v, jvalue *out) {
     }
 
 static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, double *fr) {
-    (void)caller;
-    if (is_aapcs_va_list(ap)) {
+    // A Darwin caller's va_list is Darwin's (ART itself: JNIEnv::CallObjectMethod(...) calls
+    // CallObjectMethodV, from ClassLinker::FindClass's ClassLoader.loadClass and elsewhere).
+    // Telling the formats apart by their contents alone took a Darwin va_list for an AAPCS64
+    // one whenever its argument slots looked like one (stack addresses, small offsets), and
+    // passed stack garbage as arguments: Spotify crashed about one launch in ten.
+    if (android_caller(caller) && is_aapcs_va_list(ap)) {
         ndk_va_from_list(v, (ndk_aapcs_va_list *)ap, gr, fr, 8);
     } else {
         memset(v, 0, sizeof *v);
         v->stack = (const uint64_t *)ap;  // a Darwin va_list: consecutive 8-byte slots
+    }
+}
+
+// ANDROPKG_CHECK_REFS=1 (debugging): every reference argument is checked, and a call whose
+// arguments decode to something that is not an object is logged with its caller.
+static void check_refs(JNIEnv *env, jmethodID mid, const char *t, const jvalue *a, uintptr_t ra, const char *how) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("ANDROPKG_CHECK_REFS") != NULL;
+    if (!enabled || !andropkg_jni_ref_valid) return;
+    for (int i = 0; t[i]; i++) {
+        if (t[i] == 'L' && !andropkg_jni_ref_valid(env, a[i].l)) {
+            char name[256] = "?";
+            if (andropkg_jni_method_name) andropkg_jni_method_name(env, mid, name, sizeof name);
+            Dl_info d = {0};
+            dladdr((const void *)ra, &d);
+            ndk_log(NDK_LOG_ERROR, "bad JNI argument %d (%p) to %s (%s; caller %p %s+%#lx, android=%d)", i,
+                    (void *)a[i].l, name, how, (void *)ra, d.dli_fname ? strrchr(d.dli_fname, '/') + 1 : "?",
+                    (unsigned long)(ra - (uintptr_t)d.dli_fbase), (int)android_caller(ra));
+            return;
+        }
     }
 }
 
@@ -224,6 +260,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, NULL, obj, mid, false, t, sizeof t);                             \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->Call##Type##MethodA(env, obj, mid, a);                                                \
     }                                                                                                   \
     static jtype w_Call##Type##MethodV(JNIEnv *env, jobject obj, jmethodID mid, void *ap) {             \
@@ -232,6 +269,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, NULL, obj, mid, false, t, sizeof t);                             \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->Call##Type##MethodA(env, obj, mid, a);                                                \
     }                                                                                                   \
     static jtype w_CallStatic##Type##Method(JNIEnv *env, jclass cls, jmethodID mid, VA_REST) {          \
@@ -239,6 +277,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, cls, NULL, mid, true, t, sizeof t);                                                      \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->CallStatic##Type##MethodA(env, cls, mid, a);                                          \
     }                                                                                                   \
     static jtype w_CallStatic##Type##MethodV(JNIEnv *env, jclass cls, jmethodID mid, void *ap) {        \
@@ -247,6 +286,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, cls, NULL, mid, true, t, sizeof t);                                                      \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->CallStatic##Type##MethodA(env, cls, mid, a);                                          \
     }                                                                                                   \
     /* CallNonvirtual: (env, obj, cls, mid, ...) — one more named register (x3). */                     \
@@ -265,6 +305,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, cls, NULL, mid, false, t, sizeof t);                                                     \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->CallNonvirtual##Type##MethodA(env, obj, cls, mid, a);                                 \
     }                                                                                                   \
     static jtype w_CallNonvirtual##Type##MethodV(JNIEnv *env, jobject obj, jclass cls, jmethodID mid,   \
@@ -274,6 +315,7 @@ static void va_from_any(ndk_va *v, void *ap, uintptr_t caller, uint64_t *gr, dou
         char t[ARGS_MAX]; jvalue a[ARGS_MAX];                                                           \
         sig_get(env, cls, NULL, mid, false, t, sizeof t);                                                     \
         to_jvalues(t, &v, a);                                                                           \
+        check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");                       \
         return B->CallNonvirtual##Type##MethodA(env, obj, cls, mid, a);                                 \
     }
 
@@ -294,6 +336,7 @@ static jobject w_NewObject(JNIEnv *env, jclass cls, jmethodID mid, VA_REST) {
     jvalue a[ARGS_MAX];
     sig_get(env, cls, NULL, mid, false, t, sizeof t);
     to_jvalues(t, &v, a);
+    check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");
     return B->NewObjectA(env, cls, mid, a);
 }
 static jobject w_NewObjectV(JNIEnv *env, jclass cls, jmethodID mid, void *ap) {
@@ -305,6 +348,7 @@ static jobject w_NewObjectV(JNIEnv *env, jclass cls, jmethodID mid, void *ap) {
     jvalue a[ARGS_MAX];
     sig_get(env, cls, NULL, mid, false, t, sizeof t);
     to_jvalues(t, &v, a);
+    check_refs(env, mid, t, a, (uintptr_t)__builtin_return_address(0), "jni");
     return B->NewObjectA(env, cls, mid, a);
 }
 

@@ -687,7 +687,7 @@ index 87e9525..9fa967c 100644
  #else
  #define ART_USE_FUTEXES 0
 diff --git a/runtime/class_linker.cc b/runtime/class_linker.cc
-index c4a3165..34bcff0 100644
+index c4a3165..32e24d1 100644
 --- a/runtime/class_linker.cc
 +++ b/runtime/class_linker.cc
 @@ -39,6 +39,7 @@
@@ -736,7 +736,30 @@ index c4a3165..34bcff0 100644
      dst->SetDataPtrSize(nullptr, image_pointer_size_);  // JNI stub/trampoline not linked yet.
    } else if ((access_flags & kAccAbstract) != 0u) {
      dst->SetAccessFlags(access_flags);
-@@ -8282,6 +8306,9 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
+@@ -4870,6 +4894,22 @@ verifier::FailureKind ClassLinker::VerifyClass(Thread* self,
+   } else if (oat_file_class_status == ClassStatus::kVerifiedNeedsAccessChecks) {
+     verifier_failure = verifier::FailureKind::kAccessChecksFailure;
+   }
++#if defined(ANDROPKG)
++  // ANDROPKG_VDEX_CHECK=1 (debugging the verification caches): a class a vdex says is verified
++  // is verified again, and a disagreement is logged.
++  static const bool andropkg_vdex_check = getenv("ANDROPKG_VDEX_CHECK") != nullptr;
++  if (preverified && andropkg_vdex_check) {
++    std::string check_msg;
++    verifier::FailureKind check =
++        PerformClassVerification(self, /*verifier_deps=*/nullptr, klass, log_level, &check_msg);
++    if (check != verifier::FailureKind::kNoFailure) {
++      LOG(WARNING) << "andropkg-vdex-check: " << klass->PrettyDescriptor() << " preverified ("
++                   << oat_file_class_status << ") but verifies with failure " << check << ": "
++                   << check_msg;
++    }
++    if (self->IsExceptionPending()) self->ClearException();
++  }
++#endif
+ 
+   // Verification is done, grab the lock again.
+   ObjectLock<mirror::Class> lock(self, klass);
+@@ -8282,6 +8322,9 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
                                  Allocator::GetNoopAllocator(),
                                  bit_vector_size,
                                  bit_vector_buffer_ptr);
@@ -769,7 +792,7 @@ index 7b3d849..fa865cf 100644
      case gc::kAllocatorTypeDlMalloc: {
        SetQuickAllocEntryPoints_dlmalloc(qpoints, entry_points_instrumented);
 diff --git a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
-index 7e96f29..da2d4de 100644
+index 7e96f29..e58b54c 100644
 --- a/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
 +++ b/runtime/entrypoints/quick/quick_trampoline_entrypoints.cc
 @@ -58,8 +58,47 @@
@@ -937,7 +960,26 @@ index 7e96f29..da2d4de 100644
   private:
    uintptr_t* cur_gpr_reg_;
    uint32_t* cur_fpr_reg_;
-@@ -1918,10 +1988,16 @@ void BuildGenericJniFrameVisitor::Visit() {
+@@ -1906,6 +1976,18 @@ void BuildGenericJniFrameVisitor::Visit() {
+     case Primitive::kPrimNot: {
+       mirror::Object* obj =
+           reinterpret_cast<StackReference<mirror::Object>*>(GetParamAddress())->AsMirrorPtr();
++#if defined(ANDROPKG)
++      // ANDROPKG_CHECK_REFS=1 (debugging): a reference argument that is not an object aborts,
++      // with every thread's Java stack.
++      static const bool andropkg_check_refs = getenv("ANDROPKG_CHECK_REFS") != nullptr;
++      if (andropkg_check_refs && obj != nullptr &&
++          ((reinterpret_cast<uintptr_t>(obj) & 7u) != 0u ||
++           !Runtime::Current()->GetHeap()->IsValidObjectAddress(obj) ||
++           obj->GetClass<kVerifyNone, kWithoutReadBarrier>() == nullptr)) {
++        LOG(FATAL) << "andropkg: bad reference argument " << obj << " (at "
++                   << reinterpret_cast<void*>(GetParamAddress()) << ")";
++      }
++#endif
+       StackReference<mirror::Object>* spill_ref =
+           reinterpret_cast<StackReference<mirror::Object>*>(current_vreg_);
+       spill_ref->Assign(obj);
+@@ -1918,10 +2000,16 @@ void BuildGenericJniFrameVisitor::Visit() {
        current_vreg_ += 1u;
        break;
      case Primitive::kPrimBoolean:  // Fall-through.
@@ -957,7 +999,7 @@ index 7e96f29..da2d4de 100644
        sm_.AdvanceInt(*reinterpret_cast<jint*>(GetParamAddress()));
        current_vreg_ += 1u;
        break;
-@@ -1964,6 +2040,22 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
+@@ -1964,6 +2052,22 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
    bool fast_native = called->IsFastNative();
    bool normal_native = !critical_native && !fast_native;
  
@@ -980,7 +1022,7 @@ index 7e96f29..da2d4de 100644
    // Run the visitor and update sp.
    BuildGenericJniFrameVisitor visitor(self,
                                        called->IsStatic(),
-@@ -1976,6 +2068,9 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
+@@ -1976,6 +2080,9 @@ extern "C" const void* artQuickGenericJniTrampoline(Thread* self,
      ScopedAssertNoThreadSuspension sants(__FUNCTION__);
      visitor.VisitArguments();
    }
@@ -990,7 +1032,7 @@ index 7e96f29..da2d4de 100644
  
    // Fix up managed-stack things in Thread. After this we can walk the stack.
    self->SetTopOfStackGenericJniTagged(managed_sp);
-@@ -2164,12 +2259,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
+@@ -2164,12 +2271,14 @@ EXPLICIT_INVOKE_COMMON_TEMPLATE_DECL(kSuper);
  extern "C" TwoWordReturn artInvokeInterfaceTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1005,7 +1047,7 @@ index 7e96f29..da2d4de 100644
    return artInvokeCommon<kDirect>(method_idx, this_object, self, sp);
  }
  
-@@ -2178,6 +2275,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2178,6 +2287,7 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
      mirror::Object* this_object ATTRIBUTE_UNUSED,
      Thread* self,
      ArtMethod** sp) REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1013,7 +1055,7 @@ index 7e96f29..da2d4de 100644
    // For static, this_object is not required and may be random garbage. Don't pass it down so that
    // it doesn't cause ObjPtr alignment failure check.
    return artInvokeCommon<kStatic>(method_idx, nullptr, self, sp);
-@@ -2186,12 +2284,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
+@@ -2186,12 +2296,14 @@ extern "C" TwoWordReturn artInvokeStaticTrampolineWithAccessCheck(
  extern "C" TwoWordReturn artInvokeSuperTrampolineWithAccessCheck(
      uint32_t method_idx, mirror::Object* this_object, Thread* self, ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1028,7 +1070,7 @@ index 7e96f29..da2d4de 100644
    return artInvokeCommon<kVirtual>(method_idx, this_object, self, sp);
  }
  
-@@ -2202,6 +2302,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
+@@ -2202,6 +2314,7 @@ extern "C" TwoWordReturn artInvokeInterfaceTrampoline(ArtMethod* interface_metho
                                                        Thread* self,
                                                        ArtMethod** sp)
      REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1753,21 +1795,27 @@ index 7ae6c99..aab9ef9 100644
        runtime_->GetTargetSdkVersion(),
        path_str,
 diff --git a/runtime/jni/jni_env_ext.cc b/runtime/jni/jni_env_ext.cc
-index bef0fd3..365eb4c 100644
+index bef0fd3..2e4a4d3 100644
 --- a/runtime/jni/jni_env_ext.cc
 +++ b/runtime/jni/jni_env_ext.cc
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,16 @@
  
  #include "jni_env_ext.h"
  
++#include "entrypoints/runtime_asm_entrypoints.h"
++
 +#include "art_method-inl.h"
++#include "runtime.h"
++#include "gc/heap.h"
++#include "jni/jni_internal.h"
++#include "scoped_thread_state_change-inl.h"
 +#include "managed_stack.h"
 +#include "jni/local_reference_table-inl.h"  // andropkg: needed without LTO/inlining
 +
  #include <algorithm>
  #include <vector>
  
-@@ -331,3 +335,25 @@ void JNIEnvExt::ResetFunctionTable() {
+@@ -331,3 +341,47 @@ void JNIEnvExt::ResetFunctionTable() {
  }
  
  }  // namespace art
@@ -1787,6 +1835,28 @@ index bef0fd3..365eb4c 100644
 +  if (frame == nullptr || *frame == nullptr) return nullptr;
 +  art::ArtMethod* m = *frame;
 +  return m->IsNative() ? m->GetEntryPointFromJni() : nullptr;
++}
++// True if `pc` (a JNI function's return address) is in ART's generic JNI trampoline: the native
++// method it called tail-called the JNI function, so the caller is that native method's code.
++extern "C" __attribute__((visibility("default"))) bool andropkg_jni_is_trampoline_return(const void* pc) {
++  const uint8_t* stub = reinterpret_cast<const uint8_t*>(art::GetQuickGenericJniStub());
++  const uint8_t* p = reinterpret_cast<const uint8_t*>(pc);
++  return p >= stub && p < stub + 1024;  // (the trampoline's own code; no JNI calls follow it)
++}
++// Debugging (ANDROPKG_CHECK_REFS): whether `obj` is null or a reference to a valid object, and
++// the method `mid` names.
++extern "C" __attribute__((visibility("default"))) bool andropkg_jni_ref_valid(JNIEnv* env, jobject obj) {
++  if (obj == nullptr) return true;
++  art::ScopedObjectAccess soa(env);
++  art::ObjPtr<art::mirror::Object> o = soa.Decode<art::mirror::Object>(obj);
++  return o != nullptr && art::Runtime::Current()->GetHeap()->IsValidObjectAddress(o.Ptr()) &&
++         o->GetClass<art::kVerifyNone, art::kWithoutReadBarrier>() != nullptr;
++}
++extern "C" __attribute__((visibility("default"))) void andropkg_jni_method_name(JNIEnv* env, jmethodID mid,
++                                                                               char* out, size_t n) {
++  art::ScopedObjectAccess soa(env);
++  std::string s = art::jni::DecodeArtMethod(mid)->PrettyMethod();
++  snprintf(out, n, "%s", s.c_str());
 +}
 +extern "C" __attribute__((visibility("default"))) void andropkg_jni_set_table_override(
 +    const JNINativeInterface* table) {

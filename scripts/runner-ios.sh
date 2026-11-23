@@ -21,11 +21,16 @@ for t in "$root"/tests/*/; do
   JAVA_HOME=$J "$HOME/Library/Android/sdk/build-tools/36.0.0/d8" --min-api 34 --lib "$sdkjar" --output "$outd" "$outd"/*.class
 done
 "$root/scripts/build-java.sh" >/dev/null
-"$root/scripts/preverify.sh" boot
-if [ "${1:-}" = --apk ]; then  # the app's classes verified ahead of time (once per APK)
-  for a in "$root/build/apps/$2.apk" "$root/build/apps-ext/$2.apk" "$root/build/apps-ext/$2"; do
-    [ -e "$a" ] && { "$root/scripts/preverify.sh" "$a"; break; }
-  done
+# Classes verified ahead of time (scripts/preverify.sh): opt-in with ANDROPKG_PREVERIFY_BUILD=1.
+# Off by default: the faster startup exposes a runtime race (DefaultDispatcher threads see
+# corrupt references, ~1 launch in 6 on the Mac) that is not found yet.
+if [ -n "${ANDROPKG_PREVERIFY_BUILD:-}" ]; then
+  "$root/scripts/preverify.sh" boot
+  if [ "${1:-}" = --apk ]; then  # the app's classes (once per APK)
+    for a in "$root/build/apps/$2.apk" "$root/build/apps-ext/$2.apk" "$root/build/apps-ext/$2"; do
+      [ -e "$a" ] && { "$root/scripts/preverify.sh" "$a"; break; }
+    done
+  fi
 fi
 "$root/scripts/stage-android-root.sh" "$root/build/ios-stage" >/dev/null
 # Native code of every staged APK: converted + signed with the development identity, inside the
