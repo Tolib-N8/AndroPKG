@@ -178,7 +178,37 @@ public enum ElfWrapper {
                 v += 4
             }
         }
-        return sites
+        // Functions andropkg replaces (PatchKind.hookedFunctions), where the image defines them.
+        for (i, name) in PatchKind.hookedFunctions.enumerated() {
+            guard let v = definedFunction(elf: elf, name: name),
+                  ranges.contains(where: { $0.contains(v) }) else { continue }
+            sites.removeAll { $0.vaddr == v }
+            sites.append(PatchSite(vaddr: v, kind: .hook(index: UInt32(i))))
+        }
+        return sites.sorted { $0.vaddr < $1.vaddr }
+    }
+
+    /// The address of a function the image defines and exports (.dynsym), if any.
+    static func definedFunction(elf: ElfFile, name: String) -> UInt64? {
+        guard let symtab = elf.sections.first(where: { $0.name == ".dynsym" }),
+              let strtab = elf.sections.first(where: { $0.name == ".dynstr" }) else { return nil }
+        let b = elf.bytes
+        func u16(_ o: Int) -> UInt16 { UInt16(b[o]) | UInt16(b[o + 1]) << 8 }
+        func u32(_ o: Int) -> UInt32 { (0..<4).reduce(0) { $0 | UInt32(b[o + $1]) << (8 * UInt32($1)) } }
+        func u64(_ o: Int) -> UInt64 { (0..<8).reduce(0) { $0 | UInt64(b[o + $1]) << (8 * UInt64($1)) } }
+        let target = Array(name.utf8)
+        var o = Int(symtab.offset)
+        let end = Int(symtab.offset + symtab.size)
+        while o + 24 <= end, o + 24 <= b.count {
+            let nameOff = Int(strtab.offset) + Int(u32(o))
+            let info = b[o + 4], shndx = u16(o + 6), value = u64(o + 8)
+            if info & 0xF == 2 /* STT_FUNC */, shndx != 0, value != 0, nameOff + target.count < b.count,
+               Array(b[nameOff..<(nameOff + target.count)]) == target, b[nameOff + target.count] == 0 {
+                return value
+            }
+            o += 24
+        }
+        return nil
     }
 
     static func readWord(_ segments: [Segment], at v: UInt64) -> UInt32? {

@@ -20,8 +20,30 @@ import Testing
         #expect(words[1] == 0xD53B_D065)  // mrs x5, tpidrro_el0
         #expect(words[2] == 0x927D_F0A5)  // and x5, x5, #~7
         #expect(words[5] == 0xF870_68A5)  // ldr x5, [x5, x16]
-        #expect(words[6] == 0xF841_07F0)  // ldr x16, [sp], #16
-        #expect(words[7] == 0x17FF_CFFA)  // b 0x4004 (from 0x1001c)
+        #expect(words[6] == 0xB500_00E5)  // cbnz x5, +7 (no TCB yet: the slow path, words 7-12)
+        #expect(words[13] == 0xF841_07F0) // ldr x16, [sp], #16
+        #expect(words[14] == 0x17FF_CFF3) // b 0x4004 (from 0x10038)
+    }
+
+    @Test func ctrReadBecomesConstant() throws {
+        #expect(PatchKind(instruction: 0xD53B_0023) == .ctrRead(rt: 3))   // mrs x3, ctr_el0
+        let bytes = try PatchKind.ctrRead(rt: 3).trampolineBytes(at: 0x10000, site: 0x4000, dataBase: 0x14000)
+        let words = stride(from: 0, to: bytes.count, by: 4).map {
+            UInt32(bytes[$0]) | UInt32(bytes[$0 + 1]) << 8 | UInt32(bytes[$0 + 2]) << 16 | UInt32(bytes[$0 + 3]) << 24
+        }
+        #expect(words[0] == 0xD298_0083)  // movz x3, #0xc004
+        #expect(words[1] == 0xF2B6_8883)  // movk x3, #0xb444, lsl #16
+        #expect(words[2] == 0x17FF_CFFF)  // b 0x4004 (from 0x10008)
+    }
+
+    @Test func hookJumpsThroughItsDataSlot() throws {
+        let bytes = try PatchKind.hook(index: 1).trampolineBytes(at: 0x10000, site: 0x4000, dataBase: 0x14000)
+        let words = stride(from: 0, to: bytes.count, by: 4).map {
+            UInt32(bytes[$0]) | UInt32(bytes[$0 + 1]) << 8 | UInt32(bytes[$0 + 2]) << 16 | UInt32(bytes[$0 + 3]) << 24
+        }
+        #expect(words[0] == 0x9000_0030)  // adrp x16, 0x14000 (4 pages up)
+        #expect(words[1] == 0xF940_1210)  // ldr x16, [x16, #32]  (slot 24 + 8)
+        #expect(words[2] == 0xD61F_0200)  // br x16
     }
 
     @Test func tpReadOfX16UsesX17Scratch() throws {
@@ -70,11 +92,12 @@ import Testing
         #expect(r.machO.count % 0x4000 == 16)                          // pages + linkedit stub
     }
 
-    @Test func rejects4KSharedPages() throws {
+    /// ELFs linked for 4 KB pages (code and data on one 16 KB page) are laid out again
+    /// (Layout4K) instead of being rejected.
+    @Test func relaysOut4KSharedPages() throws {
         let elf = try ElfFile(bytes: Self.makeElf(secondSegmentVaddr: 0x1200))
-        #expect(throws: ConverterError.self) {
-            try ElfWrapper.wrap(elf, options: .init(platform: .iOS, installName: "t"))
-        }
+        let r = try ElfWrapper.wrap(elf, options: .init(platform: .iOS, installName: "t"))
+        #expect(r.segmentMap.contains { $0.contains("4KB-page ELF") })
     }
 
     @Test func rejectsNonElf() {

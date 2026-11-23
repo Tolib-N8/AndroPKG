@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
         Log.i(TAG, "[platform] renderNode layer effect " + Integer.toHexString(fxTarget.getPixel(3, 2)));
         // Network service discovery: a manager (no exception storm), discovery that finds nothing.
         android.net.nsd.NsdManager nsd = getSystemService(android.net.nsd.NsdManager.class);
+        Log.i(TAG, "[platform] debug heap>0=" + (android.os.Debug.getNativeHeapAllocatedSize() > 0)
+                + " pss>0=" + (android.os.Debug.getPss() > 0));
         Log.i(TAG, "[platform] nsd manager=" + (nsd != null));
         try {  // Spotify: discovery through the INsdServiceConnector sub-service
             nsd.discoverServices("_spotify-connect._tcp", android.net.nsd.NsdManager.PROTOCOL_DNS_SD,

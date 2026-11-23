@@ -1,6 +1,8 @@
 // andropkg: framework natives whose subsystem doesn't exist in a single iOS process. Each
 // answers the way a device without that feature would.
 #include <errno.h>
+#include <mach/mach.h>
+#include <malloc/malloc.h>
 #include <fcntl.h>
 #include <jni.h>
 #include <sys/event.h>
@@ -128,10 +130,62 @@ const JNINativeMethod kIncrementalManager[] = {
     M("nativeUnsafeGetFileSignature", "(Ljava/lang/String;)[B", im_unsafeGetFileSignature),
 };
 
+// android.os.Debug (android_os_Debug.cpp reads /proc and mallinfo): the native heap from
+// Darwin's malloc zones, the process footprint from task_info. Apps show these (Mindustry's
+// HUD) or log them.
+malloc_statistics_t HeapStats() {
+  malloc_statistics_t st = {};
+  malloc_zone_statistics(nullptr, &st);  // all zones
+  return st;
+}
+jlong dbg_heapSize(JNIEnv*, jclass) { return static_cast<jlong>(HeapStats().size_allocated); }
+jlong dbg_heapAllocated(JNIEnv*, jclass) { return static_cast<jlong>(HeapStats().size_in_use); }
+jlong dbg_heapFree(JNIEnv*, jclass) {
+  malloc_statistics_t st = HeapStats();
+  return static_cast<jlong>(st.size_allocated - st.size_in_use);
+}
+jlong FootprintKb() {
+  task_vm_info_data_t info = {};
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
+    return 0;
+  }
+  return static_cast<jlong>(info.phys_footprint / 1024);
+}
+jlong dbg_getPss(JNIEnv*, jclass) { return FootprintKb(); }
+jlong dbg_getRss(JNIEnv*, jclass) { return FootprintKb(); }
+jlong dbg_getPssPid(JNIEnv* env, jclass, jint, jlongArray uss, jlongArray memtrack) {
+  jlong kb = FootprintKb();
+  if (uss != nullptr && env->GetArrayLength(uss) > 0) env->SetLongArrayRegion(uss, 0, 1, &kb);
+  return kb;
+}
+jlong dbg_getRssPid(JNIEnv*, jclass, jint, jlongArray) { return FootprintKb(); }
+void dbg_getMemoryInfo(JNIEnv*, jclass, jobject) {}  // (fields stay 0)
+jboolean dbg_getMemoryInfoPid(JNIEnv*, jclass, jint, jobject) { return JNI_FALSE; }
+void dbg_getMemInfo(JNIEnv*, jclass, jlongArray) {}
+jlong dbg_minusOne(JNIEnv*, jclass) { return -1; }
+jboolean dbg_false(JNIEnv*, jclass) { return JNI_FALSE; }
+
+const JNINativeMethod kDebug[] = {
+    M("getNativeHeapSize", "()J", dbg_heapSize),
+    M("getNativeHeapAllocatedSize", "()J", dbg_heapAllocated),
+    M("getNativeHeapFreeSize", "()J", dbg_heapFree),
+    M("getPss", "()J", dbg_getPss),
+    M("getRss", "()J", dbg_getRss),
+    M("getPss", "(I[J[J)J", dbg_getPssPid),
+    M("getRss", "(I[J)J", dbg_getRssPid),
+    M("getMemoryInfo", "(Landroid/os/Debug$MemoryInfo;)V", dbg_getMemoryInfo),
+    M("getMemoryInfo", "(ILandroid/os/Debug$MemoryInfo;)Z", dbg_getMemoryInfoPid),
+    M("getMemInfo", "([J)V", dbg_getMemInfo),
+    M("getZramFreeKb", "()J", dbg_minusOne),
+    M("isVmapStack", "()Z", dbg_false),
+};
+
 }  // namespace
 
 namespace android {
 int register_andropkg_framework_stubs(JNIEnv* env) {
+  andropkg::RegisterIfDeclared(env, "android/os/Debug", kDebug, N(kDebug));
   andropkg::RegisterIfDeclared(env, "android/os/GraphicsEnvironment", kGraphicsEnvironment,
                                N(kGraphicsEnvironment));
   andropkg::RegisterIfDeclared(env, "android/app/ActivityThread", kActivityThread, N(kActivityThread));

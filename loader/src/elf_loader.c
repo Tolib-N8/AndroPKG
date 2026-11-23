@@ -269,6 +269,10 @@ static void apply_relr(const apk_image *img, const uint64_t *t, size_t bytes) {
 
 // ---------------------------------------------------------------------------------------
 
+// ndk-libs/ffi_closures.c: replacements of the image's libffi closure allocator.
+void *andropkg_ffi_closure_alloc(size_t size, void **code);
+void andropkg_ffi_closure_free(void *closure);
+
 apk_image *apk_image_load(const char *path, char *err, size_t errlen) {
     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!h) {
@@ -362,6 +366,9 @@ apk_image *apk_image_load(const char *path, char *err, size_t errlen) {
         data[0] = (void *)andropkg_svc_entry;
         data[1] = (void *)(uintptr_t)andropkg_tls_tsd_offset();
         data[2] = (void *)andropkg_tp_slowpath;
+        // Replaced functions (converter PatchKind.hookedFunctions, in that order).
+        data[3] = (void *)andropkg_ffi_closure_alloc;
+        data[4] = (void *)andropkg_ffi_closure_free;
     }
     return img;
 }

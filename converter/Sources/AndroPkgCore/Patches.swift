@@ -10,15 +10,34 @@ public enum PatchKind: Sendable, Equatable {
     case tpRead(rt: UInt32)
     /// `msr tpidr_el0, Xt` — only bionic itself does this; trap loudly.
     case tpWrite(rt: UInt32)
+    /// The first instruction of an exported function andropkg replaces (`hookedFunctions`):
+    /// a jump to the replacement the loader puts in data slot `dataSlotHooks + 8 * index`.
+    /// Calls inside the image are direct `bl`s, which no relocation can redirect.
+    case hook(index: UInt32)
+    /// `mrs Xt, ctr_el0` — the cache type register, which Darwin does not let user code read
+    /// (SIGILL). compiler-rt's __clear_cache reads it. Xt gets a constant instead: 64-byte
+    /// lines, and DIC/IDC set (no cache maintenance needed): nothing writes code at runtime here.
+    case ctrRead(rt: UInt32)
+
+    /// Functions replaced in every image that defines them, in data slot order (the loader,
+    /// loader/src/elf_loader.c, fills the slots in the same order).
+    /// - libffi's closure allocator (JNA's libjnidispatch, ...): Linux libffi maps writable
+    ///   memory executable for its trampolines, which iOS forbids; andropkg hands out closures
+    ///   backed by pre-signed trampolines instead (ndk-libs/ffi_closures.c).
+    public static let hookedFunctions = ["ffi_closure_alloc", "ffi_closure_free"]
 
     static let svcWord: UInt32 = 0xD400_0001
     static let mrsTpidrEL0: UInt32 = 0xD53B_D040
     static let msrTpidrEL0: UInt32 = 0xD51B_D040
+    static let mrsCtrEL0: UInt32 = 0xD53B_0020
+    /// RES1, CWG = ERG = DminLine = IminLine = 64 bytes, PIPT icache, IDC, DIC.
+    static let ctrValue: UInt32 = 0xB444_C004
 
     init?(instruction w: UInt32) {
         if w == PatchKind.svcWord { self = .svc }
         else if w & ~0x1F == PatchKind.mrsTpidrEL0 { self = .tpRead(rt: w & 0x1F) }
         else if w & ~0x1F == PatchKind.msrTpidrEL0 { self = .tpWrite(rt: w & 0x1F) }
+        else if w & ~0x1F == PatchKind.mrsCtrEL0 { self = .ctrRead(rt: w & 0x1F) }
         else { return nil }
     }
 
@@ -27,6 +46,8 @@ public enum PatchKind: Sendable, Equatable {
         case .svc: 6 * 4
         case .tpRead(let rt): rt == 31 ? 4 : 15 * 4
         case .tpWrite: 4
+        case .hook: 3 * 4
+        case .ctrRead: 3 * 4
         }
     }
 
@@ -36,6 +57,8 @@ public enum PatchKind: Sendable, Equatable {
     /// andropkg_tp_slowpath: attaches a bionic TCB to a thread that has none yet (any thread
     /// can call into Android code: Java threads, Core Audio, GCD) and returns it in x16.
     static let dataSlotTPSlowPath: UInt64 = 16
+    /// Replacements of `hookedFunctions`, one slot each.
+    static let dataSlotHooks: UInt64 = 24
 
     /// - Parameters: t = trampoline vaddr, site = patched instruction vaddr, dataBase = __APK_DATA vaddr.
     func trampolineBytes(at t: UInt64, site: UInt64, dataBase: UInt64) throws -> [UInt8] {
@@ -86,6 +109,23 @@ public enum PatchKind: Sendable, Equatable {
 
         case .tpWrite:
             w.append(0xD420_F4A0)                                         // brk #0x7a5 ("APK")
+
+        case .hook(let index):
+            // At a function's entry x16 (IP0) is free: jump to the replacement.
+            let slot = dataBase + PatchKind.dataSlotHooks + 8 * UInt64(index)
+            w.append(try AArch64.adrp(rd: 16, from: t, to: slot))         // adrp x16, data
+            w.append(AArch64.ldrX(rt: 16, rn: 16, offset: UInt32(slot & 0xFFF)))
+            w.append(0xD61F_0200)                                         // br x16
+
+        case .ctrRead(let rt):
+            if rt == 31 {
+                w.append(0xD503_201F)                                     // nop (mrs xzr)
+                w.append(0xD503_201F)
+            } else {
+                w.append(0xD280_0000 | (PatchKind.ctrValue & 0xFFFF) << 5 | rt)   // movz xT, #lo
+                w.append(0xF2A0_0000 | (PatchKind.ctrValue >> 16) << 5 | rt)      // movk xT, #hi, lsl 16
+            }
+            w.append(try AArch64.b(from: t + 8, to: site + 4))
         }
         precondition(w.count * 4 == trampolineSize)
         var out = ByteWriter()
@@ -104,6 +144,8 @@ public struct PatchSite: Sendable, Equatable, CustomStringConvertible {
         case .svc: return "svc@\(a)"
         case .tpRead(let rt): return "mrs-tp(x\(rt))@\(a)"
         case .tpWrite(let rt): return "msr-tp(x\(rt))@\(a)"
+        case .hook(let i): return "hook(\(PatchKind.hookedFunctions[Int(i)]))@\(a)"
+        case .ctrRead(let rt): return "mrs-ctr(x\(rt))@\(a)"
         }
     }
 }
