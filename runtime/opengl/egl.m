@@ -86,7 +86,8 @@ NDK_EXPORT void *ndk_gl_proc(const char *name) {
 static void *g_self;
 static void find_self(void) {
     Dl_info d;
-    if (dladdr((void *)&ndk_gl_proc, &d)) g_self = dlopen(d.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+    // RTLD_FIRST: this image only (see ndk-libs/system.c find_self).
+    if (dladdr((void *)&ndk_gl_proc, &d)) g_self = dlopen(d.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_FIRST);
 }
 NDK_EXPORT void *andropkg_gl_symbol(const char *name) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
