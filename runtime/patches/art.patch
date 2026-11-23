@@ -1997,6 +1997,179 @@ index a35152f..807dc75 100644
  
  #include "jni/jni_env_ext.h"
  #include "jni/jni_internal.h"
+diff --git a/runtime/oat_file_assistant.cc b/runtime/oat_file_assistant.cc
+index c735afa..88e0002 100644
+--- a/runtime/oat_file_assistant.cc
++++ b/runtime/oat_file_assistant.cc
+@@ -904,6 +904,13 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
+       if (dm_for_odex_.IsUseable()) {
+         return dm_for_odex_;
+       }
++#if defined(ANDROPKG)
++      // andropkg's verification cache lives in the dalvik-cache (the app's data directory),
++      // whether or not the APK's own directory is writable.
++      if (vdex_for_oat_.IsUseable()) {
++        return vdex_for_oat_;
++      }
++#endif
+     }
+     return odex_;
+   }
+diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
+index 63e005d..404aa78 100644
+--- a/runtime/oat_file_manager.cc
++++ b/runtime/oat_file_manager.cc
+@@ -34,7 +34,12 @@
+ #include "base/stl_util.h"
+ #include "base/systrace.h"
+ #include "class_linker.h"
++#include <set>
++#include <unistd.h>
++
++#include "art_method-inl.h"
+ #include "class_loader_context.h"
++#include "mirror/class-inl.h"
+ #include "dex/art_dex_file_loader.h"
+ #include "dex/dex_file-inl.h"
+ #include "dex/dex_file_loader.h"
+@@ -174,6 +179,100 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
+   return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
+ }
+ 
++#if defined(ANDROPKG)
++namespace {
++// andropkg: a startup verification cache for app APKs. With no dex2oat, every class an app
++// uses is verified on each launch (most of a large app's startup). Some seconds into the first
++// launch, the classes verified so far are verified again on a background thread, recording
++// their dependencies, and written to a vdex in the dalvik-cache. Later launches load the APK
++// through that vdex (OatFileAssistant's vdex_for_oat_): each class checks its recorded
++// dependencies (VdexFile::ComputeClassStatus) instead of running the verifier.
++// ANDROPKG_NO_VDEX_CACHE=1 disables it; ANDROPKG_VDEX_DELAY_MS sets the delay (8000).
++class AndropkgStartupVerificationTask final : public Task {
++ public:
++  AndropkgStartupVerificationTask(std::vector<const DexFile*> dex_files,
++                                  jobject class_loader,
++                                  std::string vdex_path)
++      : dex_files_(std::move(dex_files)), vdex_path_(std::move(vdex_path)) {
++    Thread* const self = Thread::Current();
++    ScopedObjectAccess soa(self);
++    class_loader_ = soa.Vm()->AddGlobalRef(self, soa.Decode<mirror::ClassLoader>(class_loader));
++  }
++
++  ~AndropkgStartupVerificationTask() {
++    Thread* const self = Thread::Current();
++    ScopedObjectAccess soa(self);
++    soa.Vm()->DeleteGlobalRef(self, class_loader_);
++  }
++
++  void Run(Thread* self) override {
++    Runtime* const runtime = Runtime::Current();
++    const char* delay_env = getenv("ANDROPKG_VDEX_DELAY_MS");
++    int64_t delay_ms = delay_env != nullptr ? atoll(delay_env) : 8000;
++    for (int64_t waited = 0; waited < delay_ms; waited += 100) {
++      if (runtime->IsShuttingDown(self)) return;
++      usleep(100 * 1000);
++    }
++    ClassLinker* const class_linker = runtime->GetClassLinker();
++    verifier::VerifierDeps verifier_deps(dex_files_);
++    size_t recorded = 0;
++    for (const DexFile* dex_file : dex_files_) {
++      for (uint32_t cdef_idx = 0; cdef_idx < dex_file->NumClassDefs(); cdef_idx++) {
++        if (runtime->IsShuttingDown(self)) return;
++        const dex::ClassDef& class_def = dex_file->GetClassDef(cdef_idx);
++        ScopedObjectAccess soa(self);
++        StackHandleScope<2> hs(self);
++        ObjPtr<mirror::ClassLoader> loader = soa.Decode<mirror::ClassLoader>(class_loader_);
++        // Only the classes this launch has verified: loading the rest would cost the memory
++        // and time of the whole app.
++        Handle<mirror::Class> h_class(hs.NewHandle(
++            class_linker->LookupClass(self, dex_file->GetClassDescriptor(class_def), loader)));
++        if (h_class == nullptr || &h_class->GetDexFile() != dex_file || !h_class->IsVerified()) {
++          continue;
++        }
++        // Only classes verified with no failure, as dex2oat records them: a preverified class
++        // has kAccSkipAccessChecks set on all its methods, which a class with soft failures
++        // (unresolved types, locking) must not have. Runtime verification marks such classes'
++        // methods the same way (UpdateClassAfterVerification), so a method without the flag
++        // means a failure.
++        bool clean = true;
++        for (ArtMethod& m : h_class->GetMethods(class_linker->GetImagePointerSize())) {
++          if (m.IsManagedAndInvokable() && (!m.SkipAccessChecks() || m.MustCountLocks())) {
++            clean = false;
++            break;
++          }
++        }
++        if (!clean) continue;
++        class_linker->VerifyClass(self, &verifier_deps, h_class);  // re-runs it for the deps
++        if (self->IsExceptionPending()) self->ClearException();
++        if (h_class->IsVerified()) {
++          verifier_deps.RecordClassVerified(*dex_file, class_def);
++          recorded++;
++        }
++      }
++    }
++    std::string error_msg;
++    std::string tmp = vdex_path_ + ".tmp";
++    unlink(tmp.c_str());
++    if (!VdexFile::WriteToDisk(tmp, dex_files_, verifier_deps, &error_msg) ||
++        rename(tmp.c_str(), vdex_path_.c_str()) != 0) {
++      LOG(WARNING) << "andropkg: could not write " << vdex_path_ << ": " << error_msg;
++      unlink(tmp.c_str());
++      return;
++    }
++    LOG(INFO) << "andropkg: verification cache " << vdex_path_ << " (" << recorded << " classes)";
++  }
++
++  void Finalize() override { delete this; }
++
++ private:
++  const std::vector<const DexFile*> dex_files_;
++  jobject class_loader_;
++  const std::string vdex_path_;
++};
++}  // namespace
++#endif  // ANDROPKG
++
+ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+     const char* dex_location,
+     jobject class_loader,
+@@ -461,6 +560,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+       error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
+                             + " because: " + error_msg);
+     }
++#if defined(ANDROPKG)
++    else if (class_loader != nullptr && context != nullptr && getenv("ANDROPKG_NO_VDEX_CACHE") == nullptr &&
++             !runtime->IsAotCompiler() && !runtime->IsJavaDebuggable()) {
++      std::string oat_filename;
++      static std::mutex scheduled_lock;
++      static std::set<std::string> scheduled;
++      if (OatFileAssistant::DexLocationToOatFilename(dex_location, kRuntimeISA,
++                                                     /*deny_art_apex_data_files=*/true,
++                                                     &oat_filename, &error_msg)) {
++        std::string vdex_path = GetVdexFilename(oat_filename);
++        bool first;
++        {
++          std::lock_guard<std::mutex> g(scheduled_lock);
++          first = scheduled.insert(vdex_path).second;
++        }
++        if (first) {
++          {
++            WriterMutexLock mu(self, *Locks::oat_file_manager_lock_);
++            if (verification_thread_pool_ == nullptr) {
++              verification_thread_pool_.reset(
++                  new ThreadPool("Verification thread pool", /* num_threads= */ 1));
++              verification_thread_pool_->StartWorkers(self);
++            }
++          }
++          verification_thread_pool_->AddTask(self, new AndropkgStartupVerificationTask(
++              MakeNonOwningPointerVector(dex_files), class_loader, vdex_path));
++        }
++      }
++    }
++#endif
+   }
+ 
+   if (Runtime::Current()->GetJit() != nullptr) {
 diff --git a/runtime/obj_ptr.h b/runtime/obj_ptr.h
 index 7e52a50..d82845f 100644
 --- a/runtime/obj_ptr.h

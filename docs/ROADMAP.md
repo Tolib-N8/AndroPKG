@@ -73,6 +73,10 @@ These questions decided whether the approach could work at all.
 - ✅ **Render scale.** Android renders at 2 px/pt on 3× screens.
 - ✅ **GPU memory.** Metal objects on ART threads are released in autorelease pools, and a
   regression test guards against leaks.
+- ✅ **Verification cache.** Without dex2oat, every class an app uses was verified on each
+  launch (79% of Spotify's main thread at startup). The first launch now records the classes it
+  verified into a vdex in the app's data directory, and later launches only check their
+  recorded dependencies. Spotify reaches its first frame about 45% sooner on the Mac.
 
 ## 🔄 Real-world compatibility
 
