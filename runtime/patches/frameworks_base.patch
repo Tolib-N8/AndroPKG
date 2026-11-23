@@ -765,6 +765,19 @@ index 6ee7576..7d8a7ca 100644
  #else
      doThrowRE(env, "Cannot use parcels outside of Android");
      return JNI_FALSE;
+diff --git a/libs/hwui/jni/ImageDecoder.cpp b/libs/hwui/jni/ImageDecoder.cpp
+index 6744c6c..6fce6f9 100644
+--- a/libs/hwui/jni/ImageDecoder.cpp
++++ b/libs/hwui/jni/ImageDecoder.cpp
+@@ -162,7 +162,7 @@ static jobject native_create(JNIEnv* env, std::unique_ptr<SkStream> stream,
+ 
+ static jobject ImageDecoder_nCreateFd(JNIEnv* env, jobject /*clazz*/,
+         jobject fileDescriptor, jlong length, jboolean preferAnimation, jobject source) {
+-#ifndef __ANDROID__ // LayoutLib for Windows does not support F_DUPFD_CLOEXEC
++#if !defined(__ANDROID__) && !defined(__APPLE__) // (andropkg: Darwin has F_DUPFD_CLOEXEC) LayoutLib for Windows does not support F_DUPFD_CLOEXEC
+     return throw_exception(env, kSourceException, "Only supported on Android", nullptr, source);
+ #else
+     int descriptor = jniGetFDFromFileDescriptor(env, fileDescriptor);
 diff --git a/libs/hwui/jni/graphics_jni_helpers.h b/libs/hwui/jni/graphics_jni_helpers.h
 index 78db54a..bb95c44 100644
 --- a/libs/hwui/jni/graphics_jni_helpers.h

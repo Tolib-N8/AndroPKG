@@ -595,6 +595,36 @@ index 6710e13..5844762 100644
  
      RESTARTABLE(mknod(path, (mode_t)mode, (dev_t)dev), err);
      if (err == -1) {
+diff --git a/ojluni/src/main/native/ZipFile.c b/ojluni/src/main/native/ZipFile.c
+index 314b6c7..610d139 100644
+--- a/ojluni/src/main/native/ZipFile.c
++++ b/ojluni/src/main/native/ZipFile.c
+@@ -27,6 +27,9 @@
+  * Native method support for java.util.zip.ZipFile
+  */
+ 
++#if defined(__APPLE__)
++#include <andropkg/paths.h>
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -112,8 +115,15 @@ ZipFile_open(JNIEnv *env, jobject thiz, jstring name,
+                 /* Exception already pending. */
+                 goto finally;
+             }
++#else
++#if defined(__APPLE__)
++            {   /* andropkg: Android paths (/data/user/0/<pkg>/...) live in the sandbox */
++                char buf[4096];
++                zfd = JVM_Open(andropkg_translate_path(path, buf, sizeof buf), flag, 0);
++            }
+ #else
+             zfd = JVM_Open(path, flag, 0);
++#endif
+             if (zfd < 0) {
+                 throwFileNotFoundException(env, name);
+                 goto finally;
 diff --git a/ojluni/src/main/native/io_util.h b/ojluni/src/main/native/io_util.h
 index 31088a9..bb05fca 100644
 --- a/ojluni/src/main/native/io_util.h
@@ -670,3 +700,34 @@ index 67a6c97..d8bb44b 100644
  extern int NET_Timeout(int s, long timeout);
  extern int NET_Read(int s, void* buf, size_t len);
  extern int NET_RecvFrom(int s, void *buf, int len, unsigned int flags,
+diff --git a/ojluni/src/main/native/zip_util.c b/ojluni/src/main/native/zip_util.c
+index 2b63d6b..7c21258 100644
+--- a/ojluni/src/main/native/zip_util.c
++++ b/ojluni/src/main/native/zip_util.c
+@@ -45,6 +45,9 @@
+ #include "io_util.h"
+ #include "io_util_md.h"
+ #include "zip_util.h"
++#if defined(__APPLE__)
++#include <andropkg/paths.h>
++#endif
+ #include <zlib.h>
+ 
+ extern jmethodID jzOnZipEntryAccessID;
+@@ -167,9 +170,16 @@ ZFILE_Open(const char *fname, int flags) {
+         free(wprefixed_fname);
+         return fhandle;
+     }
++#else
++#if defined(__APPLE__)
++    {   /* andropkg: Android paths (/data/user/0/<pkg>/..., /system/...) live in the sandbox */
++        char buf[4096];
++        return open(andropkg_translate_path(fname, buf, sizeof buf), flags, 0);
++    }
+ #else
+     return open(fname, flags, 0);
+ #endif
++#endif
+ }
+ 
+ /*

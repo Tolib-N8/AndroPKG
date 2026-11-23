@@ -131,6 +131,7 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
   run without a computer; each app shows its own name and icon.
 - ⏳ Convert and sign native libraries on the device, so apps with native code (most popular
   apps) install without a computer too.
-- ⏳ **App stores inside AndroPkg** (RuStore, F-Droid): a `PackageInstaller` bridge, so an
-  APK a store downloads and installs lands in the launcher.
+- 🔄 **App stores inside AndroPkg.** A `PackageInstaller` bridge: an APK (or split APKs) a
+  store installs lands in the launcher, and the store sees it as installed. The F-Droid client
+  browses, searches and installs on the Mac; RuStore is next.
 - ⏳ Packaging for AltStore/SideStore.

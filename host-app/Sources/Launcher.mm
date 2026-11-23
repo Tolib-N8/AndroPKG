@@ -95,11 +95,16 @@ static NSArray<AndropkgApp*>* InstalledApps() {
   }
   NSString* imported = SupportDir(@"apps");
   for (NSString* f in [[fm contentsOfDirectoryAtPath:imported error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
-    if (![f hasSuffix:@".apk"]) continue;
+    // <name>.apk, or a split install from an app store: <package>/base.apk + split APKs.
+    NSString* p = [imported stringByAppendingPathComponent:f];
+    BOOL dir = NO;
+    [fm fileExistsAtPath:p isDirectory:&dir];
+    NSString* base = dir ? [p stringByAppendingPathComponent:@"base.apk"] : p;
+    if (dir ? ![fm fileExistsAtPath:base] : ![f hasSuffix:@".apk"]) continue;
     AndropkgApp* a = [AndropkgApp new];
-    a.name = f.stringByDeletingPathExtension;
-    a.path = [imported stringByAppendingPathComponent:f];
-    a.needsComputer = HasNativeLibraries(a.path);
+    a.name = dir ? f : f.stringByDeletingPathExtension;
+    a.path = p;  // (a directory: the runtime parses the cluster)
+    a.needsComputer = HasNativeLibraries(base);
     [apps addObject:a];
   }
   return apps;

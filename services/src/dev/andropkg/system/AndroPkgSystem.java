@@ -626,12 +626,46 @@ public final class AndroPkgSystem {
 
     /** IPackageManager: answers for the one installed package. */
     static final class PackageManagerImpl {
+        // App stores install through PackageInstaller sessions (into the host's launcher).
+        private final Object installer =
+                LocalService.create("android.content.pm.IPackageInstaller", new PackageInstallerImpl()).iface;
+
+        public Object getPackageInstaller() {
+            return installer;
+        }
+
+        public boolean canRequestPackageInstalls(String pkg, int userId) {
+            return true;
+        }
+
         public PackageInfo getPackageInfo(String pkg, long flags, int userId) {
-            return appInfo.packageName.equals(pkg) ? packageInfo : null;
+            if (appInfo.packageName.equals(pkg)) return packageInfo;
+            return PackageInstallerImpl.packageInfo(pkg, flags);  // an app the launcher has
         }
 
         public ApplicationInfo getApplicationInfo(String pkg, long flags, int userId) {
-            return appInfo.packageName.equals(pkg) ? appInfo : null;
+            if (appInfo.packageName.equals(pkg)) return appInfo;
+            PackageInfo pi = PackageInstallerImpl.packageInfo(pkg, flags);
+            return pi != null ? pi.applicationInfo : null;
+        }
+
+        /** This app and the ones the launcher has (an app store lists what is installed). */
+        public Object getInstalledPackages(long flags, int userId) {
+            java.util.List<PackageInfo> l = new java.util.ArrayList<>();
+            l.add(packageInfo);
+            for (PackageInfo pi : PackageInstallerImpl.installed(flags)) {
+                if (!appInfo.packageName.equals(pi.packageName)) l.add(pi);
+            }
+            return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), l);
+        }
+
+        public Object getInstalledApplications(long flags, int userId) {
+            java.util.List<ApplicationInfo> l = new java.util.ArrayList<>();
+            l.add(appInfo);
+            for (PackageInfo pi : PackageInstallerImpl.installed(flags)) {
+                if (!appInfo.packageName.equals(pi.packageName) && pi.applicationInfo != null) l.add(pi.applicationInfo);
+            }
+            return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), l);
         }
 
         public ActivityInfo getActivityInfo(ComponentName c, long flags, int userId) {

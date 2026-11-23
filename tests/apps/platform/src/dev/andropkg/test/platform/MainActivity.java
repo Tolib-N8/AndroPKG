@@ -106,6 +106,39 @@ public class MainActivity extends Activity {
         } catch (RuntimeException e) {
             Log.i(TAG, "[platform] notification posted=" + e);
         }
+        try {  // a zip downloaded into the cache (F-Droid's index): temp file, write, ZipFile
+            java.io.File tmp = java.io.File.createTempFile("dl-", "", getCacheDir());
+            try (java.io.InputStream in = new java.io.FileInputStream(getPackageCodePath());
+                 java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                byte[] chunk = new byte[8192];
+                for (int n; (n = in.read(chunk)) > 0; ) out.write(chunk, 0, n);
+            }
+            int entries;
+            try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(tmp)) {
+                entries = z.size();
+            }
+            tmp.delete();
+            Log.i(TAG, "[platform] cache zip entries>0=" + (entries > 0));
+        } catch (Exception e) {
+            Log.i(TAG, "[platform] cache zip failed: " + e);
+        }
+        try {  // ImageDecoder (Coil 3's decoder): a PNG from a file in the cache and from bytes
+            android.graphics.Bitmap idSrc = android.graphics.Bitmap.createBitmap(8, 6, android.graphics.Bitmap.Config.ARGB_8888);
+            idSrc.eraseColor(0xff336699);
+            java.io.ByteArrayOutputStream idPng = new java.io.ByteArrayOutputStream();
+            idSrc.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, idPng);
+            java.io.File idF = new java.io.File(getCacheDir(), "img.idPng");
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(idF)) {
+                o.write(idPng.toByteArray());
+            }
+            android.graphics.Bitmap idA = android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(idF));
+            android.graphics.Bitmap idB = android.graphics.ImageDecoder.decodeBitmap(
+                    android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(idPng.toByteArray())));
+            Log.i(TAG, "[platform] imagedecoder file=" + idA.getWidth() + "x" + idA.getHeight() + " bytes=" + idB.getWidth() + "x" + idB.getHeight());
+        } catch (Throwable e) {
+            Log.i(TAG, "[platform] imagedecoder failed: " + e);
+            Log.w(TAG, "imagedecoder", e);
+        }
         Log.i(TAG, "[platform] debug heap>0=" + (android.os.Debug.getNativeHeapAllocatedSize() > 0)
                 + " pss>0=" + (android.os.Debug.getPss() > 0));
         Log.i(TAG, "[platform] nsd manager=" + (nsd != null));
