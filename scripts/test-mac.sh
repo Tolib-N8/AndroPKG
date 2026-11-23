@@ -21,7 +21,7 @@ run() {  # run <name> <expected-regex> <dalvikvm args...>
   ANDROPKG_BCP=full timeout 300 scripts/run-dalvikvm-mac.sh "$@" >"$log/$name.log" 2>&1 || true
   # POSIX sh: "VAR=x run ..." assignments outlive the function call; reset them per test.
   unset ANDROPKG_TEST_TAP ANDROPKG_TEST_TYPE ANDROPKG_TEST_SWIPE ANDROPKG_TEST_BACK ANDROPKG_TEST_BACKGROUND \
-        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME ANDROPKG_LOG_MEMORY ANDROPKG_VDEX_DELAY_MS
+        ANDROPKG_TEST_SCRIPT ANDROPKG_FRAME_PNG ANDROPKG_DEBUG_IME ANDROPKG_LOG_MEMORY ANDROPKG_VDEX_DELAY_MS ANDROPKG_VDEX_CACHE
   grep -qE "$want" "$log/$name.log" || fail "$name" "$name"
   echo "ok   $name"
 }
@@ -173,9 +173,9 @@ cp "$root/build/apps/hello.apk" "$ro/"; chmod a-w "$ro"
 rm -f "$root"/build/android-root/data/dalvik-cache/arm64/*test-readonly*
 roapk() { echo -Xhidden-api-policy:disabled -cp build/services/services.dex dev.andropkg.system.AndroPkgSystem \
   "$ro/hello.apk" "$root/build/android-root/data/app/hello"; }
-ANDROPKG_VDEX_DELAY_MS=200 ANDROPKG_TEST_SCRIPT="wait 4000; exit" run vdex-write \
+ANDROPKG_VDEX_CACHE=1 ANDROPKG_VDEX_DELAY_MS=200 ANDROPKG_TEST_SCRIPT="wait 4000; exit" run vdex-write \
   "verification cache .*test-readonly@hello.apk@classes.vdex" $(roapk)
-ANDROPKG_TEST_SCRIPT="exit" run vdex-read "test: script done" -verbose:oat $(roapk)
+ANDROPKG_VDEX_CACHE=1 ANDROPKG_TEST_SCRIPT="exit" run vdex-read "test: script done" -verbose:oat $(roapk)
 grep -qE "Successfully loaded .*test-readonly@hello.apk@classes.vdex" "$log/vdex-read.log" || fail "vdex-read: cache not used" vdex-read
 echo "ok   verification cache used"
 ANDROPKG_TEST_SCRIPT="wait 3000; pixel 540,1200; pixel 30,1200" run glsurface "test: script done" $(apk glsurface)

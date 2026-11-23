@@ -2117,7 +2117,7 @@ index c735afa..88e0002 100644
      return odex_;
    }
 diff --git a/runtime/oat_file_manager.cc b/runtime/oat_file_manager.cc
-index 63e005d..07bb11f 100644
+index 63e005d..f197cde 100644
 --- a/runtime/oat_file_manager.cc
 +++ b/runtime/oat_file_manager.cc
 @@ -34,7 +34,12 @@
@@ -2133,10 +2133,26 @@ index 63e005d..07bb11f 100644
  #include "dex/art_dex_file_loader.h"
  #include "dex/dex_file-inl.h"
  #include "dex/dex_file_loader.h"
-@@ -174,6 +179,272 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
+@@ -174,6 +179,286 @@ bool OatFileManager::ShouldLoadAppImage(const OatFile* source_oat_file) const {
    return kEnableAppImage && (!runtime->IsJavaDebuggableAtInit() || source_oat_file->IsDebuggable());
  }
  
++#if defined(ANDROPKG)
++// The verification caches (vdex files): 0 = off, 1 = used, 2 = used and written. Opt-in with
++// ANDROPKG_VDEX_CACHE=1 (or the preverification build step) while a startup race they expose
++// is open: faster launches let coroutine threads see corrupt references (about one Spotify
++// launch in ten). ANDROPKG_NO_VDEX_CACHE=1 keeps them read-only, =2 off.
++int AndropkgVdexMode() {
++  static const int mode = [] {
++    const char* no = getenv("ANDROPKG_NO_VDEX_CACHE");
++    if (no != nullptr) return no[0] == '2' ? 0 : 1;
++    if (getenv("ANDROPKG_PREVERIFY") != nullptr) return 2;
++    return getenv("ANDROPKG_VDEX_CACHE") != nullptr ? 2 : 0;
++  }();
++  return mode;
++}
++#endif
++
 +#if defined(ANDROPKG)
 +namespace {
 +// The boot class path's jars, grouped (multidex) by jar, in order.
@@ -2294,9 +2310,7 @@ index 63e005d..07bb11f 100644
 +// Called while the runtime starts, before any class is loaded: each boot class path jar with a
 +// verification cache (written by an earlier launch, dex checksums matching) is backed by it.
 +void AndropkgAttachBootVerificationCache(const std::vector<std::unique_ptr<const DexFile>>& bcp) {
-+  if (getenv("ANDROPKG_NO_VDEX_CACHE") != nullptr && getenv("ANDROPKG_NO_VDEX_CACHE")[0] == '2') {
-+    return;  // (=2: neither read nor write)
-+  }
++  if (AndropkgVdexMode() == 0) return;
 +  std::vector<const DexFile*> dex_ptrs;
 +  for (const auto& d : bcp) dex_ptrs.push_back(d.get());
 +  size_t attached = 0;
@@ -2406,7 +2420,7 @@ index 63e005d..07bb11f 100644
  std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
      const char* dex_location,
      jobject class_loader,
-@@ -199,7 +470,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -199,7 +484,12 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
    if (class_loader == nullptr) {
      LOG(WARNING) << "Opening an oat file without a class loader. "
                   << "Are you using the deprecated DexFile APIs?";
@@ -2414,18 +2428,18 @@ index 63e005d..07bb11f 100644
 +  } else if (context != nullptr
 +#if defined(ANDROPKG)
 +             // ANDROPKG_NO_VDEX_CACHE=2: no oat/vdex files at all (startup measurements)
-+             && !(getenv("ANDROPKG_NO_VDEX_CACHE") != nullptr && getenv("ANDROPKG_NO_VDEX_CACHE")[0] == '2')
++             && AndropkgVdexMode() != 0
 +#endif
 +             ) {
      auto oat_file_assistant = std::make_unique<OatFileAssistant>(dex_location,
                                                                   kRuntimeISA,
                                                                   context.get(),
-@@ -461,6 +737,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
+@@ -461,6 +751,36 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
        error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                              + " because: " + error_msg);
      }
 +#if defined(ANDROPKG)
-+    else if (class_loader != nullptr && context != nullptr && getenv("ANDROPKG_NO_VDEX_CACHE") == nullptr &&
++    else if (class_loader != nullptr && context != nullptr && AndropkgVdexMode() == 2 &&
 +             !runtime->IsAotCompiler() && !runtime->IsJavaDebuggable()) {
 +      std::string oat_filename;
 +      static std::mutex scheduled_lock;
