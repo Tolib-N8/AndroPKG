@@ -547,6 +547,11 @@ const char *ndk_virtual_file(const char *path, char *buf, size_t n) {
         return buf;
     }
     if (!strcmp(path, "/proc/self/cmdline")) return "app_process64";
+    if (!strcmp(path, "/proc/self/status") || !strcmp(path, "/proc/thread-self/status")) {
+        extern size_t andropkg_proc_status(char *, size_t);  // runtime/compat/src/paths.cc
+        andropkg_proc_status(buf, n);
+        return buf;
+    }
     return NULL;
 }
 

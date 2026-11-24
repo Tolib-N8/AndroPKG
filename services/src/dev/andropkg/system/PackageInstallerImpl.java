@@ -397,7 +397,7 @@ final class PackageInstallerImpl {
             String error = null;
             List<File> apks = new ArrayList<>();
             synchronized (s) {
-                for (File f : s.files.values()) if (f.length() > 0) apks.add(f);
+                for (File f : s.files.values()) if (f.length() > 0 && isApk(f)) apks.add(f);
             }
             if (apks.isEmpty()) error = "no APK written";
             if (error == null && pkg == null) pkg = packageOf(apks);
@@ -533,6 +533,51 @@ final class PackageInstallerImpl {
         return null;
     }
 
+    private static final Map<String, Object[]> launcherCache = new HashMap<>();  // pkg -> {mtime, ActivityInfo}
+
+    /** The installed app's launcher activity (MAIN + LAUNCHER), or null; stores list launchable apps. */
+    static android.content.pm.ActivityInfo launcherActivity(String pkg) {
+        File apk = apkOf(pkg);
+        if (apk == null) return null;
+        File target = apk.getName().equals("base.apk") ? apk.getParentFile() : apk;  // a split install: the cluster
+        synchronized (launcherCache) {
+            Object[] c = launcherCache.get(pkg);
+            if (c != null && (Long) c[0] == apk.lastModified()) return (android.content.pm.ActivityInfo) c[1];
+        }
+        android.content.pm.ActivityInfo found = null;
+        try {
+            Object parser = Hidden.newInstance(Hidden.cls("android.content.pm.PackageParser"));
+            Object p = Hidden.call(parser, "parsePackage", target, 0);
+            Object ai = Hidden.getField(p, "applicationInfo");
+            if (ai instanceof android.content.pm.ApplicationInfo) {
+                ((android.content.pm.ApplicationInfo) ai).sourceDir = apk.getPath();
+                ((android.content.pm.ApplicationInfo) ai).enabled = true;
+            }
+            for (Object a : (List<?>) Hidden.getField(p, "activities")) {
+                for (Object filter : (List<?>) Hidden.getField(a, "intents")) {
+                    android.content.IntentFilter f = (android.content.IntentFilter) filter;
+                    if (f.hasAction(Intent.ACTION_MAIN) && f.hasCategory(Intent.CATEGORY_LAUNCHER)) {
+                        found = (android.content.pm.ActivityInfo) Hidden.getField(a, "info");
+                        break;
+                    }
+                }
+                if (found != null) break;
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "activities of " + pkg, e);
+        }
+        synchronized (launcherCache) {
+            launcherCache.put(pkg, new Object[] {apk.lastModified(), found});
+        }
+        return found;
+    }
+
+    /** Whether the intent asks for launcher activities (an app store's or launcher's query). */
+    static boolean isLauncherQuery(Intent intent) {
+        return Intent.ACTION_MAIN.equals(intent.getAction()) && intent.getCategories() != null
+                && (intent.hasCategory(Intent.CATEGORY_LAUNCHER) || intent.hasCategory(Intent.CATEGORY_INFO));
+    }
+
     /** ACTION_PACKAGE_ADDED/REMOVED, as the package manager broadcasts them (stores refresh on it). */
     private static void broadcast(String action, String pkg) {
         try {
@@ -557,6 +602,23 @@ final class PackageInstallerImpl {
         return null;
     }
 
+    /**
+     * Stores write more than APKs into a session: dex metadata (RuStore's "0.dm"), baseline
+     * profiles, v4 signatures. Only APKs (zips) are the package.
+     */
+    private static boolean isApk(File f) {
+        String n = f.getName().toLowerCase(java.util.Locale.ROOT);
+        if (n.endsWith(".dm") || n.endsWith(".prof") || n.endsWith(".idsig") || n.endsWith(".fsv_sig")
+                || n.endsWith(".digests") || n.endsWith(".signature")) {
+            return false;
+        }
+        try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(f, "r")) {
+            return r.readInt() == 0x504B0304;  // "PK\3\4"
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static void install(String pkg, List<File> apks) throws Exception {
         File apps = appsDir();
         File single = new File(apps, pkg + ".apk");
@@ -572,14 +634,32 @@ final class PackageInstallerImpl {
             return;
         }
         dir.mkdirs();
-        boolean haveBase = false;
+        // The base APK is the one without a split name in its manifest (stores name the files
+        // as they like); splits keep their split name: split_<name>.apk, as Android stores them.
+        File base = null;
+        Map<File, String> splits = new LinkedHashMap<>();
         for (File f : apks) {
-            String name = f.getName();
-            if (!haveBase && (name.equals("base.apk") || !name.startsWith("split"))) {
-                name = "base.apk";
-                haveBase = true;
-            }
-            copy(f, new File(dir, name.endsWith(".apk") ? name : name + ".apk"));
+            String split = splitName(f);
+            if (split == null && base == null) base = f;
+            else splits.put(f, split != null ? split : f.getName());
+        }
+        if (base == null) throw new IllegalArgumentException("no base APK among " + apks.size());
+        copy(base, new File(dir, "base.apk"));
+        for (Map.Entry<File, String> e : splits.entrySet()) {
+            String name = e.getValue().replaceAll("[^A-Za-z0-9._-]", "_");
+            copy(e.getKey(), new File(dir, "split_" + name + (name.endsWith(".apk") ? "" : ".apk")));
+        }
+    }
+
+    /** The split name in an APK's manifest (null: a base APK), via the framework's parser. */
+    private static String splitName(File apk) {
+        try {
+            Object lite = Hidden.callStatic(Hidden.cls("android.content.pm.PackageParser"), "parseApkLite", apk, 0);
+            Object n = field(lite, "splitName");
+            return n instanceof String ? (String) n : null;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "reading " + apk.getName(), e);
+            return apk.getName().startsWith("split") ? apk.getName() : null;
         }
     }
 

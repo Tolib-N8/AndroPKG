@@ -43,6 +43,32 @@ public final class TextWebView implements InvocationHandler {
     static final String USER_AGENT = "Mozilla/5.0 (Linux; Android 14; andropkg) AppleWebKit/537.36 "
             + "(KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0 Mobile Safari/537.36";
 
+    /** The WebView package apps see (androidx.webkit's getCurrentWebViewPackage, PackageManager). */
+    public static final String PACKAGE = "com.google.android.webview";
+    private static android.content.pm.PackageInfo packageInfo;
+
+    /**
+     * Android System WebView, as recent as the engine behind it (WKWebView): apps refuse to show
+     * web content, or send the user to "update WebView", when there is no WebView package.
+     */
+    public static synchronized android.content.pm.PackageInfo packageInfo() {
+        if (packageInfo == null) {
+            android.content.pm.PackageInfo pi = new android.content.pm.PackageInfo();
+            pi.packageName = PACKAGE;
+            pi.versionName = "142.0.7444.171";
+            pi.setLongVersionCode(744417133L);
+            android.content.pm.ApplicationInfo ai = new android.content.pm.ApplicationInfo();
+            ai.packageName = PACKAGE;
+            ai.enabled = true;
+            ai.flags = android.content.pm.ApplicationInfo.FLAG_SYSTEM | android.content.pm.ApplicationInfo.FLAG_INSTALLED;
+            ai.targetSdkVersion = 35;
+            ai.minSdkVersion = 29;
+            pi.applicationInfo = ai;
+            packageInfo = pi;
+        }
+        return packageInfo;
+    }
+
     /** Makes WebViewFactory return andropkg's provider (no WebView package is needed). */
     public static void install() {
         try {
@@ -72,6 +98,10 @@ public final class TextWebView implements InvocationHandler {
             Field f = Class.forName("android.webkit.WebViewFactory", true, loader).getDeclaredField("sProviderInstance");
             f.setAccessible(true);
             f.set(null, factory);
+            // WebView.getCurrentWebViewPackage() returns what WebViewFactory loaded.
+            Field pf = Class.forName("android.webkit.WebViewFactory", true, loader).getDeclaredField("sPackageInfo");
+            pf.setAccessible(true);
+            pf.set(null, packageInfo());
         } catch (ReflectiveOperationException e) {
             Log.w(TAG, "WebView provider not installed", e);
         }

@@ -139,6 +139,23 @@ public class MainActivity extends Activity {
             Log.i(TAG, "[platform] imagedecoder failed: " + e);
             Log.w(TAG, "imagedecoder", e);
         }
+        try {  // /proc/self/status from Java (apps check memory and TracerPid)
+            String tracer = "?";
+            int threads = 0;
+            try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader("/proc/self/status"))) {
+                for (String l; (l = r.readLine()) != null; ) {
+                    if (l.startsWith("TracerPid:")) tracer = l.substring(10).trim();
+                    if (l.startsWith("Threads:")) threads = Integer.parseInt(l.substring(8).trim());
+                }
+            }
+            Log.i(TAG, "[platform] proc status tracer=" + tracer + " threads>0=" + (threads > 0));
+        } catch (Exception e) {
+            Log.i(TAG, "[platform] proc status failed: " + e);
+        }
+        {  // the WebView package (androidx.webkit's check before showing web content)
+            android.content.pm.PackageInfo wv = android.webkit.WebView.getCurrentWebViewPackage();
+            Log.i(TAG, "[platform] webview package=" + (wv != null ? wv.packageName : null));
+        }
         Log.i(TAG, "[platform] debug heap>0=" + (android.os.Debug.getNativeHeapAllocatedSize() > 0)
                 + " pss>0=" + (android.os.Debug.getPss() > 0));
         Log.i(TAG, "[platform] nsd manager=" + (nsd != null));

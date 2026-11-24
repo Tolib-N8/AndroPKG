@@ -567,6 +567,14 @@ public final class AndroPkgSystem {
                 Object profilerInfo, Bundle options) {
             ActivityInfo info = ActivityStack.resolve(intent);
             if (info == null) {
+                // A system settings screen (android.settings.*): Android always has the Settings
+                // app, so apps open them without checking; there is none here. Started, as far as
+                // the app can tell (an ActivityNotFoundException would end most of them).
+                String action = intent.getAction();
+                if (action != null && action.startsWith("android.settings.")) {
+                    Log.w(TAG, "no settings screen for " + intent + " (ignored)");
+                    return 0;  // START_SUCCESS
+                }
                 Log.w(TAG, "no activity for " + intent);
                 return -92;  // ActivityManager.START_CLASS_NOT_FOUND -> ActivityNotFoundException
             }
@@ -640,7 +648,15 @@ public final class AndroPkgSystem {
 
         public PackageInfo getPackageInfo(String pkg, long flags, int userId) {
             if (appInfo.packageName.equals(pkg)) return packageInfo;
-            return PackageInstallerImpl.packageInfo(pkg, flags);  // an app the launcher has
+            if (dev.andropkg.system.webview.TextWebView.PACKAGE.equals(pkg)) {
+                return dev.andropkg.system.webview.TextWebView.packageInfo();  // the WebView "package"
+            }
+            PackageInfo other = PackageInstallerImpl.packageInfo(pkg, flags);  // an app the launcher has
+            if (System.getenv("ANDROPKG_LOG_PM") != null && other != null) {
+                Log.i(TAG, "getPackageInfo(" + pkg + ", 0x" + Long.toHexString(flags) + "): signing="
+                        + (other.signingInfo != null) + " sigs=" + (other.signatures != null));
+            }
+            return other;
         }
 
         public ApplicationInfo getApplicationInfo(String pkg, long flags, int userId) {
@@ -655,6 +671,10 @@ public final class AndroPkgSystem {
             l.add(packageInfo);
             for (PackageInfo pi : PackageInstallerImpl.installed(flags)) {
                 if (!appInfo.packageName.equals(pi.packageName)) l.add(pi);
+            }
+            if (System.getenv("ANDROPKG_LOG_PM") != null) {
+                for (PackageInfo pi : l) Log.i(TAG, "getInstalledPackages(0x" + Long.toHexString(flags) + "): " + pi.packageName
+                        + " signing=" + (pi.signingInfo != null) + " sigs=" + (pi.signatures != null));
             }
             return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), l);
         }
@@ -693,16 +713,37 @@ public final class AndroPkgSystem {
 
         public android.content.pm.ResolveInfo resolveIntent(Intent intent, String type, long flags, int userId) {
             ActivityInfo ai = ActivityStack.resolve(intent);
+            if (ai == null) ai = otherAppLauncher(intent);
             if (ai == null) return null;
             android.content.pm.ResolveInfo ri = new android.content.pm.ResolveInfo();
             ri.activityInfo = ai;
             return ri;
         }
 
+        /** The launcher activity of another installed app the intent names (getLaunchIntentForPackage). */
+        private static ActivityInfo otherAppLauncher(Intent intent) {
+            String pkg = intent.getPackage() != null ? intent.getPackage()
+                    : intent.getComponent() != null ? intent.getComponent().getPackageName() : null;
+            if (pkg == null || appInfo.packageName.equals(pkg) || !PackageInstallerImpl.isLauncherQuery(intent)) return null;
+            return PackageInstallerImpl.launcherActivity(pkg);
+        }
+
         public Object queryIntentActivities(Intent intent, String type, long flags, int userId) {
             List<android.content.pm.ResolveInfo> list = new java.util.ArrayList<>();
             android.content.pm.ResolveInfo ri = resolveIntent(intent, type, flags, userId);
             if (ri != null) list.add(ri);
+            // All launchable apps (no package named): the ones the launcher has too.
+            if (intent.getPackage() == null && intent.getComponent() == null && PackageInstallerImpl.isLauncherQuery(intent)) {
+                for (PackageInfo pi : PackageInstallerImpl.installed(0)) {
+                    if (appInfo.packageName.equals(pi.packageName)) continue;
+                    ActivityInfo ai = PackageInstallerImpl.launcherActivity(pi.packageName);
+                    if (ai == null) continue;
+                    android.content.pm.ResolveInfo r = new android.content.pm.ResolveInfo();
+                    r.activityInfo = ai;
+                    list.add(r);
+                }
+            }
+            if (System.getenv("ANDROPKG_LOG_PM") != null) Log.i(TAG, "queryIntentActivities(" + intent + "): " + list.size());
             return Hidden.newInstance(Hidden.cls("android.content.pm.ParceledListSlice"), list);
         }
 

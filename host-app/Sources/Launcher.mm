@@ -54,6 +54,18 @@ bool HasNativeLibraries(NSString* path) {
   return false;
 }
 
+// A split install keeps native code in a config split (split_config.arm64_v8a.apk): any APK
+// of the package counts.
+bool PackageHasNativeLibraries(NSString* path) {
+  BOOL dir = NO;
+  if (![NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&dir]) return false;
+  if (!dir) return HasNativeLibraries(path);
+  for (NSString* f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil]) {
+    if ([f hasSuffix:@".apk"] && HasNativeLibraries([path stringByAppendingPathComponent:f])) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 @interface AndropkgApp : NSObject
@@ -92,8 +104,7 @@ static NSArray<AndropkgApp*>* InstalledApps() {
     a.name = dir ? f : f.stringByDeletingPathExtension;
     a.path = p;
     a.builtIn = YES;
-    NSString* base = dir ? [p stringByAppendingPathComponent:@"base.apk"] : p;
-    a.needsNative = HasNativeLibraries(base) && ![fm fileExistsAtPath:[native stringByAppendingPathComponent:a.name]];
+    a.needsNative = PackageHasNativeLibraries(p) && ![fm fileExistsAtPath:[native stringByAppendingPathComponent:a.name]];
     [apps addObject:a];
   }
   NSString* imported = SupportDir(@"apps");
@@ -107,7 +118,7 @@ static NSArray<AndropkgApp*>* InstalledApps() {
     AndropkgApp* a = [AndropkgApp new];
     a.name = dir ? f : f.stringByDeletingPathExtension;
     a.path = p;  // (a directory: the runtime parses the cluster)
-    a.needsNative = HasNativeLibraries(base);
+    a.needsNative = PackageHasNativeLibraries(p);
     [apps addObject:a];
   }
   return apps;
