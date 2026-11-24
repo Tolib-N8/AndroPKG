@@ -155,6 +155,9 @@ public class MainActivity extends Activity {
         {  // the WebView package (androidx.webkit's check before showing web content)
             android.content.pm.PackageInfo wv = android.webkit.WebView.getCurrentWebViewPackage();
             Log.i(TAG, "[platform] webview package=" + (wv != null ? wv.packageName : null));
+            android.webkit.WebStorage.getInstance().deleteAllData();
+            android.webkit.GeolocationPermissions.getInstance().clearAll();
+            Log.i(TAG, "[platform] webview storage ok");
         }
         Log.i(TAG, "[platform] debug heap>0=" + (android.os.Debug.getNativeHeapAllocatedSize() > 0)
                 + " pss>0=" + (android.os.Debug.getPss() > 0));

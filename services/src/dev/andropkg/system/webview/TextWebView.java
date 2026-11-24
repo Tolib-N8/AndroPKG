@@ -92,6 +92,11 @@ public final class TextWebView implements InvocationHandler {
                     case "getStatics": return statics;
                     case "getCookieManager": return cookies;
                     case "getWebViewClassLoader": return TextWebView.class.getClassLoader();
+                    // WebStorage.getInstance(), GeolocationPermissions.getInstance(): the base
+                    // classes do nothing, which is what there is to do (WKWebView keeps its own
+                    // storage). Apps call them unconditionally (deleteAllData on logout).
+                    case "getWebStorage": return webStorage();
+                    case "getGeolocationPermissions": return geolocation();
                     default: return defaultFor(m);
                 }
             });
@@ -104,6 +109,29 @@ public final class TextWebView implements InvocationHandler {
             pf.set(null, packageInfo());
         } catch (ReflectiveOperationException e) {
             Log.w(TAG, "WebView provider not installed", e);
+        }
+    }
+
+    private static Object webStorage, geolocation;
+
+    private static synchronized Object webStorage() {
+        if (webStorage == null) webStorage = newHidden("android.webkit.WebStorage");
+        return webStorage;
+    }
+
+    private static synchronized Object geolocation() {
+        if (geolocation == null) geolocation = newHidden("android.webkit.GeolocationPermissions");
+        return geolocation;
+    }
+
+    private static Object newHidden(String name) {
+        try {
+            java.lang.reflect.Constructor<?> k = Class.forName(name).getDeclaredConstructor();
+            k.setAccessible(true);
+            return k.newInstance();
+        } catch (ReflectiveOperationException e) {
+            Log.w(TAG, name, e);
+            return null;
         }
     }
 
