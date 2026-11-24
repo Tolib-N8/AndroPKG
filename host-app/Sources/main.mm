@@ -456,6 +456,7 @@ static void SetAppVisible(int visible) {
     self.window.rootViewController = AndropkgLauncherController(^(NSString* apk) {
       g_chosen_apk = apk;
       window.rootViewController = vc;
+      AndropkgAddHomeButton(window);  // over everything the app shows
       StartVM();
     });
   } else {

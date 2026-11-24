@@ -129,6 +129,10 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
   adaptive icons too), native libraries converted and signed, classes preverified.
 - ✅ A launcher in the host app: APKs open in AndroPkg (Files, the share sheet, a picker) and
   run without a computer; each app shows its own name and icon.
+- ✅ **A way home to the launcher.** A small draggable button over an app opened from the
+  launcher: the app is paused and stopped (it saves its state), AndroPkg goes to the home
+  screen and ends; opened again, it shows the list. (One ART per process: iOS apps cannot
+  relaunch themselves.)
 - ⏳ Convert and sign native libraries on the device, so apps with native code (most popular
   apps) install without a computer too.
 - 🔄 **App stores inside AndroPkg.** A `PackageInstaller` bridge: an APK (or split APKs) a

@@ -708,7 +708,16 @@ public final class AndroPkgSystem {
 
         public int getComponentEnabledSetting(ComponentName c, int userId) { return 0; }
         public int getApplicationEnabledSetting(String pkg, int userId) { return 0; }
-        public String getInstallerPackageName(String pkg) { return null; }
+        public String getInstallerPackageName(String pkg) {
+            return appInfo.packageName.equals(pkg) ? null : PackageInstallerImpl.installerOf(pkg);
+        }
+
+        /** Who installed it: a store for the apps it installed; this app itself was sideloaded. */
+        public Object getInstallSourceInfo(String pkg, int userId) {
+            if (!appInfo.packageName.equals(pkg) && PackageInstallerImpl.apkOf(pkg) == null) return null;
+            return PackageInstallerImpl.installSource(
+                    appInfo.packageName.equals(pkg) ? null : PackageInstallerImpl.installerOf(pkg));
+        }
         public int getPackageUid(String pkg, long flags, int userId) {
             return appInfo.packageName.equals(pkg) ? appInfo.uid : -1;
         }

@@ -239,3 +239,91 @@ UIViewController* AndropkgLauncherController(void (^open)(NSString* apkPath)) {
   l.open = open;
   return [[UINavigationController alloc] initWithRootViewController:l];
 }
+
+// ---- the way back to the launcher ----
+// One ART per process: going home ends the app (paused and stopped first, so it saves its
+// state), the host goes to the iOS home screen and exits; opening AndroPkg again shows the list.
+
+@interface AndropkgHomeButton : UIButton
+@property(nonatomic, copy) void (^home)(void);
+@property(nonatomic) CGPoint grab;
+@property(nonatomic) BOOL dragged;
+@end
+
+@implementation AndropkgHomeButton
+- (instancetype)init {
+  if ((self = [super initWithFrame:CGRectMake(0, 0, 44, 44)])) {
+    self.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.35];
+    self.layer.cornerRadius = 22;
+    self.tintColor = [UIColor colorWithWhite:1 alpha:0.9];
+    UIImageSymbolConfiguration* c = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+    [self setImage:[UIImage systemImageNamed:@"square.grid.2x2" withConfiguration:c] forState:UIControlStateNormal];
+    self.accessibilityLabel = @"К списку приложений";
+    [self addTarget:self action:@selector(tapped) forControlEvents:UIControlEventTouchUpInside];
+    UIPanGestureRecognizer* pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(drag:)];
+    [self addGestureRecognizer:pan];
+  }
+  return self;
+}
+- (void)drag:(UIPanGestureRecognizer*)g {
+  UIView* sv = self.superview;
+  CGPoint p = [g locationInView:sv];
+  CGRect safe = UIEdgeInsetsInsetRect(sv.bounds, sv.safeAreaInsets);
+  CGFloat r = 22;
+  p.x = MIN(MAX(p.x, CGRectGetMinX(safe) + r), CGRectGetMaxX(safe) - r);
+  p.y = MIN(MAX(p.y, CGRectGetMinY(safe) + r), CGRectGetMaxY(safe) - r);
+  if (g.state == UIGestureRecognizerStateEnded) {  // to the nearer side
+    p.x = p.x < CGRectGetMidX(safe) ? CGRectGetMinX(safe) + r : CGRectGetMaxX(safe) - r;
+    [UIView animateWithDuration:0.2 animations:^{ self.center = p; }];
+    [NSUserDefaults.standardUserDefaults setObject:NSStringFromCGPoint(CGPointMake(
+        p.x < CGRectGetMidX(safe) ? 0 : 1, (p.y - CGRectGetMinY(safe)) / MAX(1, safe.size.height)))
+                                            forKey:@"andropkg.homeButton"];
+  } else {
+    self.center = p;
+  }
+}
+- (void)layoutInSuperview {
+  UIView* sv = self.superview;
+  CGRect safe = UIEdgeInsetsInsetRect(sv.bounds, sv.safeAreaInsets);
+  NSString* saved = [NSUserDefaults.standardUserDefaults stringForKey:@"andropkg.homeButton"];
+  CGPoint rel = saved ? CGPointFromString(saved) : CGPointMake(1, 0.6);
+  self.center = CGPointMake(rel.x < 0.5 ? CGRectGetMinX(safe) + 22 : CGRectGetMaxX(safe) - 22,
+                            CGRectGetMinY(safe) + 22 + rel.y * MAX(0, safe.size.height - 44));
+}
+- (void)tapped {
+  UIViewController* top = self.window.rootViewController;
+  while (top.presentedViewController) top = top.presentedViewController;
+  UIAlertController* a = [UIAlertController alertControllerWithTitle:@"К списку приложений?"
+                                                             message:@"Приложение будет закрыто."
+                                                      preferredStyle:UIAlertControllerStyleActionSheet];
+  [a addAction:[UIAlertAction actionWithTitle:@"К списку" style:UIAlertActionStyleDestructive
+                                      handler:^(UIAlertAction*) { if (self.home) self.home(); }]];
+  [a addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:nil]];
+  a.popoverPresentationController.sourceView = self;
+  a.popoverPresentationController.sourceRect = self.bounds;
+  [top presentViewController:a animated:YES completion:nil];
+}
+@end
+
+void AndropkgAddHomeButton(UIView* root) {
+  AndropkgHomeButton* b = [AndropkgHomeButton new];
+  __weak AndropkgHomeButton* weak = b;
+  b.home = ^{
+    weak.hidden = YES;
+    // To the iOS home screen (the scene's background notification pauses and stops the app),
+    // then end the process once the app has had a moment to save.
+    // (A background task keeps the process running there: a suspended app's timers wait until it
+    // is opened again, which then ended it under the user.)
+    UIApplication* app = UIApplication.sharedApplication;
+    [app beginBackgroundTaskWithName:@"andropkg.home" expirationHandler:^{ exit(0); }];
+    SEL suspend = NSSelectorFromString(@"suspend");
+    if ([app respondsToSelector:suspend]) {
+      ((void (*)(id, SEL))[app methodForSelector:suspend])(app, suspend);
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ exit(0); });
+  };
+  [root addSubview:b];
+  dispatch_async(dispatch_get_main_queue(), ^{ [b layoutInSuperview]; });
+  b.autoresizingMask = UIViewAutoresizingNone;
+}

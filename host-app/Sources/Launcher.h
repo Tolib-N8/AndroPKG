@@ -10,3 +10,6 @@ BOOL AndropkgImportApk(NSURL* url, NSString** error);
 NSString* AndropkgMetaDir(NSString* name);
 // Posted after an import: the launcher reloads.
 extern NSString* const AndropkgAppsChanged;
+// A small, draggable button over a running app: back to the launcher (ends the app; the host
+// restarts into the launcher when opened again).
+void AndropkgAddHomeButton(UIView* root);

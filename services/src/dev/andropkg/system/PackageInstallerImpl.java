@@ -198,7 +198,10 @@ final class PackageInstallerImpl {
                 removed |= dir.delete();
             }
         }
-        if (removed) broadcast(Intent.ACTION_PACKAGE_REMOVED, pkg);
+        if (removed) {
+            installerFile(pkg).delete();
+            broadcast(Intent.ACTION_PACKAGE_REMOVED, pkg);
+        }
         report(find(args, IntentSender.class), removed ? PackageInstaller.STATUS_SUCCESS : PackageInstaller.STATUS_FAILURE,
                 pkg, -1, removed ? null : "not installed");
     }
@@ -415,6 +418,7 @@ final class PackageInstallerImpl {
             s.dir.delete();
             if (error == null) {
                 Log.i(TAG, "installed " + pkg + " (" + apks.size() + " APK" + (apks.size() > 1 ? "s" : "") + ")");
+                recordInstaller(pkg, s.installer);
                 broadcast(Intent.ACTION_PACKAGE_ADDED, pkg);
             } else {
                 Log.w(TAG, "session " + s.id + " failed: " + error);
@@ -481,6 +485,52 @@ final class PackageInstallerImpl {
             infoCache.put(key, new Object[] {apk.lastModified(), pi});
         }
         return pi;
+    }
+
+    /** Which store installed an app (stores update only the apps they installed). */
+    private static File installerFile(String pkg) {
+        File d = new File(hostRoot(), "installer/by-package");
+        d.mkdirs();
+        return new File(d, pkg);
+    }
+
+    private static void recordInstaller(String pkg, String installer) {
+        if (installer == null) return;
+        try (OutputStream o = new FileOutputStream(installerFile(pkg))) {
+            o.write(installer.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Log.w(TAG, "installer of " + pkg, e);
+        }
+    }
+
+    static String installerOf(String pkg) {
+        File f = installerFile(pkg);
+        if (pkg.contains("/") || !f.isFile()) return null;
+        try {
+            return new String(java.nio.file.Files.readAllBytes(f.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** android.content.pm.InstallSourceInfo: the installing package (null: sideloaded). */
+    static Object installSource(String installer) {
+        for (java.lang.reflect.Constructor<?> k : Hidden.cls("android.content.pm.InstallSourceInfo").getDeclaredConstructors()) {
+            Class<?>[] p = k.getParameterTypes();
+            if (p.length < 4 || p[0] != String.class) continue;
+            Object[] a = new Object[p.length];
+            for (int n = 0; n < p.length; n++) {
+                if (p[n] == String.class) a[n] = installer;
+                else if (p[n] == int.class) a[n] = installer != null ? 2 : 0;  // PACKAGE_SOURCE_STORE / UNSPECIFIED
+            }
+            try {
+                k.setAccessible(true);
+                return k.newInstance(a);
+            } catch (Exception e) {
+                Log.w(TAG, "InstallSourceInfo", e);
+            }
+        }
+        return null;
     }
 
     /** ACTION_PACKAGE_ADDED/REMOVED, as the package manager broadcasts them (stores refresh on it). */
