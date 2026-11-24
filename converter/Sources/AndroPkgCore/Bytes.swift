@@ -76,6 +76,7 @@ public enum ConverterError: Error, CustomStringConvertible {
     case unsupported(String)
     case layout(String)
     case io(String)
+    case malformed(String)
 
     public var description: String {
         switch self {
@@ -84,6 +85,7 @@ public enum ConverterError: Error, CustomStringConvertible {
         case .unsupported(let s): return "unsupported: \(s)"
         case .layout(let s): return "layout error: \(s)"
         case .io(let s): return "I/O error: \(s)"
+        case .malformed(let s): return "malformed: \(s)"
         }
     }
 }

@@ -1,4 +1,4 @@
-# andropkg — Android-приложения на iOS без VM (облегчённый «Wine для Android»)
+# qandropkg — Android-приложения на iOS без VM (облегчённый «Wine для Android»)
 
 ## Контекст
 

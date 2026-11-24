@@ -133,8 +133,11 @@ Real apps drive this work. Each app's failures turn into general fixes and regre
   launcher: the app is paused and stopped (it saves its state), AndroPkg goes to the home
   screen and ends; opened again, it shows the list. (One ART per process: iOS apps cannot
   relaunch themselves.)
-- ⏳ Convert and sign native libraries on the device, so apps with native code (most popular
-  apps) install without a computer too.
+- ✅ Convert and sign native libraries on the device: an app with native code (from a store or
+  a file) is prepared the first time it opens, with the certificate AndroPkg was signed with
+  (imported once as a .p12). The converter's own code signer (CodeDirectory + CMS, no
+  codesign) signs them, as AndroPkg's identifier: amfid checks a developer-signed library
+  outside the bundle against the app's provisioning profile.
 - 🔄 **App stores inside AndroPkg.** A `PackageInstaller` bridge: an APK (or split APKs) a
   store installs lands in the launcher, and the store sees it as installed. The F-Droid client
   browses, searches and installs on the Mac; RuStore is next.

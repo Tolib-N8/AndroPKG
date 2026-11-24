@@ -2,6 +2,11 @@ name: AndroPkgRunner
 options:
   deploymentTarget:
     iOS: "17.4"   # os_sync_wait_on_address (futex emulation)
+packages:
+  # The converter's core (ELF -> Mach-O wrapping, code signing): native libraries are prepared
+  # on the device (Sources/NativeInstaller.swift).
+  AndroPkgConverter:
+    path: ../converter
 configFiles:
   Debug: ../Config/Local.xcconfig
   Release: ../Config/Local.xcconfig
@@ -36,12 +41,15 @@ targets:
         ARCHS: arm64
         TARGETED_DEVICE_FAMILY: "1,2"
         CLANG_ENABLE_OBJC_ARC: YES
+        SWIFT_VERSION: "5.0"
         CLANG_CXX_LANGUAGE_STANDARD: gnu++17
         ENABLE_DEBUG_DYLIB: NO
         HEADER_SEARCH_PATHS: "$(SRCROOT)/../third_party/aosp/libnativehelper/include_jni"
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks"
         OTHER_LDFLAGS: "$(SRCROOT)/../build/runtime-ios/libart.dylib -framework UIKit -framework Foundation -framework CoreGraphics -framework CoreMotion -framework QuartzCore -framework Metal -framework UniformTypeIdentifiers -framework UserNotifications"
     dependencies:
+      - package: AndroPkgConverter
+        product: AndroPkgCore
       # The andropkg runtime (ART + libcore natives), signed on embed. libart is linked; the
       # JNI libraries are dlopen()ed by ART ("libjavacore.so" -> @rpath/libjavacore.dylib).
       - framework: ../build/runtime-ios/libart.dylib

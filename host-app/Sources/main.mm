@@ -387,6 +387,8 @@ static void* VMThread(void*) {
     g_extra_vm_options.push_back(std::string("-Dandropkg.metaDir=") + AndropkgMetaDir(name).fileSystemRepresentation);
     // Converted, signed native libraries of this APK (scripts/prepare-native-libs.sh).
     NSString* native = [[root stringByAppendingPathComponent:@"native"] stringByAppendingPathComponent:name];
+    // Or converted and signed on this device (the launcher, Sources/NativeInstaller.swift).
+    if (![NSFileManager.defaultManager fileExistsAtPath:native]) native = AndropkgDeviceNativeDir(name);
     if ([NSFileManager.defaultManager fileExistsAtPath:native]) {
       g_extra_vm_options.push_back(std::string("-Dandropkg.nativeLibraryDir=") + native.fileSystemRepresentation);
     }
@@ -472,6 +474,11 @@ static void SetAppVisible(int visible) {
 - (void)importApks:(NSSet<UIOpenURLContext*>*)contexts {
   for (UIOpenURLContext* c in contexts) {
     if (!c.URL.isFileURL) continue;
+    if ([c.URL.pathExtension.lowercaseString isEqualToString:@"p12"] ||
+        [c.URL.pathExtension.lowercaseString isEqualToString:@"pfx"]) {
+      AndropkgCertificateOpened(c.URL);  // the launcher asks for its password
+      continue;
+    }
     NSString* err = nil;
     if (AndropkgImportApk(c.URL, &err)) {
       Log([NSString stringWithFormat:@"installed %@", c.URL.lastPathComponent]);

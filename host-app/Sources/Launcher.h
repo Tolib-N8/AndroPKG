@@ -13,3 +13,7 @@ extern NSString* const AndropkgAppsChanged;
 // A small, draggable button over a running app: back to the launcher (ends the app; the host
 // restarts into the launcher when opened again).
 void AndropkgAddHomeButton(UIView* root);
+// A .p12 opened in AndroPkg: the launcher asks for its password and imports it.
+void AndropkgCertificateOpened(NSURL* url);
+// Where the app's native libraries are when converted on the device (may not exist).
+NSString* AndropkgDeviceNativeDir(NSString* name);

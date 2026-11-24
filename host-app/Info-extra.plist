@@ -25,6 +25,17 @@
 				<string>com.android.package-archive</string>
 			</array>
 		</dict>
+		<!-- The signing certificate (.p12) for converting native libraries on the device. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Signing certificate</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.rsa.pkcs-12</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>

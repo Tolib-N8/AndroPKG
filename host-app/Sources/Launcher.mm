@@ -7,10 +7,13 @@
 //     sheet ("Open in AndroPkg") or the + button.
 // An app's name and icon are written by the runtime the first time it runs (AndroPkgSystem,
 // -Dandropkg.metaDir): Application Support/andropkg/meta/<name>/{label,icon.png}.
-// An APK with native libraries runs only if they were converted and signed on a computer
-// (android-root/native/<name>); converting them on the device is not done yet.
+// An APK with native libraries needs them converted and signed: on a computer
+// (android-root/native/<name>, scripts/convert-ipa.sh) or here, the first time it opens, with
+// the signing certificate imported once (Sources/NativeInstaller.swift).
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+#import "AndroPkgRunner-Swift.h"
 
 
 #import "Launcher.h"
@@ -57,7 +60,7 @@ bool HasNativeLibraries(NSString* path) {
 @property(nonatomic, copy) NSString* name;    // file name without .apk: the data directory's name
 @property(nonatomic, copy) NSString* path;    // the APK (or a split package's directory)
 @property(nonatomic) BOOL builtIn;
-@property(nonatomic) BOOL needsComputer;      // native libraries not converted for this device
+@property(nonatomic) BOOL needsNative;        // native libraries, not converted on a computer
 @end
 @implementation AndropkgApp
 - (NSString*)metaDir { return [SupportDir(@"meta") stringByAppendingPathComponent:self.name]; }
@@ -90,7 +93,7 @@ static NSArray<AndropkgApp*>* InstalledApps() {
     a.path = p;
     a.builtIn = YES;
     NSString* base = dir ? [p stringByAppendingPathComponent:@"base.apk"] : p;
-    a.needsComputer = HasNativeLibraries(base) && ![fm fileExistsAtPath:[native stringByAppendingPathComponent:a.name]];
+    a.needsNative = HasNativeLibraries(base) && ![fm fileExistsAtPath:[native stringByAppendingPathComponent:a.name]];
     [apps addObject:a];
   }
   NSString* imported = SupportDir(@"apps");
@@ -104,7 +107,7 @@ static NSArray<AndropkgApp*>* InstalledApps() {
     AndropkgApp* a = [AndropkgApp new];
     a.name = dir ? f : f.stringByDeletingPathExtension;
     a.path = p;  // (a directory: the runtime parses the cluster)
-    a.needsComputer = HasNativeLibraries(base);
+    a.needsNative = HasNativeLibraries(base);
     [apps addObject:a];
   }
   return apps;
@@ -166,9 +169,12 @@ BOOL AndropkgImportApk(NSURL* url, NSString** error) {
   AndropkgApp* a = self.apps[ip.row];
   UIListContentConfiguration* cfg = c.defaultContentConfiguration;
   cfg.text = a.label;
-  cfg.secondaryText = a.needsComputer ? @"Нативный код: пока только через компьютер (convert-ipa.sh)"
-                                      : (a.builtIn ? @"Встроенное" : @"Установлено");
-  cfg.secondaryTextProperties.color = a.needsComputer ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor;
+  BOOL pending = a.needsNative && ![AndropkgNativeInstaller isPreparedWithApp:a.name];
+  BOOL noCert = pending && !AndropkgNativeInstaller.hasCertificate;
+  cfg.secondaryText = noCert ? @"Нативный код: нужен сертификат подписи"
+                      : pending ? @"Нативный код подготовится при первом запуске"
+                                : (a.builtIn ? @"Встроенное" : @"Установлено");
+  cfg.secondaryTextProperties.color = noCert ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor;
   UIImage* icon = a.icon;
   if (!icon) icon = [UIImage systemImageNamed:@"app.dashed"];
   cfg.image = icon;
@@ -182,18 +188,95 @@ BOOL AndropkgImportApk(NSURL* url, NSString** error) {
 - (void)tableView:(UITableView*)t didSelectRowAtIndexPath:(NSIndexPath*)ip {
   [t deselectRowAtIndexPath:ip animated:YES];
   AndropkgApp* a = self.apps[ip.row];
-  if (a.needsComputer) {
-    UIAlertController* alert = [UIAlertController
-        alertControllerWithTitle:a.label
-                         message:@"В этом приложении есть нативные библиотеки. Их пока нужно сконвертировать и "
-                                 @"подписать на компьютере: scripts/convert-ipa.sh. Конвертация на телефоне — "
-                                 @"следующий этап."
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+  if (a.needsNative && ![AndropkgNativeInstaller isPreparedWithApp:a.name]) {
+    if (!AndropkgNativeInstaller.hasCertificate) {
+      [self askForCertificate:a.label];
+    } else {
+      [self prepare:a];
+    }
     return;
   }
   if (self.open) self.open(a.path);
+}
+// The app's native libraries: converted and signed here, then it opens.
+- (void)prepare:(AndropkgApp*)a {
+  UIAlertController* progress = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"Подготовка «%@»", a.label]
+                                                                    message:@"Конвертация нативных библиотек…"
+                                                             preferredStyle:UIAlertControllerStyleAlert];
+  [self presentViewController:progress animated:YES completion:nil];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString* err = [AndropkgNativeInstaller prepareWithApk:a.path app:a.name progress:^(NSString* lib, NSInteger done, NSInteger total) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        progress.message = [NSString stringWithFormat:@"%@\n(%ld из %ld)", lib, (long)done + 1, (long)total];
+      });
+    }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [progress dismissViewControllerAnimated:YES completion:^{
+        if (err) {
+          [self message:@"Не удалось подготовить" text:err];
+        } else if (self.open) {
+          self.open(a.path);
+        }
+      }];
+    });
+  });
+}
+- (void)message:(NSString*)title text:(NSString*)text {
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:title message:text
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+  UIViewController* top = self;
+  while (top.presentedViewController) top = top.presentedViewController;
+  [top presentViewController:alert animated:YES completion:nil];
+}
+- (void)askForCertificate:(NSString*)label {
+  NSString* team = AndropkgNativeInstaller.appTeam ?: @"?";
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:@"Нужен сертификат подписи"
+                       message:[NSString stringWithFormat:
+                                   @"В «%@» есть нативные библиотеки. iOS загрузит их, только если они подписаны тем же "
+                                   @"сертификатом, что и AndroPkg (команда %@).\n\nЭкспортируйте его с закрытым ключом "
+                                   @"(.p12) из «Связки ключей» на Mac и откройте файл в AndroPkg. Это нужно один раз.",
+                                   label, team]
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Выбрать файл .p12" style:UIAlertActionStyleDefault
+                                          handler:^(UIAlertAction*) { [self pickCertificate]; }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:nil]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)pickCertificate {
+  UTType* p12 = [UTType typeWithIdentifier:@"com.rsa.pkcs-12"] ?: UTTypeData;
+  UIDocumentPickerViewController* picker =
+      [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ p12, UTTypeData ] asCopy:YES];
+  picker.delegate = self;
+  [self presentViewController:picker animated:YES completion:nil];
+}
+// A .p12 (picked, or opened from Files): its password, then the import.
+- (void)importCertificate:(NSString*)path {
+  UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Пароль сертификата"
+                                                                 message:path.lastPathComponent
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+  [alert addTextFieldWithConfigurationHandler:^(UITextField* f) {
+    f.secureTextEntry = YES;
+    f.placeholder = @"Пароль .p12";
+  }];
+  __weak UIAlertController* weak = alert;
+  [alert addAction:[UIAlertAction actionWithTitle:@"Импортировать" style:UIAlertActionStyleDefault handler:^(UIAlertAction*) {
+    NSString* err = [AndropkgNativeInstaller importCertificate:path password:weak.textFields.firstObject.text ?: @""];
+    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    if (err) {
+      [self message:@"Сертификат не импортирован" text:err];
+    } else {
+      [self message:@"Сертификат импортирован" text:@"Приложения с нативным кодом теперь подготавливаются на телефоне."];
+      [self reload];
+    }
+  }]];
+  [alert addAction:[UIAlertAction actionWithTitle:@"Отмена" style:UIAlertActionStyleCancel handler:^(UIAlertAction*) {
+    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+  }]];
+  UIViewController* top = self;
+  while (top.presentedViewController) top = top.presentedViewController;
+  [top presentViewController:alert animated:YES completion:nil];
 }
 - (UISwipeActionsConfiguration*)tableView:(UITableView*)t trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)ip {
   AndropkgApp* a = self.apps[ip.row];
@@ -220,6 +303,11 @@ BOOL AndropkgImportApk(NSURL* url, NSString** error) {
 }
 - (void)documentPicker:(UIDocumentPickerViewController*)p didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
   for (NSURL* u in urls) {
+    NSString* ext = u.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"p12"] || [ext isEqualToString:@"pfx"]) {
+      AndropkgCertificateOpened(u);
+      continue;
+    }
     NSString* err = nil;
     if (!AndropkgImportApk(u, &err)) {
       UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Не удалось установить"
@@ -234,8 +322,28 @@ BOOL AndropkgImportApk(NSURL* url, NSString** error) {
 
 NSString* const AndropkgAppsChanged = @"AndropkgAppsChanged";
 
+static __weak AndropkgLauncher* g_shown_launcher;
+
+void AndropkgCertificateOpened(NSURL* url) {
+  // A private copy (the file may be security-scoped or in the Inbox), removed after the import.
+  BOOL scoped = [url startAccessingSecurityScopedResource];
+  NSString* copy = [NSTemporaryDirectory() stringByAppendingPathComponent:url.lastPathComponent];
+  [NSFileManager.defaultManager removeItemAtPath:copy error:nil];
+  BOOL ok = [NSFileManager.defaultManager copyItemAtPath:url.path toPath:copy error:nil];
+  if (scoped) [url stopAccessingSecurityScopedResource];
+  AndropkgLauncher* l = g_shown_launcher;
+  if (!ok || !l) {
+    NSLog(@"andropkg: certificate %@ not imported (%@)", url.lastPathComponent, ok ? @"no launcher" : @"unreadable");
+    return;
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{ [l importCertificate:copy]; });
+}
+
+NSString* AndropkgDeviceNativeDir(NSString* name) { return [AndropkgNativeInstaller nativeDirForApp:name]; }
+
 UIViewController* AndropkgLauncherController(void (^open)(NSString* apkPath)) {
   AndropkgLauncher* l = [[AndropkgLauncher alloc] initWithStyle:UITableViewStyleInsetGrouped];
+  g_shown_launcher = l;
   l.open = open;
   return [[UINavigationController alloc] initWithRootViewController:l];
 }
