@@ -11,3 +11,6 @@ third_party/aosp/
 __pycache__/
 *.pyc
 .vscode/
+
+# Obsidian (editing docs/ locally)
+.obsidian/
